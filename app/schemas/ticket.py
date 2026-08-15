@@ -15,6 +15,8 @@ class TicketCreate(BaseModel):
 
     external_id: str | None = None
 
+    customer_id: int | None = None
+
 class TicketUpdate(BaseModel):
     subject: str | None = Field(
         default=None,
@@ -44,6 +46,8 @@ class TicketUpdate(BaseModel):
         "urgent",
     ] | None = None
 
+    customer_id: int | None = None
+
     
 class TicketRead(BaseModel):
     id: int
@@ -63,3 +67,6 @@ class TicketRead(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+    customer_id: int | None
+

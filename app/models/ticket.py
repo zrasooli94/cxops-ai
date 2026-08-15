@@ -2,7 +2,8 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
-
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import relationship
 from app.models.base import Base
 
 
@@ -65,3 +66,10 @@ class Ticket(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id"),
+        nullable=True,
+    )
+
+    customer = relationship("Customer")

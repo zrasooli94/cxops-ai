@@ -36,6 +36,7 @@ async def create_ticket(
     return await TicketService.create_ticket(
         db=db,
         data=data,
+        
     )
 
 

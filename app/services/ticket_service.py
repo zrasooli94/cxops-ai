@@ -24,6 +24,7 @@ class TicketService:
             ),
             priority=data.priority,
             source=data.source,
+            customer_id=data.customer_id,
         )
 
         return await TicketRepository.create(
