@@ -73,3 +73,13 @@ class Ticket(Base):
     )
 
     customer = relationship("Customer")
+
+    category: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    
+    assigned_team: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )

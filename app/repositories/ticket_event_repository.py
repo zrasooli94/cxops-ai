@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ticket_event import TicketEvent
-
+from datetime import datetime, timezone
 
 class TicketEventRepository:
 
@@ -46,3 +46,18 @@ class TicketEventRepository:
         )
 
         return list(result.scalars().all())
+
+
+    @staticmethod
+    async def mark_processed(
+        db: AsyncSession,
+        event: TicketEvent,
+    ) -> TicketEvent:
+        
+        event.processed = True
+        event.processed_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(event)
+        
+        return event

@@ -46,6 +46,9 @@ class TicketUpdate(BaseModel):
         "urgent",
     ] | None = None
 
+    category: str | None = None
+    assigned_team: str | None = None
+
     customer_id: int | None = None
 
     
@@ -67,6 +70,9 @@ class TicketRead(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+    category: str | None
+    assigned_team: str | None
 
     customer_id: int | None
 

@@ -8,6 +8,7 @@ from app.schemas.webhook import (
     TicketEventWebhook,
     WebhookReceipt,
 )
+from app.services.automation_service import AutomationService
 
 
 class WebhookService:
@@ -40,6 +41,11 @@ class WebhookService:
         )
 
         event = await TicketEventRepository.create(
+            db=db,
+            event=event,
+        )
+        
+        await AutomationService.process_ticket_event(
             db=db,
             event=event,
         )
