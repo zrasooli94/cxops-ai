@@ -9,6 +9,7 @@ from app.schemas.webhook import (
     WebhookReceipt,
 )
 from app.services.automation_service import AutomationService
+from sqlalchemy.exc import IntegrityError
 
 
 class WebhookService:
@@ -40,10 +41,29 @@ class WebhookService:
             payload=data.payload,
         )
 
-        event = await TicketEventRepository.create(
-            db=db,
-            event=event,
-        )
+        try:
+            event = await TicketEventRepository.create(
+                db=db,
+                event=event,
+            )
+        
+        except IntegrityError:
+            await db.rollback()
+        
+            existing = await TicketEventRepository.get_by_event_key(
+                db=db,
+                event_key=data.event_id,
+            )
+        
+            if existing is None:
+                raise
+            
+            return WebhookReceipt(
+                event_id=data.event_id,
+                stored_event_id=existing.id,
+                duplicate=True,
+                status="already_received",
+            )
         
         await AutomationService.process_ticket_event(
             db=db,
