@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
 
+    chat_model: str = "gpt-5.6-luna"
+    rag_top_k: int = 5
+    rag_min_similarity: float = 0.35
+    rag_similarity_margin: float = 0.12
+    rag_max_sources: int = 3
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

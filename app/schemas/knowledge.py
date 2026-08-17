@@ -39,3 +39,40 @@ class KnowledgeSearchResult(BaseModel):
     distance: float
     similarity: float
     metadata: dict
+
+
+class KnowledgeFileIngestionResult(BaseModel):
+    document_id: int
+    filename: str
+    title: str
+    chunks_created: int
+    duplicate: bool
+
+class RAGAnswerRequest(BaseModel):
+    question: str = Field(
+        min_length=2,
+        max_length=2000,
+    )
+
+    top_k: int | None = Field(
+        default=None,
+        ge=1,
+        le=10,
+    )
+
+
+class RAGSource(BaseModel):
+    source_id: str
+    chunk_id: int
+    document_id: int
+    title: str
+    content: str
+    similarity: float
+
+
+class RAGAnswerResponse(BaseModel):
+    answer: str
+    grounded: bool
+    sources: list[RAGSource]
+    retrieval_count: int = 0
+    best_similarity: float | None = None
