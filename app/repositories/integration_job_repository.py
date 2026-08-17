@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.integration_job import IntegrationJob
@@ -39,9 +39,32 @@ class IntegrationJobRepository:
     async def claim_next(
         db: AsyncSession,
     ) -> IntegrationJob | None:
-
+    
         now = datetime.now(timezone.utc)
-
+    
+        stale_before = now - timedelta(
+            seconds=60
+        )
+    
+        # Recover jobs left in "processing"
+        # after a worker crash/restart.
+        await db.execute(
+            update(IntegrationJob)
+            .where(
+                IntegrationJob.status == "processing",
+                IntegrationJob.locked_at.is_not(None),
+                IntegrationJob.locked_at < stale_before,
+            )
+            .values(
+                status="retry",
+                locked_at=None,
+                available_at=now,
+                last_error="Recovered stale processing job",
+            )
+        )
+    
+        await db.commit()
+    
         result = await db.execute(
             select(IntegrationJob)
             .where(
@@ -50,23 +73,27 @@ class IntegrationJobRepository:
                 ),
                 IntegrationJob.available_at <= now,
             )
-            .order_by(IntegrationJob.id.asc())
-            .with_for_update(skip_locked=True)
+            .order_by(
+                IntegrationJob.id.asc()
+            )
+            .with_for_update(
+                skip_locked=True
+            )
             .limit(1)
         )
-
+    
         job = result.scalar_one_or_none()
-
+    
         if job is None:
             return None
-
+    
         job.status = "processing"
         job.attempts += 1
         job.locked_at = now
-
+    
         await db.commit()
         await db.refresh(job)
-
+    
         return job
 
     @staticmethod
