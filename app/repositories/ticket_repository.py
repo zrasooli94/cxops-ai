@@ -60,3 +60,18 @@ class TicketRepository:
         await db.refresh(ticket)
 
         return ticket
+
+    @staticmethod
+    async def get_by_external_id(
+        db: AsyncSession,
+        external_id: str,
+    ) -> Ticket | None:
+    
+        result = await db.execute(
+            select(Ticket).where(
+                Ticket.external_id == external_id
+            )
+        )
+    
+        return result.scalar_one_or_none()
+    

@@ -38,3 +38,19 @@ class CustomerRepository:
             )
         )
         return list(result.scalars().all())
+
+    @staticmethod
+    async def get_by_email(
+        db: AsyncSession,
+        email: str,
+    ) -> Customer | None:
+
+        result = await db.execute(
+            select(Customer).where(
+                Customer.email == email
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    

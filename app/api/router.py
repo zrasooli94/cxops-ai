@@ -11,6 +11,13 @@ from app.api.routes.webhooks import router as webhooks_router
 from app.api.routes.zendesk_webhooks import (
     router as zendesk_webhooks_router,
 )
+from app.api.routes.zendesk_auth import (
+    router as zendesk_auth_router,
+)
+from app.api.routes.zendesk import (
+    router as zendesk_router,
+)
+
 
 api_router = APIRouter()
 
@@ -21,3 +28,5 @@ api_router.include_router(tickets_router)
 api_router.include_router(webhooks_router)
 api_router.include_router(automation_rules_router)
 api_router.include_router(zendesk_webhooks_router)
+api_router.include_router(zendesk_router)
+api_router.include_router(zendesk_auth_router)

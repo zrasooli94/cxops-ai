@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     )
     
     zendesk_webhook_secret: str = ""
+    zendesk_oauth_token: str = ""
+
+    zendesk_subdomain: str = ""
+    zendesk_client_id: str = ""
+    zendesk_client_secret: str = ""
+    zendesk_redirect_uri: str = (
+        "http://127.0.0.1:8000/auth/zendesk/callback"
+    )
+    zendesk_oauth_scope: str = "read write"
 
 @lru_cache
 def get_settings() -> Settings:
