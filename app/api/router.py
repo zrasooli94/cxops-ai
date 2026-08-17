@@ -17,6 +17,9 @@ from app.api.routes.zendesk_auth import (
 from app.api.routes.zendesk import (
     router as zendesk_router,
 )
+from app.api.routes.knowledge import (
+    router as knowledge_router,
+)
 
 
 api_router = APIRouter()
@@ -30,3 +33,6 @@ api_router.include_router(automation_rules_router)
 api_router.include_router(zendesk_webhooks_router)
 api_router.include_router(zendesk_router)
 api_router.include_router(zendesk_auth_router)
+api_router.include_router(knowledge_router)
+
+

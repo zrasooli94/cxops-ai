@@ -6,6 +6,9 @@ from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
 from app.models.integration_job import IntegrationJob
+from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.knowledge_document import KnowledgeDocument
+
 
 
 __all__ = [
@@ -17,4 +20,6 @@ __all__ = [
     "TicketEvent",
     "ZendeskOAuthToken",
     "IntegrationJob",
+    "KnowledgeChunk",
+    "KnowledgeDocument",
 ]

@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     )
     zendesk_oauth_scope: str = "read write"
 
+    openai_api_key: str = ""
+
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
