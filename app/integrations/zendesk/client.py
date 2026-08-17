@@ -171,5 +171,18 @@ class ZendeskClient:
             f"/users/{user_id}.json",
         )
 
+    async def get_ticket_comments(
+        self,
+        db: AsyncSession,
+        ticket_id: int,
+    ) -> dict:
+
+        return await self.request(
+            db,
+            "GET",
+            f"/tickets/{ticket_id}/comments.json",
+        )
+
+    
 
 zendesk_client = ZendeskClient()

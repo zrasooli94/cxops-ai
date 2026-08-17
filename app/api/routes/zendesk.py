@@ -185,4 +185,19 @@ async def sync_zendesk_ticket(
     ) as exc:
         raise handle_zendesk_error(exc)
 
-    
+@router.get("/tickets/{ticket_id}/comments")
+async def get_zendesk_ticket_comments(
+    ticket_id: int,
+    db: DatabaseSession,
+):
+    try:
+        return await zendesk_client.get_ticket_comments(
+            db=db,
+            ticket_id=ticket_id,
+        )
+
+    except (
+        ZendeskAPIError,
+        ZendeskReauthorizationRequired,
+    ) as exc:
+        raise handle_zendesk_error(exc)

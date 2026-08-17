@@ -13,9 +13,8 @@ url = "http://127.0.0.1:8000/webhooks/zendesk/tickets"
 
 payload = {
     "event_type": "ticket.created",
-    "ticket_id": 3,
+    "ticket_id": 6,
     "channel": "email",
-    "status": "new",
 }
 
 
@@ -54,7 +53,7 @@ headers = {
     "Content-Type": "application/json",
     "X-Zendesk-Webhook-Signature": signature,
     "X-Zendesk-Webhook-Signature-Timestamp": timestamp,
-    "X-Zendesk-Webhook-Invocation-Id": "zd_invocation_001",
+    "X-Zendesk-Webhook-Invocation-Id": "zd_invocation_003",
 }
 
 

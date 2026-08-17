@@ -15,12 +15,11 @@ from app.core.database import get_db
 from app.integrations.zendesk.security import (
     verify_zendesk_signature,
 )
-from app.schemas.webhook import (
-    TicketEventWebhook,
-    WebhookReceipt,
-)
-from app.services.webhook_service import WebhookService
+from app.schemas.webhook import WebhookReceipt
 
+from app.services.zendesk_webhook_service import (
+    ZendeskWebhookService,
+)
 
 router = APIRouter(
     prefix="/webhooks/zendesk",
@@ -84,15 +83,19 @@ async def receive_zendesk_ticket_webhook(
 
     try:
         payload = json.loads(raw_body)
-
-        event_type = str(
-            payload["event_type"]
+    
+        raw_event_type = str(
+            payload["type"]
         )
-
+    
         ticket_id = int(
-            payload["ticket_id"]
+            payload["detail"]["id"]
         )
-
+    
+        event_type = raw_event_type.removeprefix(
+            "zen:event-type:"
+        )
+    
     except (
         json.JSONDecodeError,
         KeyError,
@@ -101,21 +104,13 @@ async def receive_zendesk_ticket_webhook(
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "Webhook payload requires valid "
-                "event_type and ticket_id"
-            ),
+            detail="Invalid Zendesk event payload",
         )
 
-    data = TicketEventWebhook(
-        event_id=invocation_id,
-        event_type=event_type,
-        source="zendesk",
-        ticket_id=ticket_id,
-        payload=payload,
-    )
-
-    return await WebhookService.receive_ticket_event(
+    return await ZendeskWebhookService.process(
         db=db,
-        data=data,
+        invocation_id=invocation_id,
+        event_type=event_type,
+        zendesk_ticket_id=ticket_id,
+        payload=payload,
     )
