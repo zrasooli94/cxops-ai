@@ -5,6 +5,8 @@ from app.models.organization import Organization
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
+from app.models.integration_job import IntegrationJob
+
 
 __all__ = [
     "AutomationRule",
@@ -14,4 +16,5 @@ __all__ = [
     "Ticket",
     "TicketEvent",
     "ZendeskOAuthToken",
+    "IntegrationJob",
 ]

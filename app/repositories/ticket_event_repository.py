@@ -61,3 +61,19 @@ class TicketEventRepository:
         await db.refresh(event)
         
         return event
+
+    @staticmethod
+    async def mark_writeback_completed(
+        db: AsyncSession,
+        event: TicketEvent,
+    ) -> TicketEvent:
+
+        event.writeback_completed = True
+        event.writeback_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(event)
+
+        return event
+
+    

@@ -63,3 +63,15 @@ class TicketEvent(Base):
     )
 
     ticket = relationship("Ticket")
+
+    writeback_completed: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    writeback_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    

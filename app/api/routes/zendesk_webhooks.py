@@ -17,8 +17,9 @@ from app.integrations.zendesk.security import (
 )
 from app.schemas.webhook import WebhookReceipt
 
-from app.services.zendesk_webhook_service import (
-    ZendeskWebhookService,
+from app.schemas.job import JobAccepted
+from app.services.integration_job_service import (
+    IntegrationJobService,
 )
 
 router = APIRouter(
@@ -35,7 +36,7 @@ DatabaseSession = Annotated[
 
 @router.post(
     "/tickets",
-    response_model=WebhookReceipt,
+    response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def receive_zendesk_ticket_webhook(
@@ -107,7 +108,7 @@ async def receive_zendesk_ticket_webhook(
             detail="Invalid Zendesk event payload",
         )
 
-    return await ZendeskWebhookService.process(
+    return await IntegrationJobService.enqueue_zendesk_event(
         db=db,
         invocation_id=invocation_id,
         event_type=event_type,
