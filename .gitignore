@@ -23,3 +23,5 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+evals/latest_report.json

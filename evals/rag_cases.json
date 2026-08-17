@@ -1,0 +1,65 @@
+[
+  {
+    "id": "withdrawal_pending",
+    "question": "A withdrawal has been pending for more than 24 hours. What should support do?",
+    "expected_sources": [
+      "Withdrawal Processing Policy"
+    ],
+    "expected_terms": [
+      "payments team"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "account_access",
+    "question": "A customer reset their password but still cannot access their account. Which team should handle it?",
+    "expected_sources": [
+      "Account Access Policy",
+      "account-security"
+    ],
+    "expected_terms": [
+      "identity team"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "verification_delay",
+    "question": "A customer's identity verification has been pending for three days. Where should the case be escalated?",
+    "expected_sources": [
+      "Identity Verification Policy"
+    ],
+    "expected_terms": [
+      "compliance team"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "missing_deposit",
+    "question": "The customer's bank account was charged but the deposit has not appeared after one business day. What should happen?",
+    "expected_sources": [
+      "Deposit Processing Policy"
+    ],
+    "expected_terms": [
+      "payments team"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "platform_incident",
+    "question": "Many customers are reporting the same payment failure. What should support check?",
+    "expected_sources": [
+      "Platform Incident Policy"
+    ],
+    "expected_terms": [
+      "platform incident"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "unknown_vacation_policy",
+    "question": "How many paid vacation days do employees receive each year?",
+    "expected_sources": [],
+    "expected_terms": [],
+    "should_refuse": true
+  }
+]

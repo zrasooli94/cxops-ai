@@ -71,6 +71,7 @@ class RAGSource(BaseModel):
 
 
 class RAGAnswerResponse(BaseModel):
+    request_id: str
     answer: str
     grounded: bool
     sources: list[RAGSource]

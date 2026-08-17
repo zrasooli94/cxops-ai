@@ -1,18 +1,25 @@
-from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncSession
+from time import perf_counter
+from uuid import uuid4
+
 from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.services.knowledge_search_service import (
-    KnowledgeSearchService,
+from app.services.ai_observability_service import (
+    AIObservabilityService,
 )
 from app.services.citation_service import (
     CitationService,
 )
+from app.services.knowledge_search_service import (
+    KnowledgeSearchService,
+)
+
 
 class RAGService:
 
@@ -24,6 +31,31 @@ class RAGService:
             ),
         )
 
+    @staticmethod
+    def _insufficient_answer() -> str:
+        return (
+            "I don't have enough information "
+            "in the knowledge base to answer "
+            "that question."
+        )
+
+    @staticmethod
+    def _extract_answer_text(
+        content,
+    ) -> str:
+
+        if isinstance(content, str):
+            return content.strip()
+
+        return "".join(
+            (
+                item.get("text", "")
+                if isinstance(item, dict)
+                else str(item)
+            )
+            for item in content
+        ).strip()
+
     async def answer(
         self,
         db: AsyncSession,
@@ -32,61 +64,128 @@ class RAGService:
         top_k: int | None = None,
     ) -> dict:
 
-        limit = top_k or settings.rag_top_k
+        request_id = uuid4().hex
+        started_at = perf_counter()
 
-        matches = await KnowledgeSearchService.search(
-            db=db,
-            query=question,
-            limit=limit,
+        limit = (
+            top_k
+            or settings.rag_top_k
         )
 
+        # -------------------------------------------------
+        # 1. Retrieve relevant knowledge
+        # -------------------------------------------------
+
+        matches = (
+            await KnowledgeSearchService.search(
+                db=db,
+                query=question,
+                limit=limit,
+            )
+        )
+
+        # -------------------------------------------------
+        # 2. No retrieval results
+        # -------------------------------------------------
+
         if not matches:
+
+            answer_text = (
+                self._insufficient_answer()
+            )
+
+            latency_ms = (
+                perf_counter()
+                - started_at
+            ) * 1000
+
+            await AIObservabilityService.record(
+                db=db,
+                request_id=request_id,
+                question=question,
+                answer=answer_text,
+                grounded=False,
+                llm_called=False,
+                retrieval_count=0,
+                best_similarity=None,
+                sources=[],
+                latency_ms=latency_ms,
+            )
+
             return {
-                "answer": (
-                    "I don't have enough information "
-                    "in the knowledge base to answer "
-                    "that question."
-                ),
+                "request_id": request_id,
+                "answer": answer_text,
                 "grounded": False,
                 "sources": [],
+                "retrieval_count": 0,
+                "best_similarity": None,
             }
 
-        best_similarity = matches[0]["similarity"]
+        # -------------------------------------------------
+        # 3. Adaptive retrieval filtering
+        # -------------------------------------------------
+
+        best_similarity = float(
+            matches[0]["similarity"]
+        )
 
         adaptive_threshold = max(
             settings.rag_min_similarity,
-            best_similarity - settings.rag_similarity_margin,
+            best_similarity
+            - settings.rag_similarity_margin,
         )
 
         relevant_matches = [
             match
             for match in matches
-            if match["similarity"] >= adaptive_threshold
+            if (
+                match["similarity"]
+                >= adaptive_threshold
+            )
         ][
             : settings.rag_max_sources
         ]
 
-        if not relevant_matches:
-            return {
-                "answer": (
-                    "I don't have enough information "
-                    "in the knowledge base to answer "
-                    "that question."
-                ),
-                "grounded": False,
-                "sources": [],
-            }
+        # -------------------------------------------------
+        # 4. Retrieval confidence too low
+        # -------------------------------------------------
 
         if not relevant_matches:
+
+            answer_text = (
+                self._insufficient_answer()
+            )
+
+            latency_ms = (
+                perf_counter()
+                - started_at
+            ) * 1000
+
+            await AIObservabilityService.record(
+                db=db,
+                request_id=request_id,
+                question=question,
+                answer=answer_text,
+                grounded=False,
+                llm_called=False,
+                retrieval_count=0,
+                best_similarity=best_similarity,
+                sources=[],
+                latency_ms=latency_ms,
+            )
+
             return {
-                "answer": (
-                    "I don't have enough information "
-                    "in the knowledge base to answer "
-                    "that question."
-                ),
+                "request_id": request_id,
+                "answer": answer_text,
                 "grounded": False,
                 "sources": [],
+                "retrieval_count": 0,
+                "best_similarity": best_similarity,
             }
+
+        # -------------------------------------------------
+        # 5. Build grounded context + API sources
+        # -------------------------------------------------
 
         context_sections: list[str] = []
         sources: list[dict] = []
@@ -95,9 +194,13 @@ class RAGService:
             relevant_matches,
             start=1,
         ):
+
             source_id = f"S{index}"
 
-            metadata = match["metadata"]
+            metadata = (
+                match["metadata"]
+                or {}
+            )
 
             title = metadata.get(
                 "title",
@@ -130,15 +233,21 @@ class RAGService:
                     "content": match[
                         "content"
                     ],
-                    "similarity": match[
-                        "similarity"
-                    ],
+                    "similarity": float(
+                        match[
+                            "similarity"
+                        ]
+                    ),
                 }
             )
 
         context = "\n\n".join(
             context_sections
         )
+
+        # -------------------------------------------------
+        # 6. Grounding / security prompt
+        # -------------------------------------------------
 
         system_prompt = """
 You are CXOps AI, a customer support knowledge assistant.
@@ -174,6 +283,10 @@ KNOWLEDGE BASE CONTEXT:
 Answer the question and cite the supporting sources.
 """
 
+        # -------------------------------------------------
+        # 7. Generate answer
+        # -------------------------------------------------
+
         response = await self.llm.ainvoke(
             [
                 SystemMessage(
@@ -185,64 +298,140 @@ Answer the question and cite the supporting sources.
             ]
         )
 
-        content = response.content
+        # -------------------------------------------------
+        # 8. Token usage
+        # -------------------------------------------------
 
-        if isinstance(content, str):
-            answer_text = content.strip()
-        else:
-            answer_text = "".join(
-                (
-                    item.get("text", "")
-                    if isinstance(item, dict)
-                    else str(item)
-                )
-                for item in content
-            ).strip()
+        (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        ) = (
+            AIObservabilityService
+            .extract_usage(
+                response
+            )
+        )
+
+        answer_text = (
+            self._extract_answer_text(
+                response.content
+            )
+        )
+
+        # -------------------------------------------------
+        # 9. Validate citations
+        # -------------------------------------------------
 
         valid_source_ids = {
             source["source_id"]
             for source in sources
         }
-        
-        citations_valid, invalid_citations = (
-            CitationService.validate(
-                answer=answer_text,
-                valid_source_ids=valid_source_ids,
-            )
+
+        (
+            citations_valid,
+            _invalid_citations,
+        ) = CitationService.validate(
+            answer=answer_text,
+            valid_source_ids=(
+                valid_source_ids
+            ),
         )
-        
+
+        # -------------------------------------------------
+        # 10. LLM answered without valid grounding
+        # -------------------------------------------------
+
         if not citations_valid:
-            return {
-                "answer": (
-                    "I found potentially relevant information, "
-                    "but I could not produce a sufficiently "
-                    "grounded answer with valid citations."
+
+            fallback_answer = (
+                "I found potentially relevant "
+                "information, but I could not "
+                "produce a sufficiently grounded "
+                "answer with valid citations."
+            )
+
+            latency_ms = (
+                perf_counter()
+                - started_at
+            ) * 1000
+
+            await AIObservabilityService.record(
+                db=db,
+                request_id=request_id,
+                question=question,
+                answer=fallback_answer,
+                grounded=False,
+                llm_called=True,
+                retrieval_count=len(
+                    sources
                 ),
+                best_similarity=(
+                    best_similarity
+                ),
+                sources=sources,
+                latency_ms=latency_ms,
+                input_tokens=input_tokens,
+                output_tokens=(
+                    output_tokens
+                ),
+                total_tokens=total_tokens,
+            )
+
+            return {
+                "request_id": request_id,
+                "answer": fallback_answer,
                 "grounded": False,
                 "sources": sources,
-                "retrieval_count": len(sources),
+                "retrieval_count": len(
+                    sources
+                ),
                 "best_similarity": (
-                    relevant_matches[0][
-                        "similarity"
-                    ]
-                    if relevant_matches
-                    else None
+                    best_similarity
                 ),
             }
 
-        return {
-            "answer": (
-                "I don't have enough information "
-                "in the knowledge base to answer "
-                "that question."
+        # -------------------------------------------------
+        # 11. Successful grounded answer
+        # -------------------------------------------------
+
+        latency_ms = (
+            perf_counter()
+            - started_at
+        ) * 1000
+
+        await AIObservabilityService.record(
+            db=db,
+            request_id=request_id,
+            question=question,
+            answer=answer_text,
+            grounded=True,
+            llm_called=True,
+            retrieval_count=len(
+                sources
             ),
-            "grounded": False,
-            "sources": [],
-            "retrieval_count": 0,
+            best_similarity=(
+                best_similarity
+            ),
+            sources=sources,
+            latency_ms=latency_ms,
+            input_tokens=input_tokens,
+            output_tokens=(
+                output_tokens
+            ),
+            total_tokens=total_tokens,
+        )
+
+        return {
+            "request_id": request_id,
+            "answer": answer_text,
+            "grounded": True,
+            "sources": sources,
+            "retrieval_count": len(
+                sources
+            ),
             "best_similarity": (
-                matches[0]["similarity"]
-                if matches
-                else None
+                best_similarity
             ),
         }
 

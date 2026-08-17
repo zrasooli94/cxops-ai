@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     rag_similarity_margin: float = 0.12
     rag_max_sources: int = 3
 
+    llm_input_cost_per_million: float = 0.0
+    llm_output_cost_per_million: float = 0.0
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

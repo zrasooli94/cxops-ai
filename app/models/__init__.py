@@ -8,7 +8,7 @@ from app.models.zendesk_oauth_token import ZendeskOAuthToken
 from app.models.integration_job import IntegrationJob
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
-
+from app.models.ai_request_log import AIRequestLog
 
 
 __all__ = [
@@ -22,4 +22,5 @@ __all__ = [
     "IntegrationJob",
     "KnowledgeChunk",
     "KnowledgeDocument",
+    "AIRequestLog",
 ]
