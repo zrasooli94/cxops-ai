@@ -12,7 +12,10 @@ from app.repositories.agent_run_repository import (
 from app.services.zendesk_sync_service import (
     ZendeskSyncService,
 )
-
+from app.services.tool_authorization_service import (
+    ToolAuthorizationError,
+    ToolAuthorizationService,
+)
 
 class AgentExecutionError(Exception):
     pass
@@ -489,7 +492,27 @@ class AgentExecutionService:
             run.tool_plan
             or []
         )
+        
+        try:
+            ToolAuthorizationService.assert_executable(
+                tool_plan
+            )
 
+        except ToolAuthorizationError as exc:
+        
+            await (
+                AgentRunRepository
+                .mark_execution_failed(
+                    db,
+                    run,
+                    str(exc),
+                )
+            )
+
+            raise AgentExecutionStateError(
+                str(exc)
+            ) from exc
+        
         if not tool_plan:
 
             await (

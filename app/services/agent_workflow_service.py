@@ -27,7 +27,9 @@ from app.schemas.agent import (
 from app.services.knowledge_search_service import (
     KnowledgeSearchService,
 )
-
+from app.services.tool_authorization_service import (
+    ToolAuthorizationService,
+)
 
 class TicketNotFoundError(Exception):
     pass
@@ -656,6 +658,13 @@ Choose the safest next action.
         path = state.get(
             "workflow_path",
             [],
+        )
+
+        tools = (
+            ToolAuthorizationService
+            .authorize_plan(
+                tools
+            )
         )
 
         return {

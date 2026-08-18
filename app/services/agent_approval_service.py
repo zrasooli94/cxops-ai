@@ -105,6 +105,28 @@ class AgentApprovalService:
             note,
         )
 
+        updated_tool_plan = []
+
+        for tool in run.tool_plan or []:
+        
+            updated_tool = dict(
+                tool
+            )
+        
+            if updated_tool.get(
+                "requires_approval",
+                True,
+            ):
+                updated_tool[
+                    "authorized"
+                ] = True
+        
+            updated_tool_plan.append(
+                updated_tool
+            )
+        
+        run.tool_plan = updated_tool_plan
+
         await AgentRunRepository.add_event(
             db,
             agent_run_id=run.id,

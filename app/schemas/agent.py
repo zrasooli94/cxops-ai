@@ -48,7 +48,15 @@ class AgentToolCall(BaseModel):
         default_factory=dict
     )
 
+    risk_level: Literal[
+        "low",
+        "medium",
+        "high",
+    ] = "low"
+
     requires_approval: bool = True
+
+    authorized: bool = False
 
 
 class AgentAnalysisResponse(BaseModel):
