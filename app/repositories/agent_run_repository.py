@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_action_event import AgentActionEvent
+from app.models.agent_action_event import (
+    AgentActionEvent,
+)
 from app.models.agent_run import AgentRun
-from app.models.integration_job import IntegrationJob
 
 
 class AgentRunRepository:
@@ -18,6 +19,8 @@ class AgentRunRepository:
         ticket_id: int,
         decision: dict,
         sources: list[dict],
+        workflow_path: list[str],
+        tool_plan: list[dict],
     ) -> AgentRun:
 
         run = AgentRun(
@@ -40,9 +43,12 @@ class AgentRunRepository:
             ),
             status="pending_approval",
             sources=sources,
+            workflow_path=workflow_path,
+            tool_plan=tool_plan,
         )
 
         db.add(run)
+
         await db.commit()
         await db.refresh(run)
 
@@ -129,7 +135,7 @@ class AgentRunRepository:
         db: AsyncSession,
         run_id: str,
     ) -> AgentRun | None:
-    
+
         result = await db.execute(
             update(AgentRun)
             .where(
@@ -143,16 +149,16 @@ class AgentRunRepository:
                 AgentRun.id
             )
         )
-    
+
         claimed_id = (
             result.scalar_one_or_none()
         )
-    
+
         await db.commit()
-    
+
         if claimed_id is None:
             return None
-    
+
         result = await db.execute(
             select(AgentRun).where(
                 AgentRun.id == claimed_id
@@ -161,42 +167,41 @@ class AgentRunRepository:
 
         return result.scalar_one()
 
-    
     @staticmethod
     async def mark_executed(
         db: AsyncSession,
         run: AgentRun,
     ) -> AgentRun:
-    
+
         run.status = "executed"
+
         run.executed_at = datetime.now(
             timezone.utc
         )
-    
+
         run.error_message = None
-    
+
         await db.commit()
         await db.refresh(run)
-    
+
         return run
-    
-    
+
     @staticmethod
     async def mark_execution_failed(
         db: AsyncSession,
         run: AgentRun,
         error_message: str,
     ) -> AgentRun:
-    
+
         run.status = "execution_failed"
-    
+
         run.error_message = (
             error_message[:4000]
         )
-    
+
         await db.commit()
         await db.refresh(run)
-    
+
         return run
 
     @staticmethod
@@ -205,47 +210,34 @@ class AgentRunRepository:
         run: AgentRun,
         note: str | None,
     ) -> AgentRun:
-    
+
         run.status = "review_required"
         run.reviewer_note = note
+
         run.reviewed_at = datetime.now(
             timezone.utc
         )
-    
+
         await db.commit()
         await db.refresh(run)
-    
+
         return run
-    
-    
+
     @staticmethod
     async def mark_no_action(
         db: AsyncSession,
         run: AgentRun,
         note: str | None,
     ) -> AgentRun:
-    
+
         run.status = "no_action"
         run.reviewer_note = note
+
         run.reviewed_at = datetime.now(
             timezone.utc
         )
-    
+
         await db.commit()
         await db.refresh(run)
-    
-        return run
 
-    @staticmethod
-    async def get_by_id(
-        db: AsyncSession,
-        job_id: int,
-    ) -> IntegrationJob | None:
-    
-        result = await db.execute(
-            select(IntegrationJob).where(
-                IntegrationJob.id == job_id
-            )
-        )
-    
-        return result.scalar_one_or_none()
+        return run

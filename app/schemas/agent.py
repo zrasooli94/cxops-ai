@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -30,9 +30,29 @@ class AgentDecision(BaseModel):
     requires_human_approval: bool = True
 
 
+class KnowledgeNeedDecision(BaseModel):
+    needs_knowledge: bool
+    reason: str
+
+
+class AgentToolCall(BaseModel):
+    tool: Literal[
+        "zendesk.update_ticket",
+        "zendesk.add_internal_note",
+        "zendesk.send_reply",
+        "human.review",
+        "none",
+    ]
+
+    arguments: dict[str, Any] = Field(
+        default_factory=dict
+    )
+
+    requires_approval: bool = True
+
+
 class AgentAnalysisResponse(BaseModel):
     run_id: str
-
     ticket_id: int
 
     decision: AgentDecision
@@ -40,6 +60,15 @@ class AgentAnalysisResponse(BaseModel):
     sources: list[RAGSource] = Field(
         default_factory=list
     )
+
+    workflow_path: list[str] = Field(
+        default_factory=list
+    )
+
+    tool_plan: list[AgentToolCall] = Field(
+        default_factory=list
+    )
+
 
 class AgentReviewRequest(BaseModel):
     note: str | None = Field(
@@ -54,11 +83,23 @@ class AgentRunResponse(BaseModel):
     action: str
     status: str
     reason: str
-    recommended_team: str | None
-    recommended_priority: str | None
-    response_draft: str | None
+
+    recommended_team: str | None = None
+    recommended_priority: str | None = None
+    response_draft: str | None = None
+
     requires_human_approval: bool
-    reviewer_note: str | None
+
+    reviewer_note: str | None = None
+
+    workflow_path: list[str] = Field(
+        default_factory=list
+    )
+
+    tool_plan: list[AgentToolCall] = Field(
+        default_factory=list
+    )
+
 
 class AgentExecutionResponse(BaseModel):
     run_id: str
@@ -69,6 +110,7 @@ class AgentExecutionResponse(BaseModel):
     executed: bool
     duplicate: bool = False
     message: str
+
 
 class AgentExecutionQueuedResponse(BaseModel):
     run_id: str
