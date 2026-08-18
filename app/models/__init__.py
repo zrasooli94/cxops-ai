@@ -9,7 +9,8 @@ from app.models.integration_job import IntegrationJob
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.ai_request_log import AIRequestLog
-
+from app.models.agent_action_event import AgentActionEvent
+from app.models.agent_run import AgentRun
 
 __all__ = [
     "AutomationRule",
@@ -23,4 +24,6 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "AIRequestLog",
+    "AgentActionEvent",
+    "AgentRun",
 ]

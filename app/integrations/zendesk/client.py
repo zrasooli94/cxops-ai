@@ -183,6 +183,92 @@ class ZendeskClient:
             f"/tickets/{ticket_id}/comments.json",
         )
 
+    async def apply_agent_action(
+        self,
+        db,
+        ticket_id: int,
+        *,
+        priority: str | None = None,
+        comment: str | None = None,
+        public: bool = False,
+        group_id: int | None = None,
+    ):
+        ticket_payload: dict = {}
+    
+        if priority:
+            ticket_payload["priority"] = priority
+    
+        if group_id is not None:
+            ticket_payload["group_id"] = group_id
+    
+        if comment:
+            ticket_payload["comment"] = {
+                "body": comment,
+                "public": public,
+            }
+    
+        return await self.request(
+            db,
+            "PUT",
+            f"/tickets/{ticket_id}.json",
+            json={
+                "ticket": ticket_payload
+            },
+        )
+
+
+    async def get_groups(
+        self,
+        db,
+    ):
+        return await self.request(
+            db,
+            "GET",
+            "/groups.json",
+        )
+
+    async def find_group_id(
+        self,
+        db,
+        group_name: str,
+    ) -> int | None:
+    
+        response = await self.get_groups(
+            db
+        )
+    
+        groups = response.get(
+            "groups",
+            [],
+        )
+    
+        wanted = (
+            group_name
+            .lower()
+            .replace("-", " ")
+            .strip()
+        )
+    
+        for group in groups:
+        
+            actual = (
+                str(
+                    group.get(
+                        "name",
+                        ""
+                    )
+                )
+                .lower()
+                .replace("-", " ")
+                .strip()
+            )
+    
+            if actual == wanted:
+                return int(
+                    group["id"]
+                )
+    
+        return None
     
 
 zendesk_client = ZendeskClient()

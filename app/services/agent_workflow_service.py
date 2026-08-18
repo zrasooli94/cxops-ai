@@ -18,9 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.ticket import Ticket
 from app.schemas.agent import AgentDecision
-from app.services.knowledge_search_service import (
-    KnowledgeSearchService,
-)
+from app.services.knowledge_search_service import KnowledgeSearchService
+from app.repositories.agent_run_repository import AgentRunRepository
 
 
 class TicketNotFoundError(Exception):
@@ -403,16 +402,36 @@ Determine the safest next action.
             }
         )
 
+        decision = result["decision"]
+        sources = result.get(
+            "sources",
+            [],
+        )
+
+        run = await AgentRunRepository.create(
+            db=db,
+            run_id=run_id,
+            ticket_id=ticket_id,
+            decision=decision,
+            sources=sources,
+        )
+
+        await AgentRunRepository.add_event(
+            db,
+            agent_run_id=run.id,
+            event_type="proposed",
+            actor="cxops-agent",
+            event_data={
+                "decision": decision,
+                "sources": sources,
+            },
+        )
+
         return {
             "run_id": run_id,
             "ticket_id": ticket_id,
-            "decision": result[
-                "decision"
-            ],
-            "sources": result.get(
-                "sources",
-                [],
-            ),
+            "decision": decision,
+            "sources": sources,
         }
 
 agent_workflow_service = (
