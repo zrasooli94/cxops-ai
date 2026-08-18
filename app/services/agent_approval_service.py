@@ -56,7 +56,49 @@ class AgentApprovalService:
                 run_id,
             )
         )
+        
+        if run.action == "human_review":
 
+            run = await (
+                AgentRunRepository
+                .mark_review_required(
+                    db,
+                    run,
+                    note,
+                )
+            )
+
+            await AgentRunRepository.add_event(
+                db,
+                agent_run_id=run.id,
+                event_type="review_required",
+                actor=actor,
+                note=note,
+            )
+
+            return run
+
+
+        if run.action == "no_action":
+        
+            run = await (
+                AgentRunRepository
+                .mark_no_action(
+                    db,
+                    run,
+                    note,
+                )
+            )
+
+            await AgentRunRepository.add_event(
+                db,
+                agent_run_id=run.id,
+                event_type="no_action",
+                actor=actor,
+                note=note,
+            )
+
+            return run
         run = await AgentRunRepository.approve(
             db,
             run,

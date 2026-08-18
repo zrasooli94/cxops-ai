@@ -10,10 +10,14 @@ from app.services.zendesk_webhook_service import (
     ZendeskWebhookService,
 )
 
+from app.services.agent_execution_service import (
+    agent_execution_service,
+)
 
 class IntegrationJobService:
 
     ZENDESK_TICKET_EVENT = "zendesk.ticket_event"
+    AGENT_EXECUTION = "agent.execute"
 
     @staticmethod
     async def enqueue_zendesk_event(
@@ -86,11 +90,16 @@ class IntegrationJobService:
             status="queued",
         )
 
+
     @staticmethod
     async def execute(
         db: AsyncSession,
         job: IntegrationJob,
     ) -> None:
+
+        # -----------------------------------------
+        # Zendesk webhook event
+        # -----------------------------------------
 
         if (
             job.job_type
@@ -110,6 +119,103 @@ class IntegrationJobService:
 
             return
 
+        # -----------------------------------------
+        # Approved agent execution
+        # -----------------------------------------
+
+        if (
+            job.job_type
+            == IntegrationJobService.AGENT_EXECUTION
+        ):
+            payload = job.payload
+
+            await agent_execution_service.execute(
+                db=db,
+                run_id=str(
+                    payload["run_id"]
+                ),
+            )
+
+            return
+
+        # -----------------------------------------
+        # Unsupported job
+        # -----------------------------------------
+
         raise ValueError(
             f"Unknown job type: {job.job_type}"
         )
+
+    @staticmethod
+    async def enqueue_agent_execution(
+        db: AsyncSession,
+        *,
+        run_id: str,
+    ) -> dict:
+
+        dedupe_key = (
+            f"agent-execution:{run_id}"
+        )
+
+        existing = await (
+            IntegrationJobRepository
+            .get_by_dedupe_key(
+                db,
+                dedupe_key,
+            )
+        )
+
+        if existing:
+            return {
+                "run_id": run_id,
+                "job_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+            }
+
+        try:
+
+            job = await (
+                IntegrationJobRepository.create(
+                    db,
+                    job=IntegrationJob(
+                        dedupe_key=dedupe_key,
+                        job_type=(
+                            IntegrationJobService
+                            .AGENT_EXECUTION
+                        ),
+                        payload={
+                            "run_id": run_id,
+                        },
+                    ),
+                )
+            )
+
+        except IntegrityError:
+
+            await db.rollback()
+
+            existing = await (
+                IntegrationJobRepository
+                .get_by_dedupe_key(
+                    db,
+                    dedupe_key,
+                )
+            )
+
+            if existing is None:
+                raise
+
+            return {
+                "run_id": run_id,
+                "job_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+            }
+
+        return {
+            "run_id": run_id,
+            "job_id": job.id,
+            "status": job.status,
+            "duplicate": False,
+        }

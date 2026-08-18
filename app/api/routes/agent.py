@@ -11,6 +11,7 @@ from app.schemas.agent import (
     AgentExecutionResponse,
     AgentReviewRequest,
     AgentRunResponse,
+    AgentExecutionQueuedResponse,
 )
 from app.services.agent_approval_service import (
     AgentApprovalService,
@@ -29,6 +30,12 @@ from app.core.database import get_db
 from app.services.agent_workflow_service import (
     TicketNotFoundError,
     agent_workflow_service,
+)
+from app.repositories.agent_run_repository import (
+    AgentRunRepository,
+)
+from app.services.integration_job_service import (
+    IntegrationJobService,
 )
 
 
@@ -161,33 +168,68 @@ async def reject_agent_run(
 
 @router.post(
     "/runs/{run_id}/execute",
-    response_model=AgentExecutionResponse,
+    response_model=AgentExecutionQueuedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def execute_agent_run(
     run_id: str,
     db: DatabaseSession,
 ):
 
-    try:
+    run = await (
+        AgentRunRepository
+        .get_by_run_id(
+            db,
+            run_id,
+        )
+    )
 
-        return await (
-            agent_execution_service
-            .execute(
-                db=db,
-                run_id=run_id,
-            )
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Agent run {run_id} "
+                "was not found"
+            ),
         )
 
-    except AgentExecutionStateError as exc:
-
+    if run.status == "executed":
         raise HTTPException(
             status_code=409,
-            detail=str(exc),
-        ) from exc
+            detail=(
+                "Agent run has already "
+                "been executed."
+            ),
+        )
 
-    except AgentExecutionError as exc:
-
+    if run.status not in {
+        "approved",
+        "execution_failed",
+    }:
         raise HTTPException(
-            status_code=502,
-            detail=str(exc),
-        ) from exc
+            status_code=409,
+            detail=(
+                "Agent run cannot be queued "
+                f"from status {run.status}"
+            ),
+        )
+    
+    if run.action in {
+        "human_review",
+        "no_action",
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Action '{run.action}' "
+                "does not require external execution."
+            ),
+        )
+    
+    return await (
+        IntegrationJobService
+        .enqueue_agent_execution(
+            db=db,
+            run_id=run_id,
+        )
+    )

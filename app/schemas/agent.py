@@ -69,3 +69,9 @@ class AgentExecutionResponse(BaseModel):
     executed: bool
     duplicate: bool = False
     message: str
+
+class AgentExecutionQueuedResponse(BaseModel):
+    run_id: str
+    job_id: int
+    status: str
+    duplicate: bool

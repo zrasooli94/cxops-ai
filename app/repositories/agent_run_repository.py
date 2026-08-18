@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
+from app.models.integration_job import IntegrationJob
 
 
 class AgentRunRepository:
@@ -197,3 +198,54 @@ class AgentRunRepository:
         await db.refresh(run)
     
         return run
+
+    @staticmethod
+    async def mark_review_required(
+        db: AsyncSession,
+        run: AgentRun,
+        note: str | None,
+    ) -> AgentRun:
+    
+        run.status = "review_required"
+        run.reviewer_note = note
+        run.reviewed_at = datetime.now(
+            timezone.utc
+        )
+    
+        await db.commit()
+        await db.refresh(run)
+    
+        return run
+    
+    
+    @staticmethod
+    async def mark_no_action(
+        db: AsyncSession,
+        run: AgentRun,
+        note: str | None,
+    ) -> AgentRun:
+    
+        run.status = "no_action"
+        run.reviewer_note = note
+        run.reviewed_at = datetime.now(
+            timezone.utc
+        )
+    
+        await db.commit()
+        await db.refresh(run)
+    
+        return run
+
+    @staticmethod
+    async def get_by_id(
+        db: AsyncSession,
+        job_id: int,
+    ) -> IntegrationJob | None:
+    
+        result = await db.execute(
+            select(IntegrationJob).where(
+                IntegrationJob.id == job_id
+            )
+        )
+    
+        return result.scalar_one_or_none()
