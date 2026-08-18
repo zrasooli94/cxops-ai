@@ -36,8 +36,8 @@ class AgentExecutionService:
         return await (
             AgentRunRepository
             .get_by_run_id(
-                db,
-                run_id,
+                db=db,
+                run_id=run_id,
             )
         )
 
@@ -96,7 +96,7 @@ class AgentExecutionService:
             body = str(
                 comment.get(
                     "body",
-                    ""
+                    "",
                 )
             )
 
@@ -104,6 +104,220 @@ class AgentExecutionService:
                 return True
 
         return False
+
+    async def _execute_tool(
+        self,
+        db: AsyncSession,
+        *,
+        run: AgentRun,
+        ticket: Ticket,
+        zendesk_ticket_id: int,
+        tool_call: dict,
+    ) -> None:
+
+        tool_name = tool_call.get(
+            "tool"
+        )
+
+        arguments = (
+            tool_call.get(
+                "arguments"
+            )
+            or {}
+        )
+
+        marker = self._comment_marker(
+            run.run_id
+        )
+
+        # -----------------------------------------
+        # Update Zendesk ticket fields
+        # -----------------------------------------
+
+        if (
+            tool_name
+            == "zendesk.update_ticket"
+        ):
+
+            team = arguments.get(
+                "team"
+            )
+
+            priority = arguments.get(
+                "priority"
+            )
+
+            group_id = None
+
+            if team:
+
+                group_id = (
+                    await self.zendesk
+                    .find_group_id(
+                        db,
+                        str(team),
+                    )
+                )
+
+            await (
+                self.zendesk
+                .apply_agent_action(
+                    db,
+                    zendesk_ticket_id,
+                    priority=priority,
+                    group_id=group_id,
+                )
+            )
+
+            await (
+                AgentRunRepository
+                .add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="tool_executed",
+                    actor="cxops-agent",
+                    event_data={
+                        "tool": tool_name,
+                        "arguments": (
+                            arguments
+                        ),
+                        "zendesk_ticket_id": (
+                            zendesk_ticket_id
+                        ),
+                        "resolved_group_id": (
+                            group_id
+                        ),
+                    },
+                )
+            )
+
+            return
+
+        # -----------------------------------------
+        # Add private Zendesk note
+        # -----------------------------------------
+
+        if (
+            tool_name
+            == "zendesk.add_internal_note"
+        ):
+
+            reason = str(
+                arguments.get(
+                    "reason",
+                    run.reason,
+                )
+            )
+
+            body = (
+                "CXOps AI approved agent action\n"
+                f"Action: {run.action}\n"
+                f"Reason: {reason}\n\n"
+                f"{marker}"
+            )
+
+            await (
+                self.zendesk
+                .apply_agent_action(
+                    db,
+                    zendesk_ticket_id,
+                    comment=body,
+                    public=False,
+                )
+            )
+
+            await (
+                AgentRunRepository
+                .add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="tool_executed",
+                    actor="cxops-agent",
+                    event_data={
+                        "tool": tool_name,
+                        "arguments": (
+                            arguments
+                        ),
+                        "zendesk_ticket_id": (
+                            zendesk_ticket_id
+                        ),
+                    },
+                )
+            )
+
+            return
+
+        # -----------------------------------------
+        # Send public customer reply
+        # -----------------------------------------
+
+        if (
+            tool_name
+            == "zendesk.send_reply"
+        ):
+
+            body = arguments.get(
+                "body"
+            )
+
+            if not body:
+                raise AgentExecutionError(
+                    "zendesk.send_reply "
+                    "requires a response body."
+                )
+
+            reply = (
+                f"{body}\n\n"
+                f"{marker}"
+            )
+
+            await (
+                self.zendesk
+                .apply_agent_action(
+                    db,
+                    zendesk_ticket_id,
+                    comment=reply,
+                    public=True,
+                )
+            )
+
+            await (
+                AgentRunRepository
+                .add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="tool_executed",
+                    actor="cxops-agent",
+                    event_data={
+                        "tool": tool_name,
+                        "zendesk_ticket_id": (
+                            zendesk_ticket_id
+                        ),
+                    },
+                )
+            )
+
+            return
+
+        # -----------------------------------------
+        # Non-executable tools
+        # -----------------------------------------
+
+        if tool_name in {
+            "human.review",
+            "none",
+        }:
+
+            raise AgentExecutionStateError(
+                f"Tool '{tool_name}' "
+                "does not require external "
+                "execution."
+            )
+
+        raise AgentExecutionError(
+            f"Unsupported agent tool: "
+            f"{tool_name}"
+        )
 
     async def execute(
         self,
@@ -118,11 +332,20 @@ class AgentExecutionService:
         )
 
         if existing_run is None:
+
             raise AgentExecutionError(
-                f"Agent run {run_id} was not found"
+                f"Agent run {run_id} "
+                "was not found."
             )
 
-        if existing_run.status == "executed":
+        # -----------------------------------------
+        # Already completed
+        # -----------------------------------------
+
+        if (
+            existing_run.status
+            == "executed"
+        ):
 
             ticket = await self._get_ticket(
                 db,
@@ -146,41 +369,75 @@ class AgentExecutionService:
                 "executed": True,
                 "duplicate": True,
                 "message": (
-                    "Agent run was already executed."
+                    "Agent run was "
+                    "already executed."
                 ),
             }
+
+        # -----------------------------------------
+        # Non-executable agent decisions
+        # -----------------------------------------
+
+        if existing_run.action in {
+            "human_review",
+            "no_action",
+        }:
+
+            raise AgentExecutionStateError(
+                f"Action "
+                f"'{existing_run.action}' "
+                "does not require external "
+                "execution."
+            )
+
+        # -----------------------------------------
+        # Valid execution states
+        # -----------------------------------------
 
         if existing_run.status not in {
             "approved",
             "execution_failed",
         }:
+
             raise AgentExecutionStateError(
-                "Agent run cannot be executed "
-                f"from status "
-                f"{existing_run.status}"
+                "Agent run cannot be "
+                "executed from status "
+                f"{existing_run.status}."
             )
 
-        # Allow an explicit retry after a failed execution.
+        # -----------------------------------------
+        # Retry previously failed execution
+        # -----------------------------------------
+
         if (
             existing_run.status
             == "execution_failed"
         ):
-            existing_run.status = "approved"
+
+            existing_run.status = (
+                "approved"
+            )
+
             await db.commit()
 
         run = await (
             AgentRunRepository
             .claim_for_execution(
-                db,
-                run_id,
+                db=db,
+                run_id=run_id,
             )
         )
 
         if run is None:
+
             raise AgentExecutionStateError(
-                "Agent run could not be claimed "
-                "for execution."
+                "Agent run could not be "
+                "claimed for execution."
             )
+
+        # -----------------------------------------
+        # Load local ticket
+        # -----------------------------------------
 
         ticket = await self._get_ticket(
             db,
@@ -194,12 +451,15 @@ class AgentExecutionService:
                 .mark_execution_failed(
                     db,
                     run,
-                    "Local ticket was not found",
+                    (
+                        "Local ticket "
+                        "was not found."
+                    ),
                 )
             )
 
             raise AgentExecutionError(
-                "Local ticket was not found"
+                "Local ticket was not found."
             )
 
         if not ticket.external_id:
@@ -211,23 +471,26 @@ class AgentExecutionService:
                     run,
                     (
                         "Ticket has no Zendesk "
-                        "external_id"
+                        "external_id."
                     ),
                 )
             )
 
             raise AgentExecutionError(
-                "Ticket is not linked to Zendesk"
+                "Ticket is not linked "
+                "to Zendesk."
             )
 
         zendesk_ticket_id = int(
             ticket.external_id
         )
 
-        if run.action in {
-            "human_review",
-            "no_action",
-        }:
+        tool_plan = (
+            run.tool_plan
+            or []
+        )
+
+        if not tool_plan:
 
             await (
                 AgentRunRepository
@@ -235,18 +498,22 @@ class AgentExecutionService:
                     db,
                     run,
                     (
-                        f"Action '{run.action}' "
-                        "has no external execution."
+                        "Agent run contains "
+                        "no tool plan."
                     ),
                 )
             )
 
-            raise AgentExecutionStateError(
-                f"Action '{run.action}' "
-                "cannot be executed."
+            raise AgentExecutionError(
+                "Agent run contains "
+                "no executable tool plan."
             )
 
         try:
+
+            # -------------------------------------
+            # Idempotency / crash recovery
+            # -------------------------------------
 
             already_written = (
                 await self._already_written(
@@ -258,8 +525,6 @@ class AgentExecutionService:
                 )
             )
 
-            # Handles the case where Zendesk succeeded
-            # but our worker/API crashed before DB completion.
             if already_written:
 
                 await (
@@ -273,7 +538,7 @@ class AgentExecutionService:
                 await (
                     AgentRunRepository
                     .add_event(
-                        db,
+                        db=db,
                         agent_run_id=run.id,
                         event_type=(
                             "execution_recovered"
@@ -290,7 +555,9 @@ class AgentExecutionService:
 
                 return {
                     "run_id": run_id,
-                    "ticket_id": ticket.id,
+                    "ticket_id": (
+                        ticket.id
+                    ),
                     "status": "executed",
                     "action": run.action,
                     "external_ticket_id": (
@@ -299,74 +566,43 @@ class AgentExecutionService:
                     "executed": True,
                     "duplicate": True,
                     "message": (
-                        "Existing Zendesk action "
-                        "was detected and execution "
-                        "was safely recovered."
+                        "Existing Zendesk "
+                        "execution detected "
+                        "and safely recovered."
                     ),
                 }
 
-            group_id = None
+            # -------------------------------------
+            # Execute persisted tool plan
+            # -------------------------------------
 
-            if run.recommended_team:
+            for tool_call in tool_plan:
 
-                group_id = (
-                    await self.zendesk
-                    .find_group_id(
-                        db,
-                        run.recommended_team,
-                    )
+                await self._execute_tool(
+                    db,
+                    run=run,
+                    ticket=ticket,
+                    zendesk_ticket_id=(
+                        zendesk_ticket_id
+                    ),
+                    tool_call=tool_call,
                 )
 
-            marker = self._comment_marker(
-                run_id
-            )
+            # -------------------------------------
+            # Synchronize external state
+            # -------------------------------------
 
-            if run.action == "respond":
-
-                if not run.response_draft:
-                    raise AgentExecutionError(
-                        "Agent proposed a response "
-                        "but produced no response_draft."
-                    )
-
-                comment = (
-                    f"{run.response_draft}\n\n"
-                    f"{marker}"
+            await (
+                ZendeskSyncService
+                .sync_ticket(
+                    db,
+                    zendesk_ticket_id,
                 )
-
-                public = True
-
-            else:
-
-                comment = (
-                    "CXOps AI approved agent action\n"
-                    f"Action: {run.action}\n"
-                    f"Reason: {run.reason}\n"
-                    f"Recommended team: "
-                    f"{run.recommended_team or 'none'}\n"
-                    f"Recommended priority: "
-                    f"{run.recommended_priority or 'unchanged'}\n\n"
-                    f"{marker}"
-                )
-
-                public = False
-
-            await self.zendesk.apply_agent_action(
-                db,
-                zendesk_ticket_id,
-                priority=(
-                    run.recommended_priority
-                ),
-                group_id=group_id,
-                comment=comment,
-                public=public,
             )
 
-            # Pull Zendesk state back into CXOps.
-            await ZendeskSyncService.sync_ticket(
-                db,
-                zendesk_ticket_id,
-            )
+            # -------------------------------------
+            # Finish execution
+            # -------------------------------------
 
             await (
                 AgentRunRepository
@@ -379,7 +615,7 @@ class AgentExecutionService:
             await (
                 AgentRunRepository
                 .add_event(
-                    db,
+                    db=db,
                     agent_run_id=run.id,
                     event_type="executed",
                     actor="cxops-agent",
@@ -388,18 +624,16 @@ class AgentExecutionService:
                             zendesk_ticket_id
                         ),
                         "action": run.action,
-                        "priority": (
-                            run.recommended_priority
+                        "tool_count": len(
+                            tool_plan
                         ),
-                        "recommended_team": (
-                            run.recommended_team
-                        ),
-                        "resolved_group_id": (
-                            group_id
-                        ),
-                        "public_comment": (
-                            public
-                        ),
+                        "tools": [
+                            tool.get(
+                                "tool"
+                            )
+                            for tool
+                            in tool_plan
+                        ],
                     },
                 )
             )
@@ -415,8 +649,9 @@ class AgentExecutionService:
                 "executed": True,
                 "duplicate": False,
                 "message": (
-                    "Approved agent action "
-                    "executed successfully."
+                    "Approved agent tool "
+                    "plan executed "
+                    "successfully."
                 ),
             }
 
@@ -447,7 +682,7 @@ class AgentExecutionService:
                 await (
                     AgentRunRepository
                     .add_event(
-                        db,
+                        db=db,
                         agent_run_id=(
                             fresh_run.id
                         ),
@@ -456,12 +691,21 @@ class AgentExecutionService:
                         ),
                         actor="cxops-agent",
                         note=str(exc),
+                        event_data={
+                            "tool_plan": (
+                                fresh_run.tool_plan
+                                or []
+                            ),
+                        },
                     )
                 )
 
             if isinstance(
                 exc,
-                AgentExecutionError,
+                (
+                    AgentExecutionError,
+                    AgentExecutionStateError,
+                ),
             ):
                 raise
 
