@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.schemas.observability import (
     AgentObservabilitySummary,
     AIObservabilitySummary,
+    AIObservabilityBreakdown,
 )
 
 from app.services.agent_observability_service import (
@@ -55,3 +56,18 @@ async def agent_summary(
     return await AgentObservabilityService.summary(
         db
     )
+
+@router.get(
+    "/ai/by-feature",
+    response_model=AIObservabilityBreakdown,
+)
+async def ai_by_feature(
+    db: DatabaseSession,
+):
+    return await (
+        AIObservabilityService
+        .breakdown(
+            db
+        )
+    )
+

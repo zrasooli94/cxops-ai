@@ -58,3 +58,30 @@ class AgentObservabilitySummary(BaseModel):
     integration_jobs: (
         IntegrationJobObservabilitySummary
     )
+
+class AIFeatureObservabilitySummary(BaseModel):
+    feature: str
+
+    total_requests: int
+
+    success_rate: float
+    grounded_rate: float
+    llm_call_rate: float
+
+    avg_latency_ms: float
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+    estimated_cost_usd: float
+
+    models: dict[str, int]
+
+
+class AIObservabilityBreakdown(BaseModel):
+    overall: AIObservabilitySummary
+
+    features: list[
+        AIFeatureObservabilitySummary
+    ]
