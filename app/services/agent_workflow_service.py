@@ -33,6 +33,7 @@ class AgentState(TypedDict, total=False):
 
     needs_knowledge: bool
     knowledge_reason: str
+    fast_path_action: str | None
 
     sources: list[dict]
 
@@ -267,11 +268,15 @@ class AgentWorkflowService:
                     "am i eligible",
                     "please investigate",
                 )
+                
             )
+            
         ):
 
             needs_knowledge = False
-
+            fast_path_action = (
+                "internal_note"
+            )
             reason = (
                 "The message only asks CXOps "
                 "to record information and does "
@@ -284,7 +289,9 @@ class AgentWorkflowService:
         ):
 
             needs_knowledge = False
-
+            fast_path_action = (
+                "no_action"
+            )
             reason = (
                 "The message is a greeting, "
                 "acknowledgement, or resolved-case "
@@ -295,7 +302,7 @@ class AgentWorkflowService:
 
             # Safety-first default.
             needs_knowledge = True
-
+            fast_path_action = None
             reason = (
                 "The ticket may depend on company "
                 "policy or operational guidance, so "
@@ -313,6 +320,9 @@ class AgentWorkflowService:
             ),
             "knowledge_reason": (
                 reason
+            ),
+            "fast_path_action": (
+                fast_path_action
             ),
             "workflow_path": [
                 *path,
@@ -479,7 +489,57 @@ class AgentWorkflowService:
                 "Ticket not found in "
                 "workflow state."
             )
+        fast_path_action = state.get(
+            "fast_path_action"
+        )
 
+        path = state.get(
+            "workflow_path",
+            [],
+        )
+
+        if fast_path_action == "no_action":
+        
+            return {
+                "decision": {
+                    "action": "no_action",
+                    "reason": (
+                        "The message contains no "
+                        "actionable support request "
+                        "and requires no further action."
+                    ),
+                    "recommended_team": None,
+                    "recommended_priority": None,
+                    "response_draft": None,
+                    "requires_human_approval": False,
+                },
+                "workflow_path": [
+                    *path,
+                    "decide_action",
+                ],
+            }
+
+        if fast_path_action == "internal_note":
+        
+            return {
+                "decision": {
+                    "action": "internal_note",
+                    "reason": (
+                        "The customer requested that "
+                        "information be recorded internally "
+                        "without requiring a reply or "
+                        "policy-dependent action."
+                    ),
+                    "recommended_team": None,
+                    "recommended_priority": None,
+                    "response_draft": None,
+                    "requires_human_approval": False,
+                },
+                "workflow_path": [
+                    *path,
+                    "decide_action",
+                ],
+            }
         sources = state.get(
             "sources",
             [],
@@ -603,11 +663,6 @@ Choose the safest next action.
         decision = self._as_model(
             raw_decision,
             AgentDecision,
-        )
-
-        path = state.get(
-            "workflow_path",
-            [],
         )
 
         return {
