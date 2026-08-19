@@ -1,0 +1,47 @@
+[
+  {
+    "name": "resolved customer issue",
+    "subject": "Thank you",
+    "description": "Thanks for your help. Everything is working now.",
+    "expected_action": "no_action",
+    "expected_retrieval": false,
+    "expected_tool": "none",
+    "expected_auto_execute": false
+  },
+  {
+    "name": "withdrawal overdue",
+    "subject": "Withdrawal pending more than 24 hours",
+    "description": "My withdrawal has been pending for more than 24 hours. Please investigate.",
+    "expected_action": "escalate",
+    "expected_retrieval": true,
+    "expected_tool": "zendesk.update_ticket",
+    "expected_auto_execute": false
+  },
+  {
+    "name": "verification internal note",
+    "subject": "Verification documents update",
+    "description": "I will upload my verification documents tomorrow. Please record this on my case. No reply is necessary.",
+    "expected_action": "internal_note",
+    "expected_retrieval": true,
+    "expected_tool": "zendesk.add_internal_note",
+    "expected_auto_execute": true
+  },
+  {
+    "name": "account access problem",
+    "subject": "Cannot access my account",
+    "description": "I am unable to log in to my account and need help restoring access.",
+    "expected_action": "route",
+    "expected_retrieval": true,
+    "expected_tool": "zendesk.update_ticket",
+    "expected_auto_execute": false
+  },
+  {
+    "name": "unknown policy case",
+    "subject": "Special compensation request",
+    "description": "Please give me compensation under your special loyalty compensation policy.",
+    "expected_action": "human_review",
+    "expected_retrieval": true,
+    "expected_tool": "human.review",
+    "expected_auto_execute": false
+  }
+]

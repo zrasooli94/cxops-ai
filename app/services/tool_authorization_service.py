@@ -53,11 +53,6 @@ class ToolAuthorizationService:
                 "tool"
             )
 
-            if tool_name is None:
-                raise ToolAuthorizationError(
-                    "Tool call is missing a tool name."
-                )
-
             policy = cls.POLICIES.get(
                 tool_name
             )
@@ -96,13 +91,15 @@ class ToolAuthorizationService:
     ) -> bool:
 
         return any(
-            tool.get(
-                "requires_approval",
-                True,
-            )
-            and not tool.get(
-                "authorized",
-                False,
+            (
+                tool.get(
+                    "requires_approval",
+                    True,
+                )
+                and not tool.get(
+                    "authorized",
+                    False,
+                )
             )
             for tool in tool_plan
         )
@@ -128,6 +125,7 @@ class ToolAuthorizationService:
         ]
 
         if unauthorized:
+
             names = ", ".join(
                 str(name)
                 for name in unauthorized
@@ -138,6 +136,38 @@ class ToolAuthorizationService:
                 "unauthorized tools: "
                 f"{names}"
             )
+
+    @staticmethod
+    def can_auto_execute(
+        tool_plan: list[dict],
+    ) -> bool:
+
+        executable_tools = [
+            tool
+            for tool in tool_plan
+            if tool.get("tool")
+            not in {
+                "none",
+                "human.review",
+            }
+        ]
+
+        if not executable_tools:
+            return False
+
+        return all(
+            (
+                tool.get(
+                    "authorized",
+                    False,
+                )
+                and not tool.get(
+                    "requires_approval",
+                    True,
+                )
+            )
+            for tool in executable_tools
+        )
 
 
 tool_authorization_service = (

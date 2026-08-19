@@ -241,3 +241,27 @@ class AgentRunRepository:
         await db.refresh(run)
 
         return run
+
+    @staticmethod
+    async def mark_auto_approved(
+        db: AsyncSession,
+        run: AgentRun,
+    ) -> AgentRun:
+
+        run.status = "approved"
+
+        run.reviewer_note = (
+            "Automatically approved by "
+            "low-risk tool policy"
+        )
+
+        run.reviewed_at = datetime.now(
+            timezone.utc
+        )
+
+        await db.commit()
+        await db.refresh(run)
+
+        return run
+
+    

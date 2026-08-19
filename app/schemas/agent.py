@@ -10,8 +10,10 @@ class AgentDecision(BaseModel):
         "respond",
         "route",
         "escalate",
+        "internal_note",
         "human_review",
         "no_action",
+        
     ]
 
     reason: str
@@ -76,7 +78,9 @@ class AgentAnalysisResponse(BaseModel):
     tool_plan: list[AgentToolCall] = Field(
         default_factory=list
     )
+    auto_queued: bool = False
 
+    job_id: int | None = None
 
 class AgentReviewRequest(BaseModel):
     note: str | None = Field(

@@ -25,3 +25,4 @@ __pycache__/
 .idea/
 
 evals/latest_report.json
+evals/latest_agent_report.json

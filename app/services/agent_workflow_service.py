@@ -27,9 +27,8 @@ from app.schemas.agent import (
 from app.services.knowledge_search_service import (
     KnowledgeSearchService,
 )
-from app.services.tool_authorization_service import (
-    ToolAuthorizationService,
-)
+from app.services.integration_job_service import IntegrationJobService
+from app.services.tool_authorization_service import ToolAuthorizationService
 
 class TicketNotFoundError(Exception):
     pass
@@ -455,6 +454,7 @@ Choose exactly one action:
 - respond
 - route
 - escalate
+- internal_note
 - human_review
 - no_action
 
@@ -470,10 +470,12 @@ STRICT RULES:
 6. Use route when reassignment is appropriate but escalation
    is not required.
 7. Use respond when a safe customer-facing response can be drafted.
-8. Use no_action only when no further action is required.
-9. Any external action must require human approval.
-10. Never execute tools yourself.
-11. recommended_priority may only be low, normal, high, or urgent.
+8. Use internal_note when useful information should be recorded
+   internally but no customer reply, escalation, or reassignment is needed.
+9. Use no_action only when absolutely no further action is required.
+10. Any customer-facing reply or ticket reassignment requires human approval.
+11. Never execute tools yourself.
+12. recommended_priority may only be low, normal, high, or urgent.
 """
 
         user_prompt = f"""
@@ -623,6 +625,22 @@ Choose the safest next action.
                     "requires_approval": True,
                 }
             )
+            
+        elif action == "internal_note":
+
+            tools.append(
+                {
+                    "tool": (
+                        "zendesk.add_internal_note"
+                    ),
+                    "arguments": {
+                        "reason": decision.get(
+                            "reason"
+                        ),
+                    },
+                    "requires_approval": False,
+                }
+            )
 
         elif action == "human_review":
 
@@ -684,6 +702,7 @@ Choose the safest next action.
         db: AsyncSession,
         *,
         ticket_id: int,
+        allow_auto_queue: bool = True,
     ) -> dict:
 
         run_id = uuid4().hex
@@ -827,7 +846,53 @@ Choose the safest next action.
                 "tool_plan": tool_plan,
             },
         )
-
+        auto_job_id = None
+        auto_queued = False
+        
+        if (
+            allow_auto_queue
+            and ToolAuthorizationService
+            .can_auto_execute(
+                tool_plan
+            )
+        ):
+        
+            run = await (
+                AgentRunRepository
+                .mark_auto_approved(
+                    db=db,
+                    run=run,
+                )
+            )
+        
+            await (
+                AgentRunRepository
+                .add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="auto_approved",
+                    actor="cxops-policy",
+                    note=(
+                        "All executable tools "
+                        "were low risk and "
+                        "pre-authorized."
+                    ),
+                    event_data={
+                        "tool_plan": tool_plan,
+                    },
+                )
+            )
+        
+            job = await (
+                IntegrationJobService
+                .enqueue_agent_execution(
+                    db=db,
+                    run_id=run_id,
+                )
+            )
+        
+            auto_job_id = job["job_id"]
+            auto_queued = True
         return {
             "run_id": run_id,
             "ticket_id": ticket_id,
@@ -835,6 +900,8 @@ Choose the safest next action.
             "sources": sources,
             "workflow_path": workflow_path,
             "tool_plan": tool_plan,
+            "auto_queued": auto_queued,
+            "job_id": auto_job_id,
         }
 
 
