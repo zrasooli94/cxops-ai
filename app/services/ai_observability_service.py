@@ -79,6 +79,8 @@ class AIObservabilityService:
         best_similarity: float | None,
         sources: list[dict],
         latency_ms: float,
+        feature: str = "rag_answer",
+        model: str | None = None,
         status: str = "success",
         input_tokens: int = 0,
         output_tokens: int = 0,
@@ -95,8 +97,11 @@ class AIObservabilityService:
 
         log = AIRequestLog(
             request_id=request_id,
-            feature="rag_answer",
-            model=settings.chat_model,
+            feature=feature,
+            model=(
+                model
+                or settings.chat_model
+            ),
             status=status,
             question=question,
             answer=answer,

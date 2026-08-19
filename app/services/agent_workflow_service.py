@@ -1,3 +1,4 @@
+import time
 from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
@@ -22,6 +23,8 @@ from app.schemas.agent import AgentDecision
 from app.services.knowledge_search_service import KnowledgeSearchService
 from app.services.integration_job_service import IntegrationJobService
 from app.services.tool_authorization_service import ToolAuthorizationService
+from app.services.ai_observability_service import AIObservabilityService
+
 
 class TicketNotFoundError(Exception):
     pass
@@ -43,6 +46,8 @@ class AgentState(TypedDict, total=False):
 
     tool_plan: list[dict]
 
+    decision_observability: dict[str, Any]
+
 
 class AgentWorkflowService:
 
@@ -58,7 +63,8 @@ class AgentWorkflowService:
 
         self.decision_llm = (
             llm.with_structured_output(
-                AgentDecision
+                AgentDecision,
+                include_raw=True,
             )
         )
 
@@ -480,6 +486,10 @@ class AgentWorkflowService:
         state: AgentState,
     ) -> dict:
 
+        decision_started = (
+            time.perf_counter()
+        )
+
         ticket = state.get(
             "ticket"
         )
@@ -489,6 +499,7 @@ class AgentWorkflowService:
                 "Ticket not found in "
                 "workflow state."
             )
+
         fast_path_action = state.get(
             "fast_path_action"
         )
@@ -499,7 +510,11 @@ class AgentWorkflowService:
         )
 
         if fast_path_action == "no_action":
-        
+            decision_latency_ms = (
+                time.perf_counter()
+                - decision_started
+            ) * 1000
+
             return {
                 "decision": {
                     "action": "no_action",
@@ -513,6 +528,20 @@ class AgentWorkflowService:
                     "response_draft": None,
                     "requires_human_approval": False,
                 },
+                "decision_observability": {
+                    "model": "deterministic-fast-path",
+                    "llm_called": False,
+                    "grounded": True,
+                    "retrieval_count": 0,
+                    "best_similarity": None,
+                    "latency_ms": round(
+                        decision_latency_ms,
+                        2,
+                    ),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
                 "workflow_path": [
                     *path,
                     "decide_action",
@@ -520,7 +549,11 @@ class AgentWorkflowService:
             }
 
         if fast_path_action == "internal_note":
-        
+            decision_latency_ms = (
+                time.perf_counter()
+                - decision_started
+            ) * 1000
+
             return {
                 "decision": {
                     "action": "internal_note",
@@ -535,11 +568,26 @@ class AgentWorkflowService:
                     "response_draft": None,
                     "requires_human_approval": False,
                 },
+                "decision_observability": {
+                    "model": "deterministic-fast-path",
+                    "llm_called": False,
+                    "grounded": True,
+                    "retrieval_count": 0,
+                    "best_similarity": None,
+                    "latency_ms": round(
+                        decision_latency_ms,
+                        2,
+                    ),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
                 "workflow_path": [
                     *path,
                     "decide_action",
                 ],
             }
+
         sources = state.get(
             "sources",
             [],
@@ -564,7 +612,7 @@ class AgentWorkflowService:
             )
 
         else:
-        
+
             context = (
                 "No knowledge-base policy "
                 "was supplied."
@@ -643,7 +691,11 @@ RETRIEVED KNOWLEDGE:
 Choose the safest next action.
 """
 
-        raw_decision = (
+        decision_started = (
+            time.perf_counter()
+        )
+
+        structured_result = (
             await self.decision_llm.ainvoke(
                 [
                     SystemMessage(
@@ -660,15 +712,104 @@ Choose the safest next action.
             )
         )
 
+        decision_latency_ms = (
+            time.perf_counter()
+            - decision_started
+        ) * 1000
+
+        raw_message = (
+            structured_result.get(
+                "raw"
+            )
+        )
+
+        parsed_decision = (
+            structured_result.get(
+                "parsed"
+            )
+        )
+
+        parsing_error = (
+            structured_result.get(
+                "parsing_error"
+            )
+        )
+
+        if parsing_error is not None:
+            raise ValueError(
+                "Agent decision parsing failed: "
+                f"{parsing_error}"
+            )
+
+        if parsed_decision is None:
+            raise ValueError(
+                "Agent decision model returned "
+                "no parsed decision."
+            )
+
         decision = self._as_model(
-            raw_decision,
+            parsed_decision,
             AgentDecision,
+        )
+
+        (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        ) = AIObservabilityService.extract_usage(
+            raw_message
+        )
+
+        similarities = [
+            float(
+                source["similarity"]
+            )
+            for source in sources
+            if source.get(
+                "similarity"
+            )
+            is not None
+        ]
+
+        best_similarity = (
+            max(similarities)
+            if similarities
+            else None
         )
 
         return {
             "decision": (
                 decision.model_dump()
             ),
+            "decision_observability": {
+                "model": (
+                    settings.chat_model
+                ),
+                "llm_called": True,
+                "grounded": (
+                    not needs_knowledge
+                    or bool(sources)
+                ),
+                "retrieval_count": (
+                    len(sources)
+                ),
+                "best_similarity": (
+                    best_similarity
+                ),
+                "latency_ms": round(
+                    decision_latency_ms,
+                    2,
+                ),
+                "input_tokens": (
+                    input_tokens
+                ),
+                "output_tokens": (
+                    output_tokens
+                ),
+                "total_tokens": (
+                    total_tokens
+                ),
+            },
             "workflow_path": [
                 *path,
                 "decide_action",
@@ -949,10 +1090,15 @@ Choose the safest next action.
             [],
         )
 
+        decision_observability = result.get(
+            "decision_observability",
+            {},
+        )
+
         run = None
 
         if persist_run:
-        
+
             run = await AgentRunRepository.create(
                 db=db,
                 run_id=run_id,
@@ -1025,43 +1171,93 @@ Choose the safest next action.
 
             auto_job_id = job["job_id"]
             auto_queued = True
-        
-            run = await (
-                AgentRunRepository
-                .mark_auto_approved(
-                    db=db,
-                    run=run,
-                )
+
+        if persist_run:
+            ticket_data = result.get(
+                "ticket",
+                {},
             )
-        
-            await (
-                AgentRunRepository
-                .add_event(
-                    db=db,
-                    agent_run_id=run.id,
-                    event_type="auto_approved",
-                    actor="cxops-policy",
-                    note=(
-                        "All executable tools "
-                        "were low risk and "
-                        "pre-authorized."
-                    ),
-                    event_data={
-                        "tool_plan": tool_plan,
-                    },
+
+            question = (
+                f"{ticket_data.get('subject', '')}\n"
+                f"{ticket_data.get('description', '')}"
+            ).strip()
+
+            if not question:
+                question = (
+                    f"ticket_id={ticket_id}"
                 )
+
+            await AIObservabilityService.record(
+                db,
+                request_id=(
+                    f"agent-{run_id}"
+                ),
+                feature="agent_decision",
+                model=(
+                    decision_observability.get(
+                        "model",
+                        settings.chat_model,
+                    )
+                ),
+                question=question,
+                answer=(
+                    AgentDecision
+                    .model_validate(
+                        decision
+                    )
+                    .model_dump_json()
+                ),
+                grounded=bool(
+                    decision_observability.get(
+                        "grounded",
+                        False,
+                    )
+                ),
+                llm_called=bool(
+                    decision_observability.get(
+                        "llm_called",
+                        False,
+                    )
+                ),
+                retrieval_count=int(
+                    decision_observability.get(
+                        "retrieval_count",
+                        0,
+                    )
+                ),
+                best_similarity=(
+                    decision_observability.get(
+                        "best_similarity"
+                    )
+                ),
+                sources=sources,
+                latency_ms=float(
+                    decision_observability.get(
+                        "latency_ms",
+                        0.0,
+                    )
+                ),
+                input_tokens=int(
+                    decision_observability.get(
+                        "input_tokens",
+                        0,
+                    )
+                ),
+                output_tokens=int(
+                    decision_observability.get(
+                        "output_tokens",
+                        0,
+                    )
+                ),
+                total_tokens=int(
+                    decision_observability.get(
+                        "total_tokens",
+                        0,
+                    )
+                ),
             )
-        
-            job = await (
-                IntegrationJobService
-                .enqueue_agent_execution(
-                    db=db,
-                    run_id=run_id,
-                )
-            )
-        
-            auto_job_id = job["job_id"]
-            auto_queued = True
+
         return {
             "run_id": run_id,
             "ticket_id": ticket_id,
