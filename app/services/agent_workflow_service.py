@@ -59,6 +59,7 @@ class AgentWorkflowService:
             api_key=SecretStr(
                 settings.openai_api_key
             ),
+            temperature=0,
         )
 
         self.knowledge_llm = (
@@ -475,7 +476,14 @@ STRICT RULES:
 9. Use no_action only when absolutely no further action is required.
 10. Any customer-facing reply or ticket reassignment requires human approval.
 11. Never execute tools yourself.
-12. recommended_priority may only be low, normal, high, or urgent.
+12. Follow prerequisite steps in retrieved policy in their stated order.
+    Do not route or escalate before required prerequisite steps are satisfied.
+
+13. If the policy requires additional facts before escalation or routing,
+    choose respond and request those facts rather than guessing.
+
+14. A greeting, thank-you, acknowledgement, or other message with no
+    actionable request should use no_action, not respond.
 """
 
         user_prompt = f"""
