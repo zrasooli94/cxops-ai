@@ -27,3 +27,4 @@ __pycache__/
 evals/latest_report.json
 evals/latest_agent_report.json
 evals/latest_agent_repeatability_report.json
+evals/latest_agent_latency_profile.json

@@ -17,16 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.ticket import Ticket
-from app.repositories.agent_run_repository import (
-    AgentRunRepository,
-)
-from app.schemas.agent import (
-    AgentDecision,
-    KnowledgeNeedDecision,
-)
-from app.services.knowledge_search_service import (
-    KnowledgeSearchService,
-)
+from app.repositories.agent_run_repository import AgentRunRepository
+from app.schemas.agent import AgentDecision
+from app.services.knowledge_search_service import KnowledgeSearchService
 from app.services.integration_job_service import IntegrationJobService
 from app.services.tool_authorization_service import ToolAuthorizationService
 
@@ -60,12 +53,6 @@ class AgentWorkflowService:
                 settings.openai_api_key
             ),
             temperature=0,
-        )
-
-        self.knowledge_llm = (
-            llm.with_structured_output(
-                KnowledgeNeedDecision
-            )
         )
 
         self.decision_llm = (
@@ -175,69 +162,145 @@ class AgentWorkflowService:
                 "workflow state."
             )
 
-        system_prompt = """
-You are the policy-routing component of CXOps AI.
-
-Determine whether the support ticket requires company
-knowledge-base retrieval before a safe action can be proposed.
-
-Knowledge retrieval SHOULD be used when the decision depends on:
-- company policy
-- processing times
-- escalation rules
-- verification requirements
-- refund or payment procedures
-- security procedures
-- eligibility
-- operational procedures
-- customer-facing factual guidance
-
-Knowledge retrieval MAY be skipped when:
-- the ticket has no actionable request
-- the case clearly requires human review regardless of policy
-- the ticket is only an acknowledgement or non-policy message
-
-When uncertain, choose needs_knowledge=true.
-"""
-
-        user_prompt = f"""
-Ticket subject:
-{ticket["subject"]}
-
-Ticket description:
-{ticket["description"]}
-
-Current category:
-{ticket["category"]}
-
-Current priority:
-{ticket["priority"]}
-
-Does this ticket require company knowledge retrieval before
-deciding the safest next action?
-"""
-
-        raw_result = (
-            await self.knowledge_llm.ainvoke(
-                [
-                    SystemMessage(
-                        content=(
-                            system_prompt.strip()
-                        )
-                    ),
-                    HumanMessage(
-                        content=(
-                            user_prompt.strip()
-                        )
-                    ),
-                ]
+        subject = str(
+            ticket.get(
+                "subject",
+                ""
             )
+        ).strip().lower()
+
+        description = str(
+            ticket.get(
+                "description",
+                ""
+            )
+        ).strip().lower()
+
+        text = (
+            f"{subject}\n"
+            f"{description}"
         )
 
-        decision = self._as_model(
-            raw_result,
-            KnowledgeNeedDecision,
+        # -------------------------------------------------
+        # Conservative deterministic RAG gate
+        #
+        # We only skip retrieval when the message is
+        # clearly non-policy. Everything uncertain still
+        # goes through the knowledge base.
+        # -------------------------------------------------
+
+        acknowledgement_phrases = (
+            "thank you",
+            "thanks for your help",
+            "everything is working",
+            "issue is resolved",
+            "problem is resolved",
+            "all good now",
+            "just saying hello",
+            "hope you're having a good day",
+            "have a good day",
         )
+
+        record_only_phrases = (
+            "please record this",
+            "please note that",
+            "no reply is necessary",
+            "no response is necessary",
+            "no response needed",
+            "no reply needed",
+        )
+
+        policy_sensitive_terms = (
+            "withdrawal",
+            "deposit",
+            "refund",
+            "payment",
+            "verification",
+            "identity",
+            "password",
+            "login",
+            "log in",
+            "account access",
+            "account locked",
+            "security",
+            "suspicious",
+            "compensation",
+            "policy",
+            "processing time",
+            "how long",
+            "requirement",
+            "required",
+            "eligibility",
+            "activate",
+            "feature",
+            "priority",
+            "charged",
+            "transaction",
+        )
+
+        has_policy_signal = any(
+            term in text
+            for term in policy_sensitive_terms
+        )
+
+        is_acknowledgement = any(
+            phrase in text
+            for phrase in acknowledgement_phrases
+        )
+
+        is_record_only = any(
+            phrase in text
+            for phrase in record_only_phrases
+        )
+
+        # Record-only messages can skip RAG only when
+        # they are not asking for policy guidance.
+        if (
+            is_record_only
+            and not any(
+                phrase in text
+                for phrase in (
+                    "what documents",
+                    "what is required",
+                    "how long",
+                    "can i",
+                    "am i eligible",
+                    "please investigate",
+                )
+            )
+        ):
+
+            needs_knowledge = False
+
+            reason = (
+                "The message only asks CXOps "
+                "to record information and does "
+                "not require company-policy guidance."
+            )
+
+        elif (
+            is_acknowledgement
+            and not has_policy_signal
+        ):
+
+            needs_knowledge = False
+
+            reason = (
+                "The message is a greeting, "
+                "acknowledgement, or resolved-case "
+                "confirmation with no policy question."
+            )
+
+        else:
+
+            # Safety-first default.
+            needs_knowledge = True
+
+            reason = (
+                "The ticket may depend on company "
+                "policy or operational guidance, so "
+                "knowledge retrieval is required."
+            )
 
         path = state.get(
             "workflow_path",
@@ -246,10 +309,10 @@ deciding the safest next action?
 
         return {
             "needs_knowledge": (
-                decision.needs_knowledge
+                needs_knowledge
             ),
             "knowledge_reason": (
-                decision.reason
+                reason
             ),
             "workflow_path": [
                 *path,
