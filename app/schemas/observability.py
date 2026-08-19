@@ -109,3 +109,22 @@ class AgentOperationalKPIs(BaseModel):
 
     average_job_attempts: float
 
+class AgentROISummary(BaseModel):
+    total_runs: int
+
+    instrumented_runs: int
+    instrumented_autonomous_executed_runs: int
+
+    support_hourly_cost_usd: float
+    minutes_saved_per_autonomous_execution: float
+
+    estimated_minutes_saved: float
+    estimated_hours_saved: float
+
+    estimated_labor_savings_usd: float
+
+    agent_ai_cost_usd: float
+    estimated_net_savings_usd: float
+
+    pricing_configured: bool
+    roi_percent: float | None

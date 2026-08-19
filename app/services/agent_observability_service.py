@@ -12,7 +12,8 @@ from app.schemas.observability import (
     AgentObservabilitySummary,
     IntegrationJobObservabilitySummary,
 )
-
+from app.core.config import settings
+from app.models.ai_request_log import AIRequestLog
 
 class AgentObservabilityService:
 
@@ -745,3 +746,193 @@ class AgentObservabilityService:
             ),
         }
     
+    @classmethod
+    async def roi_summary(
+        cls,
+        db: AsyncSession,
+    ) -> dict:
+
+        total_runs = await cls.total_runs(
+            db
+        )
+
+        # Match a production AgentRun to its
+        # corresponding AI telemetry row.
+        match_condition = (
+            AIRequestLog.request_id
+            == func.concat(
+                "agent-",
+                AgentRun.run_id,
+            )
+        )
+
+        instrumented_result = await db.execute(
+            select(
+                func.count(
+                    AgentRun.id
+                )
+            )
+            .join(
+                AIRequestLog,
+                match_condition,
+            )
+            .where(
+                AIRequestLog.feature
+                == "agent_decision"
+            )
+        )
+
+        instrumented_runs = int(
+            instrumented_result.scalar_one()
+        )
+
+        autonomous_result = await db.execute(
+            select(
+                func.count(
+                    AgentRun.id
+                )
+            )
+            .join(
+                AIRequestLog,
+                match_condition,
+            )
+            .where(
+                AIRequestLog.feature
+                == "agent_decision"
+            )
+            .where(
+                AgentRun.reviewer_note
+                == (
+                    "Automatically approved "
+                    "by low-risk tool policy"
+                )
+            )
+            .where(
+                AgentRun.status
+                == "executed"
+            )
+        )
+
+        instrumented_autonomous_executed_runs = int(
+            autonomous_result.scalar_one()
+        )
+
+        ai_cost_result = await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        AIRequestLog
+                        .estimated_cost_usd
+                    ),
+                    0.0,
+                )
+            )
+            .join(
+                AgentRun,
+                match_condition,
+            )
+            .where(
+                AIRequestLog.feature
+                == "agent_decision"
+            )
+        )
+
+        agent_ai_cost_usd = float(
+            ai_cost_result.scalar_one()
+            or 0.0
+        )
+
+        minutes_saved = (
+            instrumented_autonomous_executed_runs
+            * settings
+            .minutes_saved_per_autonomous_execution
+        )
+
+        hours_saved = (
+            minutes_saved / 60
+        )
+
+        labor_savings = (
+            hours_saved
+            * settings.support_hourly_cost_usd
+        )
+
+        net_savings = (
+            labor_savings
+            - agent_ai_cost_usd
+        )
+
+        pricing_configured = (
+            settings.llm_input_cost_per_million
+            > 0
+            or
+            settings.llm_output_cost_per_million
+            > 0
+        )
+
+        roi_percent = None
+
+        if (
+            pricing_configured
+            and agent_ai_cost_usd > 0
+        ):
+            roi_percent = round(
+                (
+                    net_savings
+                    / agent_ai_cost_usd
+                )
+                * 100,
+                2,
+            )
+
+        return {
+            "total_runs": total_runs,
+
+            "instrumented_runs": (
+                instrumented_runs
+            ),
+
+            "instrumented_autonomous_executed_runs": (
+                instrumented_autonomous_executed_runs
+            ),
+
+            "support_hourly_cost_usd": (
+                settings.support_hourly_cost_usd
+            ),
+
+            "minutes_saved_per_autonomous_execution": (
+                settings
+                .minutes_saved_per_autonomous_execution
+            ),
+
+            "estimated_minutes_saved": round(
+                minutes_saved,
+                2,
+            ),
+
+            "estimated_hours_saved": round(
+                hours_saved,
+                2,
+            ),
+
+            "estimated_labor_savings_usd": round(
+                labor_savings,
+                2,
+            ),
+
+            "agent_ai_cost_usd": round(
+                agent_ai_cost_usd,
+                6,
+            ),
+
+            "estimated_net_savings_usd": round(
+                net_savings,
+                6,
+            ),
+
+            "pricing_configured": (
+                pricing_configured
+            ),
+
+            "roi_percent": roi_percent,
+        }

@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     llm_input_cost_per_million: float = 0.0
     llm_output_cost_per_million: float = 0.0
 
+    support_hourly_cost_usd: float = 25.0
+
+    minutes_saved_per_autonomous_execution: float = 8.0
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

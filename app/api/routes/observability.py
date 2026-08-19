@@ -13,6 +13,7 @@ from app.schemas.observability import (
     AIObservabilitySummary,
     AIObservabilityBreakdown,
     AgentOperationalKPIs,
+    AgentROISummary,
 )
 
 from app.services.agent_observability_service import (
@@ -85,3 +86,18 @@ async def agent_operational_kpis(
             db
         )
     )
+
+@router.get(
+    "/agent/roi",
+    response_model=AgentROISummary,
+)
+async def agent_roi(
+    db: DatabaseSession,
+):
+    return await (
+        AgentObservabilityService
+        .roi_summary(
+            db
+        )
+    )
+
