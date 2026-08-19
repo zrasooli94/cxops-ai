@@ -703,6 +703,7 @@ Choose the safest next action.
         *,
         ticket_id: int,
         allow_auto_queue: bool = True,
+        persist_run: bool = True,
     ) -> dict:
 
         run_id = uuid4().hex
@@ -822,40 +823,82 @@ Choose the safest next action.
             [],
         )
 
-        run = await AgentRunRepository.create(
-            db=db,
-            run_id=run_id,
-            ticket_id=ticket_id,
-            decision=decision,
-            sources=sources,
-            workflow_path=workflow_path,
-            tool_plan=tool_plan,
-        )
+        run = None
 
-        await AgentRunRepository.add_event(
-            db=db,
-            agent_run_id=run.id,
-            event_type="proposed",
-            actor="cxops-agent",
-            event_data={
-                "decision": decision,
-                "sources": sources,
-                "workflow_path": (
-                    workflow_path
-                ),
-                "tool_plan": tool_plan,
-            },
-        )
+        if persist_run:
+        
+            run = await AgentRunRepository.create(
+                db=db,
+                run_id=run_id,
+                ticket_id=ticket_id,
+                decision=decision,
+                sources=sources,
+                workflow_path=workflow_path,
+                tool_plan=tool_plan,
+            )
+
+            await AgentRunRepository.add_event(
+                db=db,
+                agent_run_id=run.id,
+                event_type="proposed",
+                actor="cxops-agent",
+                event_data={
+                    "decision": decision,
+                    "sources": sources,
+                    "workflow_path": workflow_path,
+                    "tool_plan": tool_plan,
+                },
+            )
+
         auto_job_id = None
         auto_queued = False
-        
+
         if (
-            allow_auto_queue
+            persist_run
+            and allow_auto_queue
+            and run is not None
             and ToolAuthorizationService
             .can_auto_execute(
                 tool_plan
             )
         ):
+
+            run = await (
+                AgentRunRepository
+                .mark_auto_approved(
+                    db=db,
+                    run=run,
+                )
+            )
+
+            await (
+                AgentRunRepository
+                .add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="auto_approved",
+                    actor="cxops-policy",
+                    note=(
+                        "All executable tools "
+                        "were low risk and "
+                        "pre-authorized."
+                    ),
+                    event_data={
+                        "tool_plan": tool_plan,
+                    },
+                )
+            )
+
+            job = await (
+                IntegrationJobService
+                .enqueue_agent_execution(
+                    db=db,
+                    run_id=run_id,
+                )
+            )
+
+            auto_job_id = job["job_id"]
+            auto_queued = True
         
             run = await (
                 AgentRunRepository

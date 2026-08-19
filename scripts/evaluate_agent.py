@@ -17,6 +17,7 @@ CASES = [
         "expected_action": "no_action",
         "expected_retrieval": False,
         "expected_tool": "none",
+        "expected_auto_execute": False,
     },
     {
         "name": "withdrawal overdue",
@@ -26,6 +27,7 @@ CASES = [
         "expected_tool": (
             "zendesk.update_ticket"
         ),
+        "expected_auto_execute": False,
     },
 ]
 
@@ -65,6 +67,11 @@ async def main() -> None:
                             "expected_tool"
                         ]
                     ),
+                    expected_auto_execute=(
+                        case[
+                            "expected_auto_execute"
+                        ]
+                    ),
                 )
             )
 
@@ -86,9 +93,17 @@ async def main() -> None:
                 f"{status} | "
                 f"action="
                 f"{result['actual_action']} | "
+                f"retrieval="
+                f"{result['actual_retrieval']} | "
+                f"auto_execute="
+                f"{result['actual_auto_execute']} | "
                 f"latency="
                 f"{result['latency_ms']}ms"
             )
+
+    total = len(
+        results
+    )
 
     passed = sum(
         1
@@ -96,26 +111,94 @@ async def main() -> None:
         if result["overall_pass"]
     )
 
-    total = len(
-        results
+    failed = (
+        total - passed
+    )
+
+    action_passed = sum(
+        1
+        for result in results
+        if result["action_pass"]
+    )
+
+    retrieval_passed = sum(
+        1
+        for result in results
+        if result["retrieval_pass"]
+    )
+
+    tool_passed = sum(
+        1
+        for result in results
+        if result["tool_pass"]
+    )
+
+    auto_execute_passed = sum(
+        1
+        for result in results
+        if result["auto_execute_pass"]
+    )
+
+    average_latency_ms = (
+        sum(
+            result["latency_ms"]
+            for result in results
+        )
+        / total
+        if total
+        else 0
     )
 
     report = {
         "total": total,
         "passed": passed,
-        "failed": (
-            total - passed
-        ),
+        "failed": failed,
+
         "pass_rate": (
             passed / total
             if total
             else 0
         ),
+
+        "action_accuracy": (
+            action_passed / total
+            if total
+            else 0
+        ),
+
+        "retrieval_accuracy": (
+            retrieval_passed / total
+            if total
+            else 0
+        ),
+
+        "tool_accuracy": (
+            tool_passed / total
+            if total
+            else 0
+        ),
+
+        "auto_execute_safety_accuracy": (
+            auto_execute_passed / total
+            if total
+            else 0
+        ),
+
+        "average_latency_ms": round(
+            average_latency_ms,
+            2,
+        ),
+
         "results": results,
     }
 
     output = Path(
         "evals/latest_agent_report.json"
+    )
+
+    output.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
     output.write_text(
@@ -137,6 +220,31 @@ async def main() -> None:
     print(
         f"Pass rate: "
         f"{report['pass_rate'] * 100:.1f}%"
+    )
+
+    print(
+        f"Action accuracy: "
+        f"{report['action_accuracy'] * 100:.1f}%"
+    )
+
+    print(
+        f"RAG routing accuracy: "
+        f"{report['retrieval_accuracy'] * 100:.1f}%"
+    )
+
+    print(
+        f"Tool selection accuracy: "
+        f"{report['tool_accuracy'] * 100:.1f}%"
+    )
+
+    print(
+        f"Auto-execution safety: "
+        f"{report['auto_execute_safety_accuracy'] * 100:.1f}%"
+    )
+
+    print(
+        f"Average latency: "
+        f"{report['average_latency_ms']}ms"
     )
 
     print(
