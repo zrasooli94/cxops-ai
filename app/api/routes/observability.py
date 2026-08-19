@@ -7,8 +7,14 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+
 from app.schemas.observability import (
+    AgentObservabilitySummary,
     AIObservabilitySummary,
+)
+
+from app.services.agent_observability_service import (
+    AgentObservabilityService,
 )
 from app.services.ai_observability_service import (
     AIObservabilityService,
@@ -35,5 +41,17 @@ async def ai_summary(
     db: DatabaseSession,
 ):
     return await AIObservabilityService.summary(
+        db
+    )
+
+
+@router.get(
+    "/agent/summary",
+    response_model=AgentObservabilitySummary,
+)
+async def agent_summary(
+    db: DatabaseSession,
+):
+    return await AgentObservabilityService.summary(
         db
     )
