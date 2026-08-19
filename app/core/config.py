@@ -48,6 +48,8 @@ class Settings(BaseSettings):
 
     minutes_saved_per_autonomous_execution: float = 8.0
 
+    roi_min_autonomous_samples: int = 20
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

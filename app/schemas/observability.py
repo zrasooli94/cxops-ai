@@ -128,3 +128,9 @@ class AgentROISummary(BaseModel):
 
     pricing_configured: bool
     roi_percent: float | None
+
+    measurement_status: str
+    minimum_autonomous_samples: int
+    sample_size_sufficient: bool
+    provisional_roi_percent: float | None
+    roi_percent: float | None

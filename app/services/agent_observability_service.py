@@ -870,13 +870,27 @@ class AgentObservabilityService:
             > 0
         )
 
-        roi_percent = None
+        # roi_percent = None
+
+        # if (
+        #     pricing_configured
+        #     and agent_ai_cost_usd > 0
+        # ):
+        #     roi_percent = round(
+        #         (
+        #             net_savings
+        #             / agent_ai_cost_usd
+        #         )
+        #         * 100,
+        #         2,
+        #     )
+        provisional_roi_percent = None
 
         if (
             pricing_configured
             and agent_ai_cost_usd > 0
         ):
-            roi_percent = round(
+            provisional_roi_percent = round(
                 (
                     net_savings
                     / agent_ai_cost_usd
@@ -884,6 +898,38 @@ class AgentObservabilityService:
                 * 100,
                 2,
             )
+
+
+        sample_size_sufficient = (
+            instrumented_autonomous_executed_runs
+            >= settings.roi_min_autonomous_samples
+        )
+
+
+        if not pricing_configured:
+        
+            measurement_status = (
+                "pricing_not_configured"
+            )
+
+        elif not sample_size_sufficient:
+        
+            measurement_status = (
+                "insufficient_sample"
+            )
+
+        else:
+        
+            measurement_status = (
+                "measured"
+            )
+
+
+        roi_percent = (
+            provisional_roi_percent
+            if sample_size_sufficient
+            else None
+        )
 
         return {
             "total_runs": total_runs,
@@ -934,5 +980,23 @@ class AgentObservabilityService:
                 pricing_configured
             ),
 
-            "roi_percent": roi_percent,
+            "measurement_status": (
+                measurement_status
+            ),
+            
+            "minimum_autonomous_samples": (
+                settings.roi_min_autonomous_samples
+            ),
+            
+            "sample_size_sufficient": (
+                sample_size_sufficient
+            ),
+            
+            "provisional_roi_percent": (
+                provisional_roi_percent
+            ),
+            
+            "roi_percent": (
+                roi_percent
+            ),
         }
