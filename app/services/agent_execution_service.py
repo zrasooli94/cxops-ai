@@ -16,6 +16,11 @@ from app.services.tool_authorization_service import (
     ToolAuthorizationError,
     ToolAuthorizationService,
 )
+from app.core.metrics import (
+    record_agent_execution_failure,
+    record_agent_tool_execution,
+    record_autonomous_execution,
+)
 
 class AgentExecutionError(Exception):
     pass
@@ -193,6 +198,12 @@ class AgentExecutionService:
                     },
                 )
             )
+            
+            record_agent_tool_execution(
+                tool=str(
+                    tool_name
+                ),
+            )
 
             return
 
@@ -247,7 +258,11 @@ class AgentExecutionService:
                     },
                 )
             )
-
+            record_agent_tool_execution(
+                tool=str(
+                    tool_name
+                ),
+            )
             return
 
         # -----------------------------------------
@@ -299,7 +314,11 @@ class AgentExecutionService:
                     },
                 )
             )
-
+            record_agent_tool_execution(
+                tool=str(
+                    tool_name
+                ),
+            )
             return
 
         # -----------------------------------------
@@ -460,7 +479,11 @@ class AgentExecutionService:
                     ),
                 )
             )
-
+            record_agent_execution_failure(
+                action=str(
+                    run.action
+                ),
+            )
             raise AgentExecutionError(
                 "Local ticket was not found."
             )
@@ -478,7 +501,11 @@ class AgentExecutionService:
                     ),
                 )
             )
-
+            record_agent_execution_failure(
+                action=str(
+                    run.action
+                ),
+            )
             raise AgentExecutionError(
                 "Ticket is not linked "
                 "to Zendesk."
@@ -508,7 +535,11 @@ class AgentExecutionService:
                     str(exc),
                 )
             )
-
+            record_agent_execution_failure(
+                action=str(
+                    run.action
+                ),
+            )
             raise AgentExecutionStateError(
                 str(exc)
             ) from exc
@@ -526,7 +557,11 @@ class AgentExecutionService:
                     ),
                 )
             )
-
+            record_agent_execution_failure(
+                action=str(
+                    run.action
+                ),
+            )
             raise AgentExecutionError(
                 "Agent run contains "
                 "no executable tool plan."
@@ -575,7 +610,19 @@ class AgentExecutionService:
                         },
                     )
                 )
-
+                if (
+                    run.reviewer_note
+                    == (
+                        "Automatically approved by "
+                        "low-risk tool policy"
+                    )
+                ):
+                    record_autonomous_execution(
+                        action=str(
+                            run.action
+                        ),
+                        outcome="recovered",
+                    )
                 return {
                     "run_id": run_id,
                     "ticket_id": (
@@ -660,7 +707,20 @@ class AgentExecutionService:
                     },
                 )
             )
-
+            #
+            if (
+                run.reviewer_note
+                == (
+                    "Automatically approved by "
+                    "low-risk tool policy"
+                )
+            ):
+                record_autonomous_execution(
+                    action=str(
+                        run.action
+                    ),
+                    outcome="executed",
+                )
             return {
                 "run_id": run_id,
                 "ticket_id": ticket.id,
@@ -721,6 +781,11 @@ class AgentExecutionService:
                             ),
                         },
                     )
+                )
+                record_agent_execution_failure(
+                    action=str(
+                        fresh_run.action
+                    ),
                 )
 
             if isinstance(

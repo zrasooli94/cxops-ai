@@ -16,8 +16,11 @@ from pydantic import BaseModel, SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.metrics import record_agent_decision
 from app.core.config import settings
+from app.core.metrics import (
+    record_agent_auto_approval,
+    record_agent_decision,
+)
 
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
@@ -1238,6 +1241,15 @@ Choose the safest next action.
                     },
                 )
             )
+            record_agent_auto_approval(
+                action=str(
+                    decision.get(
+                        "action",
+                        "unknown",
+                    )
+                ),
+            )
+
 
             job = await (
                 IntegrationJobService

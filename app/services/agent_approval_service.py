@@ -4,7 +4,9 @@ from app.models.agent_run import AgentRun
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
-
+from app.core.metrics import (
+    record_agent_approval,
+)
 
 class AgentRunNotFoundError(Exception):
     pass
@@ -142,8 +144,11 @@ class AgentApprovalService:
                     run.recommended_priority
                 ),
             },
+            
         )
-
+        record_agent_approval(
+            result="approved",
+        )
         return run
 
     @staticmethod
@@ -175,5 +180,7 @@ class AgentApprovalService:
             actor=actor,
             note=note,
         )
-
+        record_agent_approval(
+            result="rejected",
+        )
         return run
