@@ -564,7 +564,7 @@ class AgentWorkflowService:
             )
 
         else:
-
+        
             context = (
                 "No knowledge-base policy "
                 "was supplied."
@@ -601,12 +601,12 @@ STRICT RULES:
 11. Never execute tools yourself.
 12. Follow prerequisite steps in retrieved policy in their stated order.
     Do not route or escalate before required prerequisite steps are satisfied.
-
 13. If the policy requires additional facts before escalation or routing,
     choose respond and request those facts rather than guessing.
-
 14. A greeting, thank-you, acknowledgement, or other message with no
     actionable request should use no_action, not respond.
+15. recommended_priority may only be:
+    low, normal, high, urgent.
 """
 
         user_prompt = f"""
