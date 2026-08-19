@@ -1121,7 +1121,83 @@ Choose the safest next action.
                     "tool_plan": tool_plan,
                 },
             )
+            
+            action = decision.get(
+                "action"
+            )
 
+            if (
+                action == "no_action"
+                and run is not None
+            ):
+
+                run = await (
+                    AgentRunRepository
+                    .mark_no_action(
+                        db=db,
+                        run=run,
+                        note=(
+                            "No actionable request; "
+                            "no further action required."
+                        ),
+                    )
+                )
+
+                await (
+                    AgentRunRepository
+                    .add_event(
+                        db=db,
+                        agent_run_id=run.id,
+                        event_type="no_action",
+                        actor="cxops-agent",
+                        note=(
+                            "Agent determined that "
+                            "no further action was required."
+                        ),
+                        event_data={
+                            "decision": decision,
+                        },
+                    )
+                )
+
+            elif (
+                action == "human_review"
+                and run is not None
+            ):
+
+                run = await (
+                    AgentRunRepository
+                    .mark_review_required(
+                        db=db,
+                        run=run,
+                        note=(
+                            decision.get(
+                                "reason"
+                            )
+                        ),
+                    )
+                )
+
+                await (
+                    AgentRunRepository
+                    .add_event(
+                        db=db,
+                        agent_run_id=run.id,
+                        event_type=(
+                            "review_required"
+                        ),
+                        actor="cxops-agent",
+                        note=(
+                            "Agent requires "
+                            "human review before "
+                            "further action."
+                        ),
+                        event_data={
+                            "decision": decision,
+                        },
+                    )
+                )
+            
         auto_job_id = None
         auto_queued = False
 

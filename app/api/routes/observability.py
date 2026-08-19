@@ -12,6 +12,7 @@ from app.schemas.observability import (
     AgentObservabilitySummary,
     AIObservabilitySummary,
     AIObservabilityBreakdown,
+    AgentOperationalKPIs,
 )
 
 from app.services.agent_observability_service import (
@@ -71,3 +72,16 @@ async def ai_by_feature(
         )
     )
 
+@router.get(
+    "/agent/kpis",
+    response_model=AgentOperationalKPIs,
+)
+async def agent_operational_kpis(
+    db: DatabaseSession,
+):
+    return await (
+        AgentObservabilityService
+        .operational_kpis(
+            db
+        )
+    )

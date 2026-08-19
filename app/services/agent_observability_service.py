@@ -549,3 +549,199 @@ class AgentObservabilityService:
                 integration_jobs
             ),
         )
+
+    #
+    @classmethod
+    async def operational_kpis(
+        cls,
+        db: AsyncSession,
+    ) -> dict:
+
+        total_runs = await cls.total_runs(
+            db
+        )
+
+        actions = await cls.action_distribution(
+            db
+        )
+
+        statuses = await cls.status_distribution(
+            db
+        )
+
+        approval_required = await cls.count_runs(
+            db,
+            AgentRun
+            .requires_human_approval
+            .is_(True),
+        )
+
+        auto_approved_result = await db.execute(
+            select(
+                func.count(
+                    AgentRun.id
+                )
+            )
+            .where(
+                AgentRun.reviewer_note
+                == (
+                    "Automatically approved "
+                    "by low-risk tool policy"
+                )
+            )
+        )
+
+        auto_approved_runs = int(
+            auto_approved_result.scalar_one()
+        )
+
+        autonomous_executed_result = (
+            await db.execute(
+                select(
+                    func.count(
+                        AgentRun.id
+                    )
+                )
+                .where(
+                    AgentRun.reviewer_note
+                    == (
+                        "Automatically approved "
+                        "by low-risk tool policy"
+                    )
+                )
+                .where(
+                    AgentRun.status
+                    == "executed"
+                )
+            )
+        )
+
+        autonomous_executed_runs = int(
+            autonomous_executed_result
+            .scalar_one()
+        )
+
+        executed_runs = statuses.get(
+            "executed",
+            0,
+        )
+
+        failed_execution_runs = (
+            statuses.get(
+                "execution_failed",
+                0,
+            )
+        )
+
+        attempted_executions = (
+            executed_runs
+            + failed_execution_runs
+        )
+
+        jobs = await cls.integration_job_metrics(
+            db
+        )
+
+        average_job_attempts = (
+            jobs.total_attempts
+            / jobs.total
+            if jobs.total
+            else 0.0
+        )
+
+        return {
+            "total_runs": total_runs,
+
+            "escalation_rate": (
+                cls.percentage(
+                    actions.get(
+                        "escalate",
+                        0,
+                    ),
+                    total_runs,
+                )
+            ),
+
+            "human_review_rate": (
+                cls.percentage(
+                    actions.get(
+                        "human_review",
+                        0,
+                    ),
+                    total_runs,
+                )
+            ),
+
+            "no_action_rate": (
+                cls.percentage(
+                    actions.get(
+                        "no_action",
+                        0,
+                    ),
+                    total_runs,
+                )
+            ),
+
+            "approval_required_rate": (
+                cls.percentage(
+                    approval_required,
+                    total_runs,
+                )
+            ),
+
+            "pending_approval_rate": (
+                cls.percentage(
+                    statuses.get(
+                        "pending_approval",
+                        0,
+                    ),
+                    total_runs,
+                )
+            ),
+
+            "auto_approved_runs": (
+                auto_approved_runs
+            ),
+
+            "autonomous_execution_rate": (
+                cls.percentage(
+                    auto_approved_runs,
+                    total_runs,
+                )
+            ),
+
+            "autonomous_executed_runs": (
+                autonomous_executed_runs
+            ),
+
+            "autonomous_success_rate": (
+                cls.percentage(
+                    autonomous_executed_runs,
+                    auto_approved_runs,
+                )
+            ),
+
+            "execution_success_rate": (
+                cls.percentage(
+                    executed_runs,
+                    attempted_executions,
+                )
+            ),
+
+            "queue_retry_rate": (
+                jobs.retry_rate
+            ),
+
+            "queue_failure_rate": (
+                cls.percentage(
+                    jobs.failed_jobs,
+                    jobs.total,
+                )
+            ),
+
+            "average_job_attempts": round(
+                average_job_attempts,
+                2,
+            ),
+        }
+    

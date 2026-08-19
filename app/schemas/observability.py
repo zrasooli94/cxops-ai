@@ -85,3 +85,27 @@ class AIObservabilityBreakdown(BaseModel):
     features: list[
         AIFeatureObservabilitySummary
     ]
+
+class AgentOperationalKPIs(BaseModel):
+    total_runs: int
+
+    escalation_rate: float
+    human_review_rate: float
+    no_action_rate: float
+
+    approval_required_rate: float
+    pending_approval_rate: float
+
+    auto_approved_runs: int
+    autonomous_execution_rate: float
+
+    autonomous_executed_runs: int
+    autonomous_success_rate: float
+
+    execution_success_rate: float
+
+    queue_retry_rate: float
+    queue_failure_rate: float
+
+    average_job_attempts: float
+
