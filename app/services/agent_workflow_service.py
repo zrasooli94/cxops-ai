@@ -16,7 +16,9 @@ from pydantic import BaseModel, SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.metrics import record_agent_decision
 from app.core.config import settings
+
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.schemas.agent import AgentDecision
@@ -1329,6 +1331,45 @@ Choose the safest next action.
                 total_tokens=int(
                     decision_observability.get(
                         "total_tokens",
+                        0,
+                    )
+                ),
+            )
+            ###
+            record_agent_decision(
+                action=str(
+                    decision.get(
+                        "action",
+                        "unknown",
+                    )
+                ),
+                llm_called=bool(
+                    decision_observability.get(
+                        "llm_called",
+                        False,
+                    )
+                ),
+                latency_ms=float(
+                    decision_observability.get(
+                        "latency_ms",
+                        0.0,
+                    )
+                ),
+                retrieval_count=int(
+                    decision_observability.get(
+                        "retrieval_count",
+                        0,
+                    )
+                ),
+                input_tokens=int(
+                    decision_observability.get(
+                        "input_tokens",
+                        0,
+                    )
+                ),
+                output_tokens=int(
+                    decision_observability.get(
+                        "output_tokens",
                         0,
                     )
                 ),
