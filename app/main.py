@@ -4,9 +4,11 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     generate_latest,
 )
+from sqlalchemy import text
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 
 app = FastAPI(
     title=settings.app_name,
@@ -15,6 +17,22 @@ app = FastAPI(
 )
 
 app.include_router(api_router)
+
+
+@app.get(
+    "/health",
+    include_in_schema=False,
+)
+async def healthcheck():
+    async with AsyncSessionLocal() as db:
+        await db.execute(text("SELECT 1"))
+
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "version": settings.app_version,
+        "database": "ok",
+    }
 
 
 @app.get(

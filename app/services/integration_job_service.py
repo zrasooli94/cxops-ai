@@ -1,7 +1,12 @@
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.integration_job import IntegrationJob
+from app.models.ticket import Ticket
+from app.repositories.agent_run_repository import (
+    AgentRunRepository,
+)
 from app.repositories.integration_job_repository import (
     IntegrationJobRepository,
 )
@@ -14,9 +19,51 @@ from app.services.zendesk_webhook_service import (
 )
 
 
+class AgentExecutionQueueBlockedError(Exception):
+    pass
+
+
 class IntegrationJobService:
     ZENDESK_TICKET_EVENT = "zendesk.ticket_event"
     AGENT_EXECUTION = "agent.execute"
+
+    @staticmethod
+    async def _assert_agent_execution_target(
+        db: AsyncSession,
+        *,
+        run_id: str,
+    ) -> None:
+        run = await AgentRunRepository.get_by_run_id(
+            db=db,
+            run_id=run_id,
+        )
+
+        if run is None:
+            raise AgentExecutionQueueBlockedError(f"Agent run {run_id} was not found.")
+
+        result = await db.execute(select(Ticket).where(Ticket.id == run.ticket_id))
+
+        ticket = result.scalar_one_or_none()
+
+        if ticket is None:
+            raise AgentExecutionQueueBlockedError(
+                "The local ticket for this agent run was not found."
+            )
+
+        if not ticket.external_id:
+            raise AgentExecutionQueueBlockedError(
+                "External execution is disabled for "
+                "local demo tickets that are not linked "
+                "to Zendesk."
+            )
+
+        try:
+            int(ticket.external_id)
+
+        except (TypeError, ValueError) as exc:
+            raise AgentExecutionQueueBlockedError(
+                "The ticket has an invalid Zendesk external_id."
+            ) from exc
 
     @staticmethod
     async def enqueue_zendesk_event(
@@ -27,7 +74,6 @@ class IntegrationJobService:
         zendesk_ticket_id: int,
         payload: dict,
     ) -> JobAccepted:
-
         existing = await IntegrationJobRepository.get_by_dedupe_key(
             db=db,
             dedupe_key=invocation_id,
@@ -47,7 +93,7 @@ class IntegrationJobService:
             payload={
                 "invocation_id": invocation_id,
                 "event_type": event_type,
-                "zendesk_ticket_id": zendesk_ticket_id,
+                "zendesk_ticket_id": (zendesk_ticket_id),
                 "payload": payload,
             },
         )
@@ -88,28 +134,21 @@ class IntegrationJobService:
         db: AsyncSession,
         job: IntegrationJob,
     ) -> None:
-
-        # -----------------------------------------
         # Zendesk webhook event
-        # -----------------------------------------
-
         if job.job_type == IntegrationJobService.ZENDESK_TICKET_EVENT:
             payload = job.payload
 
             await ZendeskWebhookService.process(
                 db=db,
-                invocation_id=payload["invocation_id"],
-                event_type=payload["event_type"],
-                zendesk_ticket_id=payload["zendesk_ticket_id"],
+                invocation_id=(payload["invocation_id"]),
+                event_type=(payload["event_type"]),
+                zendesk_ticket_id=(payload["zendesk_ticket_id"]),
                 payload=payload["payload"],
             )
 
             return
 
-        # -----------------------------------------
         # Approved agent execution
-        # -----------------------------------------
-
         if job.job_type == IntegrationJobService.AGENT_EXECUTION:
             payload = job.payload
 
@@ -120,10 +159,6 @@ class IntegrationJobService:
 
             return
 
-        # -----------------------------------------
-        # Unsupported job
-        # -----------------------------------------
-
         raise ValueError(f"Unknown job type: {job.job_type}")
 
     @staticmethod
@@ -132,6 +167,17 @@ class IntegrationJobService:
         *,
         run_id: str,
     ) -> dict:
+        # Validate the external execution target
+        # before creating a durable queue job.
+        #
+        # Local demo tickets may be analyzed and
+        # reviewed, but they cannot produce
+        # external Zendesk writes.
+
+        await IntegrationJobService._assert_agent_execution_target(
+            db=db,
+            run_id=run_id,
+        )
 
         dedupe_key = f"agent-execution:{run_id}"
 

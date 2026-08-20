@@ -1,30 +1,48 @@
-import { NextRequest, NextResponse } from "next/server";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
 const BACKEND_API_URL =
-  process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
+  process.env.BACKEND_API_URL ??
+  "http://127.0.0.1:8000";
 
 async function proxy(
   request: NextRequest,
   context: {
-    params: Promise<{ path: string[] }>;
+    params: Promise<{
+      path: string[];
+    }>;
   },
 ) {
-  const { path } = await context.params;
+  const { path } =
+    await context.params;
 
   const backendUrl = new URL(
     `${BACKEND_API_URL}/${path.join("/")}`,
   );
 
-  request.nextUrl.searchParams.forEach((value, key) => {
-    backendUrl.searchParams.append(key, value);
-  });
+  request.nextUrl.searchParams.forEach(
+    (value, key) => {
+      backendUrl.searchParams.append(
+        key,
+        value,
+      );
+    },
+  );
 
   const headers = new Headers();
 
-  const contentType = request.headers.get("content-type");
+  const contentType =
+    request.headers.get(
+      "content-type",
+    );
 
   if (contentType) {
-    headers.set("content-type", contentType);
+    headers.set(
+      "content-type",
+      contentType,
+    );
   }
 
   const init: RequestInit = {
@@ -37,26 +55,38 @@ async function proxy(
     request.method !== "GET" &&
     request.method !== "HEAD"
   ) {
-    init.body = await request.text();
+    init.body =
+      await request.arrayBuffer();
   }
 
   try {
-    const response = await fetch(backendUrl, init);
+    const response =
+      await fetch(
+        backendUrl,
+        init,
+      );
 
-    const body = await response.text();
+    const body =
+      await response.arrayBuffer();
 
-    return new NextResponse(body, {
-      status: response.status,
-      headers: {
-        "content-type":
-          response.headers.get("content-type") ??
-          "application/json",
+    return new NextResponse(
+      body,
+      {
+        status: response.status,
+        headers: {
+          "content-type":
+            response.headers.get(
+              "content-type",
+            ) ??
+            "application/json",
+        },
       },
-    });
+    );
   } catch {
     return NextResponse.json(
       {
-        detail: "CXOps backend is unavailable.",
+        detail:
+          "CXOps backend is unavailable.",
       },
       {
         status: 503,

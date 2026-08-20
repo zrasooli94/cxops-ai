@@ -25,7 +25,10 @@ from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.schemas.agent import AgentDecision
 from app.services.ai_observability_service import AIObservabilityService
-from app.services.integration_job_service import IntegrationJobService
+from app.services.integration_job_service import (
+    AgentExecutionQueueBlockedError,
+    IntegrationJobService,
+)
 from app.services.knowledge_search_service import KnowledgeSearchService
 from app.services.tool_authorization_service import ToolAuthorizationService
 
@@ -949,13 +952,31 @@ Choose the safest next action.
                 ),
             )
 
-            job = await IntegrationJobService.enqueue_agent_execution(
-                db=db,
-                run_id=run_id,
-            )
+            try:
+                job = await IntegrationJobService.enqueue_agent_execution(
+                    db=db,
+                    run_id=run_id,
+                )
 
-            auto_job_id = job["job_id"]
-            auto_queued = True
+            except AgentExecutionQueueBlockedError:
+                await AgentRunRepository.add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type=("external_execution_skipped"),
+                    actor="cxops-policy",
+                    note=(
+                        "External execution was skipped "
+                        "because this ticket is not linked "
+                        "to Zendesk."
+                    ),
+                    event_data={
+                        "reason": ("missing_zendesk_external_id"),
+                    },
+                )
+
+            else:
+                auto_job_id = job["job_id"]
+                auto_queued = True
 
         if persist_run:
             ticket_data = result.get(

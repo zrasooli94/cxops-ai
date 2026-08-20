@@ -28,6 +28,7 @@ from app.services.agent_workflow_service import (
     agent_workflow_service,
 )
 from app.services.integration_job_service import (
+    AgentExecutionQueueBlockedError,
     IntegrationJobService,
 )
 
@@ -217,10 +218,17 @@ async def execute_agent_run(
             detail=(f"Agent run cannot be queued from status {run.status}."),
         )
 
-    return await IntegrationJobService.enqueue_agent_execution(
-        db=db,
-        run_id=run_id,
-    )
+    try:
+        return await IntegrationJobService.enqueue_agent_execution(
+            db=db,
+            run_id=run_id,
+        )
+
+    except AgentExecutionQueueBlockedError as exc:
+        raise HTTPException(
+            status_code=(status.HTTP_409_CONFLICT),
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(
