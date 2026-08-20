@@ -58,6 +58,22 @@ class AgentRunRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def list_runs(
+        db: AsyncSession,
+        *,
+        run_status: str | None = None,
+        limit: int = 100,
+    ) -> list[AgentRun]:
+        statement = select(AgentRun).order_by(AgentRun.created_at.desc()).limit(limit)
+
+        if run_status is not None:
+            statement = statement.where(AgentRun.status == run_status)
+
+        result = await db.execute(statement)
+
+        return list(result.scalars().all())
+
+    @staticmethod
     async def approve(
         db: AsyncSession,
         run: AgentRun,
@@ -225,3 +241,17 @@ class AgentRunRepository:
         await db.refresh(run)
 
         return run
+
+    @staticmethod
+    async def list_events(
+        db: AsyncSession,
+        *,
+        agent_run_id: int,
+    ) -> list[AgentActionEvent]:
+        result = await db.execute(
+            select(AgentActionEvent)
+            .where(AgentActionEvent.agent_run_id == agent_run_id)
+            .order_by(AgentActionEvent.id.asc())
+        )
+
+        return list(result.scalars().all())

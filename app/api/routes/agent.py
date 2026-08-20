@@ -117,6 +117,29 @@ async def approve_agent_run(
         ) from exc
 
 
+@router.get(
+    "/runs",
+    response_model=list[AgentRunResponse],
+)
+async def list_agent_runs(
+    db: DatabaseSession,
+    run_status: str | None = None,
+    limit: int = 100,
+):
+    safe_limit = max(
+        1,
+        min(limit, 200),
+    )
+
+    runs = await AgentRunRepository.list_runs(
+        db,
+        run_status=run_status,
+        limit=safe_limit,
+    )
+
+    return [serialize_run(run) for run in runs]
+
+
 @router.post(
     "/runs/{run_id}/reject",
     response_model=AgentRunResponse,
@@ -198,3 +221,38 @@ async def execute_agent_run(
         db=db,
         run_id=run_id,
     )
+
+
+@router.get(
+    "/runs/{run_id}/events",
+)
+async def list_agent_run_events(
+    run_id: str,
+    db: DatabaseSession,
+):
+    run = await AgentRunRepository.get_by_run_id(
+        db,
+        run_id,
+    )
+
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(f"Agent run {run_id} was not found"),
+        )
+
+    events = await AgentRunRepository.list_events(
+        db,
+        agent_run_id=run.id,
+    )
+
+    return [
+        {
+            "id": event.id,
+            "event_type": event.event_type,
+            "actor": event.actor,
+            "note": event.note,
+            "event_data": event.event_data,
+        }
+        for event in events
+    ]

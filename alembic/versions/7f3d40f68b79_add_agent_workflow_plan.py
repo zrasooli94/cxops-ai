@@ -5,32 +5,20 @@ Revises: 393e495469c9
 Create Date: 2026-08-18 20:03:12.639617
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 revision: str = "7f3d40f68b79"
 
-down_revision: Union[
-    str,
-    Sequence[str],
-    None,
-] = "393e495469c9"
+down_revision: str | Sequence[str] | None = "393e495469c9"
 
-branch_labels: Union[
-    str,
-    Sequence[str],
-    None,
-] = None
+branch_labels: str | Sequence[str] | None = None
 
-depends_on: Union[
-    str,
-    Sequence[str],
-    None,
-] = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -39,12 +27,8 @@ def upgrade() -> None:
         "agent_runs",
         sa.Column(
             "workflow_path",
-            postgresql.JSONB(
-                astext_type=sa.Text()
-            ),
-            server_default=sa.text(
-                "'[]'::jsonb"
-            ),
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
     )
@@ -53,12 +37,8 @@ def upgrade() -> None:
         "agent_runs",
         sa.Column(
             "tool_plan",
-            postgresql.JSONB(
-                astext_type=sa.Text()
-            ),
-            server_default=sa.text(
-                "'[]'::jsonb"
-            ),
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
     )
