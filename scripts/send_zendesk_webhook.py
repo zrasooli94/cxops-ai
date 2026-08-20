@@ -8,7 +8,6 @@ import httpx
 
 from app.core.config import settings
 
-
 url = "http://127.0.0.1:8000/webhooks/zendesk/tickets"
 
 payload = {
@@ -24,17 +23,10 @@ body = json.dumps(
 ).encode("utf-8")
 
 
-timestamp = (
-    datetime.now(timezone.utc)
-    .isoformat()
-    .replace("+00:00", "Z")
-)
+timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-message = (
-    timestamp.encode("utf-8")
-    + body
-)
+message = timestamp.encode("utf-8") + body
 
 
 digest = hmac.new(
@@ -44,9 +36,7 @@ digest = hmac.new(
 ).digest()
 
 
-signature = base64.b64encode(
-    digest
-).decode("utf-8")
+signature = base64.b64encode(digest).decode("utf-8")
 
 
 headers = {

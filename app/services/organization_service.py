@@ -6,7 +6,6 @@ from app.schemas.organization import OrganizationCreate
 
 
 class OrganizationService:
-
     @staticmethod
     async def create(
         db: AsyncSession,

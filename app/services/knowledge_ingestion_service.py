@@ -15,7 +15,6 @@ from app.services.embedding_service import (
 
 
 class KnowledgeIngestionService:
-
     CHUNK_SIZE = 500
     CHUNK_OVERLAP = 75
 
@@ -45,18 +44,14 @@ class KnowledgeIngestionService:
         text: str,
     ) -> str:
 
-        return hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     @staticmethod
     def chunk_text(
         text: str,
     ) -> list[tuple[str, int]]:
 
-        encoding = tiktoken.get_encoding(
-            "cl100k_base"
-        )
+        encoding = tiktoken.get_encoding("cl100k_base")
 
         tokens = encoding.encode(text)
 
@@ -65,18 +60,14 @@ class KnowledgeIngestionService:
         start = 0
 
         while start < len(tokens):
-
             end = min(
-                start
-                + KnowledgeIngestionService.CHUNK_SIZE,
+                start + KnowledgeIngestionService.CHUNK_SIZE,
                 len(tokens),
             )
 
             chunk_tokens = tokens[start:end]
 
-            chunk_text = encoding.decode(
-                chunk_tokens
-            ).strip()
+            chunk_text = encoding.decode(chunk_tokens).strip()
 
             if chunk_text:
                 chunks.append(
@@ -89,10 +80,7 @@ class KnowledgeIngestionService:
             if end >= len(tokens):
                 break
 
-            start = (
-                end
-                - KnowledgeIngestionService.CHUNK_OVERLAP
-            )
+            start = end - KnowledgeIngestionService.CHUNK_OVERLAP
 
         return chunks
 
@@ -107,23 +95,13 @@ class KnowledgeIngestionService:
         metadata: dict,
     ):
 
-        cleaned_content = (
-            KnowledgeIngestionService.clean_text(
-                content
-            )
-        )
+        cleaned_content = KnowledgeIngestionService.clean_text(content)
 
-        checksum = (
-            KnowledgeIngestionService.checksum(
-                cleaned_content
-            )
-        )
+        checksum = KnowledgeIngestionService.checksum(cleaned_content)
 
-        existing = (
-            await KnowledgeRepository.get_document_by_checksum(
-                db=db,
-                checksum=checksum,
-            )
+        existing = await KnowledgeRepository.get_document_by_checksum(
+            db=db,
+            checksum=checksum,
         )
 
         if existing:
@@ -134,22 +112,11 @@ class KnowledgeIngestionService:
                 "duplicate": True,
             }
 
-        text_chunks = (
-            KnowledgeIngestionService.chunk_text(
-                cleaned_content
-            )
-        )
+        text_chunks = KnowledgeIngestionService.chunk_text(cleaned_content)
 
-        chunk_contents = [
-            chunk[0]
-            for chunk in text_chunks
-        ]
+        chunk_contents = [chunk[0] for chunk in text_chunks]
 
-        embeddings = (
-            await embedding_service.embed_documents(
-                chunk_contents
-            )
-        )
+        embeddings = await embedding_service.embed_documents(chunk_contents)
 
         document = KnowledgeDocument(
             title=title,

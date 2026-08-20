@@ -11,7 +11,6 @@ from app.schemas.ticket import (
 )
 from app.services.ticket_service import TicketService
 
-
 router = APIRouter(
     prefix="/tickets",
     tags=["Tickets"],
@@ -36,7 +35,6 @@ async def create_ticket(
     return await TicketService.create_ticket(
         db=db,
         data=data,
-        
     )
 
 
@@ -83,6 +81,7 @@ async def get_ticket(
         )
 
     return ticket
+
 
 @router.patch(
     "/{ticket_id}",

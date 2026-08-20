@@ -26,12 +26,15 @@ class ZendeskTicketCreate(BaseModel):
 
     requester_email: EmailStr | None = None
 
-    priority: Literal[
-        "low",
-        "normal",
-        "high",
-        "urgent",
-    ] | None = None
+    priority: (
+        Literal[
+            "low",
+            "normal",
+            "high",
+            "urgent",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def validate_requester(self):
@@ -47,21 +50,28 @@ class ZendeskTicketCreate(BaseModel):
 
         return self
 
-class ZendeskTicketUpdate(BaseModel):
-    status: Literal[
-        "new",
-        "open",
-        "pending",
-        "hold",
-        "solved",
-        "closed",
-    ] | None = None
 
-    priority: Literal[
-        "low",
-        "normal",
-        "high",
-        "urgent",
-    ] | None = None
+class ZendeskTicketUpdate(BaseModel):
+    status: (
+        Literal[
+            "new",
+            "open",
+            "pending",
+            "hold",
+            "solved",
+            "closed",
+        ]
+        | None
+    ) = None
+
+    priority: (
+        Literal[
+            "low",
+            "normal",
+            "high",
+            "urgent",
+        ]
+        | None
+    ) = None
 
     comment: str | None = None

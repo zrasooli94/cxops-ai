@@ -1,4 +1,5 @@
 from copy import deepcopy
+from typing import ClassVar
 
 
 class ToolAuthorizationError(Exception):
@@ -6,8 +7,7 @@ class ToolAuthorizationError(Exception):
 
 
 class ToolAuthorizationService:
-
-    POLICIES = {
+    POLICIES: ClassVar[dict[str, dict[str, object]]] = {
         "none": {
             "risk_level": "low",
             "requires_approval": False,
@@ -44,44 +44,24 @@ class ToolAuthorizationService:
         authorized_plan: list[dict] = []
 
         for raw_tool in tool_plan:
+            tool_call = deepcopy(raw_tool)
 
-            tool_call = deepcopy(
-                raw_tool
-            )
+            tool_name = tool_call.get("tool")
 
-            tool_name = tool_call.get(
-                "tool"
-            )
-
-            policy = cls.POLICIES.get(
-                tool_name
-            )
+            policy = cls.POLICIES.get(tool_name)
 
             if policy is None:
                 raise ToolAuthorizationError(
-                    f"Tool '{tool_name}' "
-                    "is not authorized by policy."
+                    f"Tool '{tool_name}' is not authorized by policy."
                 )
 
-            tool_call[
-                "risk_level"
-            ] = policy["risk_level"]
+            tool_call["risk_level"] = policy["risk_level"]
 
-            tool_call[
-                "requires_approval"
-            ] = policy[
-                "requires_approval"
-            ]
+            tool_call["requires_approval"] = policy["requires_approval"]
 
-            tool_call[
-                "authorized"
-            ] = policy[
-                "auto_authorize"
-            ]
+            tool_call["authorized"] = policy["auto_authorize"]
 
-            authorized_plan.append(
-                tool_call
-            )
+            authorized_plan.append(tool_call)
 
         return authorized_plan
 
@@ -125,16 +105,10 @@ class ToolAuthorizationService:
         ]
 
         if unauthorized:
-
-            names = ", ".join(
-                str(name)
-                for name in unauthorized
-            )
+            names = ", ".join(str(name) for name in unauthorized)
 
             raise ToolAuthorizationError(
-                "Tool plan contains "
-                "unauthorized tools: "
-                f"{names}"
+                f"Tool plan contains unauthorized tools: {names}"
             )
 
     @staticmethod
@@ -170,6 +144,4 @@ class ToolAuthorizationService:
         )
 
 
-tool_authorization_service = (
-    ToolAuthorizationService()
-)
+tool_authorization_service = ToolAuthorizationService()

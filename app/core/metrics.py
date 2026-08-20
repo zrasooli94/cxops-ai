@@ -3,7 +3,6 @@ from prometheus_client import (
     Histogram,
 )
 
-
 # =====================================================
 # Agent decision metrics
 # =====================================================
@@ -132,6 +131,7 @@ INTEGRATION_JOB_FAILURES_TOTAL = Counter(
 # Recording helpers
 # =====================================================
 
+
 def record_agent_decision(
     *,
     action: str,
@@ -142,11 +142,7 @@ def record_agent_decision(
     output_tokens: int,
 ) -> None:
 
-    decision_path = (
-        "llm"
-        if llm_called
-        else "deterministic"
-    )
+    decision_path = "llm" if llm_called else "deterministic"
 
     AGENT_DECISIONS_TOTAL.labels(
         action=action,
@@ -155,28 +151,20 @@ def record_agent_decision(
 
     AGENT_DECISION_LATENCY_SECONDS.labels(
         decision_path=decision_path,
-    ).observe(
-        latency_ms / 1000
-    )
+    ).observe(latency_ms / 1000)
 
     AGENT_DECISION_TOKENS_TOTAL.labels(
         token_type="input",
         decision_path=decision_path,
-    ).inc(
-        input_tokens
-    )
+    ).inc(input_tokens)
 
     AGENT_DECISION_TOKENS_TOTAL.labels(
         token_type="output",
         decision_path=decision_path,
-    ).inc(
-        output_tokens
-    )
+    ).inc(output_tokens)
 
     if retrieval_count > 0:
-        AGENT_RAG_SOURCES_TOTAL.inc(
-            retrieval_count
-        )
+        AGENT_RAG_SOURCES_TOTAL.inc(retrieval_count)
 
 
 def record_agent_approval(

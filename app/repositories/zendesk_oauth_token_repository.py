@@ -5,16 +5,13 @@ from app.models.zendesk_oauth_token import ZendeskOAuthToken
 
 
 class ZendeskOAuthTokenRepository:
-
     @staticmethod
     async def get_latest(
         db: AsyncSession,
     ) -> ZendeskOAuthToken | None:
 
         result = await db.execute(
-            select(ZendeskOAuthToken)
-            .order_by(ZendeskOAuthToken.id.desc())
-            .limit(1)
+            select(ZendeskOAuthToken).order_by(ZendeskOAuthToken.id.desc()).limit(1)
         )
 
         return result.scalar_one_or_none()
@@ -31,9 +28,7 @@ class ZendeskOAuthTokenRepository:
         refresh_token_expires_at,
     ) -> ZendeskOAuthToken:
 
-        existing = await ZendeskOAuthTokenRepository.get_latest(
-            db
-        )
+        existing = await ZendeskOAuthTokenRepository.get_latest(db)
 
         if existing:
             existing.access_token = access_token
@@ -41,9 +36,7 @@ class ZendeskOAuthTokenRepository:
             existing.token_type = token_type
             existing.scope = scope
             existing.expires_at = expires_at
-            existing.refresh_token_expires_at = (
-                refresh_token_expires_at
-            )
+            existing.refresh_token_expires_at = refresh_token_expires_at
 
             await db.commit()
             await db.refresh(existing)
@@ -56,9 +49,7 @@ class ZendeskOAuthTokenRepository:
             token_type=token_type,
             scope=scope,
             expires_at=expires_at,
-            refresh_token_expires_at=(
-                refresh_token_expires_at
-            ),
+            refresh_token_expires_at=(refresh_token_expires_at),
         )
 
         db.add(token)

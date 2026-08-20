@@ -1,9 +1,8 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import ForeignKey
-from sqlalchemy.orm import relationship
+from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.models.base import Base
 
 
@@ -78,7 +77,7 @@ class Ticket(Base):
         String(100),
         nullable=True,
     )
-    
+
     assigned_team: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,

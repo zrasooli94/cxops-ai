@@ -10,7 +10,6 @@ from app.models.agent_run import AgentRun
 
 
 class AgentRunRepository:
-
     @staticmethod
     async def create(
         db: AsyncSession,
@@ -28,15 +27,9 @@ class AgentRunRepository:
             ticket_id=ticket_id,
             action=decision["action"],
             reason=decision["reason"],
-            recommended_team=decision.get(
-                "recommended_team"
-            ),
-            recommended_priority=decision.get(
-                "recommended_priority"
-            ),
-            response_draft=decision.get(
-                "response_draft"
-            ),
+            recommended_team=decision.get("recommended_team"),
+            recommended_priority=decision.get("recommended_priority"),
+            response_draft=decision.get("response_draft"),
             requires_human_approval=decision.get(
                 "requires_human_approval",
                 True,
@@ -60,11 +53,7 @@ class AgentRunRepository:
         run_id: str,
     ) -> AgentRun | None:
 
-        result = await db.execute(
-            select(AgentRun).where(
-                AgentRun.run_id == run_id
-            )
-        )
+        result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
 
         return result.scalar_one_or_none()
 
@@ -77,9 +66,7 @@ class AgentRunRepository:
 
         run.status = "approved"
         run.reviewer_note = note
-        run.reviewed_at = datetime.now(
-            timezone.utc
-        )
+        run.reviewed_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(run)
@@ -95,9 +82,7 @@ class AgentRunRepository:
 
         run.status = "rejected"
         run.reviewer_note = note
-        run.reviewed_at = datetime.now(
-            timezone.utc
-        )
+        run.reviewed_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(run)
@@ -142,28 +127,18 @@ class AgentRunRepository:
                 AgentRun.run_id == run_id,
                 AgentRun.status == "approved",
             )
-            .values(
-                status="executing"
-            )
-            .returning(
-                AgentRun.id
-            )
+            .values(status="executing")
+            .returning(AgentRun.id)
         )
 
-        claimed_id = (
-            result.scalar_one_or_none()
-        )
+        claimed_id = result.scalar_one_or_none()
 
         await db.commit()
 
         if claimed_id is None:
             return None
 
-        result = await db.execute(
-            select(AgentRun).where(
-                AgentRun.id == claimed_id
-            )
-        )
+        result = await db.execute(select(AgentRun).where(AgentRun.id == claimed_id))
 
         return result.scalar_one()
 
@@ -175,9 +150,7 @@ class AgentRunRepository:
 
         run.status = "executed"
 
-        run.executed_at = datetime.now(
-            timezone.utc
-        )
+        run.executed_at = datetime.now(timezone.utc)
 
         run.error_message = None
 
@@ -195,9 +168,7 @@ class AgentRunRepository:
 
         run.status = "execution_failed"
 
-        run.error_message = (
-            error_message[:4000]
-        )
+        run.error_message = error_message[:4000]
 
         await db.commit()
         await db.refresh(run)
@@ -214,9 +185,7 @@ class AgentRunRepository:
         run.status = "review_required"
         run.reviewer_note = note
 
-        run.reviewed_at = datetime.now(
-            timezone.utc
-        )
+        run.reviewed_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(run)
@@ -233,9 +202,7 @@ class AgentRunRepository:
         run.status = "no_action"
         run.reviewer_note = note
 
-        run.reviewed_at = datetime.now(
-            timezone.utc
-        )
+        run.reviewed_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(run)
@@ -250,18 +217,11 @@ class AgentRunRepository:
 
         run.status = "approved"
 
-        run.reviewer_note = (
-            "Automatically approved by "
-            "low-risk tool policy"
-        )
+        run.reviewer_note = "Automatically approved by low-risk tool policy"
 
-        run.reviewed_at = datetime.now(
-            timezone.utc
-        )
+        run.reviewed_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(run)
 
         return run
-
-    

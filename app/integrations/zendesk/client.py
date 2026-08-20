@@ -4,7 +4,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.services.zendesk_oauth_service import (
     ZendeskOAuthService,
-    ZendeskReauthorizationRequired,
 )
 
 
@@ -13,12 +12,8 @@ class ZendeskAPIError(Exception):
 
 
 class ZendeskClient:
-
     def __init__(self) -> None:
-        self.base_url = (
-            f"https://{settings.zendesk_subdomain}"
-            ".zendesk.com/api/v2"
-        )
+        self.base_url = f"https://{settings.zendesk_subdomain}.zendesk.com/api/v2"
 
     async def request(
         self,
@@ -30,14 +25,10 @@ class ZendeskClient:
         **kwargs,
     ) -> dict:
 
-        token = await ZendeskOAuthService.get_valid_token(
-            db
-        )
+        token = await ZendeskOAuthService.get_valid_token(db)
 
         headers = {
-            "Authorization": (
-                f"Bearer {token.access_token}"
-            ),
+            "Authorization": (f"Bearer {token.access_token}"),
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -46,7 +37,6 @@ class ZendeskClient:
             base_url=self.base_url,
             timeout=20.0,
         ) as client:
-
             response = await client.request(
                 method=method,
                 url=path,
@@ -74,9 +64,7 @@ class ZendeskClient:
 
         if response.is_error:
             raise ZendeskAPIError(
-                f"Zendesk API error "
-                f"{response.status_code}: "
-                f"{response.text}"
+                f"Zendesk API error {response.status_code}: {response.text}"
             )
 
         if not response.content:
@@ -117,23 +105,23 @@ class ZendeskClient:
         requester_email: str | None = None,
         priority: str | None = None,
     ) -> dict:
-    
+
         ticket: dict = {
             "subject": subject,
             "comment": {
                 "body": comment,
             },
         }
-    
+
         if requester_email and requester_name:
             ticket["requester"] = {
                 "name": requester_name,
                 "email": requester_email,
             }
-    
+
         if priority:
             ticket["priority"] = priority
-    
+
         return await self.request(
             db,
             "POST",
@@ -194,28 +182,25 @@ class ZendeskClient:
         group_id: int | None = None,
     ):
         ticket_payload: dict = {}
-    
+
         if priority:
             ticket_payload["priority"] = priority
-    
+
         if group_id is not None:
             ticket_payload["group_id"] = group_id
-    
+
         if comment:
             ticket_payload["comment"] = {
                 "body": comment,
                 "public": public,
             }
-    
+
         return await self.request(
             db,
             "PUT",
             f"/tickets/{ticket_id}.json",
-            json={
-                "ticket": ticket_payload
-            },
+            json={"ticket": ticket_payload},
         )
-
 
     async def get_groups(
         self,
@@ -232,43 +217,23 @@ class ZendeskClient:
         db,
         group_name: str,
     ) -> int | None:
-    
-        response = await self.get_groups(
-            db
-        )
-    
+
+        response = await self.get_groups(db)
+
         groups = response.get(
             "groups",
             [],
         )
-    
-        wanted = (
-            group_name
-            .lower()
-            .replace("-", " ")
-            .strip()
-        )
-    
+
+        wanted = group_name.lower().replace("-", " ").strip()
+
         for group in groups:
-        
-            actual = (
-                str(
-                    group.get(
-                        "name",
-                        ""
-                    )
-                )
-                .lower()
-                .replace("-", " ")
-                .strip()
-            )
-    
+            actual = str(group.get("name", "")).lower().replace("-", " ").strip()
+
             if actual == wanted:
-                return int(
-                    group["id"]
-                )
-    
+                return int(group["id"])
+
         return None
-    
+
 
 zendesk_client = ZendeskClient()

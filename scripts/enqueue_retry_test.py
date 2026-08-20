@@ -13,9 +13,7 @@ async def main():
             zendesk_ticket_id=9999999999,
             payload={
                 "type": "zen:event-type:ticket.created",
-                "detail": {
-                    "id": "9999999999"
-                },
+                "detail": {"id": "9999999999"},
             },
         )
 

@@ -5,7 +5,6 @@ from app.models.customer import Customer
 
 
 class CustomerRepository:
-
     @staticmethod
     async def create(
         db: AsyncSession,
@@ -21,22 +20,14 @@ class CustomerRepository:
         db: AsyncSession,
         customer_id: int,
     ) -> Customer | None:
-        result = await db.execute(
-            select(Customer).where(
-                Customer.id == customer_id
-            )
-        )
+        result = await db.execute(select(Customer).where(Customer.id == customer_id))
         return result.scalar_one_or_none()
 
     @staticmethod
     async def list(
         db: AsyncSession,
     ) -> list[Customer]:
-        result = await db.execute(
-            select(Customer).order_by(
-                Customer.created_at.desc()
-            )
-        )
+        result = await db.execute(select(Customer).order_by(Customer.created_at.desc()))
         return list(result.scalars().all())
 
     @staticmethod
@@ -45,12 +36,6 @@ class CustomerRepository:
         email: str,
     ) -> Customer | None:
 
-        result = await db.execute(
-            select(Customer).where(
-                Customer.email == email
-            )
-        )
+        result = await db.execute(select(Customer).where(Customer.email == email))
 
         return result.scalar_one_or_none()
-
-    

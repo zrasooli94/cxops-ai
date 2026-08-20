@@ -48,6 +48,7 @@ class KnowledgeFileIngestionResult(BaseModel):
     chunks_created: int
     duplicate: bool
 
+
 class RAGAnswerRequest(BaseModel):
     question: str = Field(
         min_length=2,

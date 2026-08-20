@@ -1,3 +1,4 @@
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ticket_event import TicketEvent
@@ -9,11 +10,9 @@ from app.schemas.webhook import (
     WebhookReceipt,
 )
 from app.services.automation_service import AutomationService
-from sqlalchemy.exc import IntegrityError
 
 
 class WebhookService:
-
     @staticmethod
     async def receive_ticket_event(
         db: AsyncSession,
@@ -46,25 +45,25 @@ class WebhookService:
                 db=db,
                 event=event,
             )
-        
+
         except IntegrityError:
             await db.rollback()
-        
+
             existing = await TicketEventRepository.get_by_event_key(
                 db=db,
                 event_key=data.event_id,
             )
-        
+
             if existing is None:
                 raise
-            
+
             return WebhookReceipt(
                 event_id=data.event_id,
                 stored_event_id=existing.id,
                 duplicate=True,
                 status="already_received",
             )
-        
+
         await AutomationService.process_ticket_event(
             db=db,
             event=event,

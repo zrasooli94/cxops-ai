@@ -9,7 +9,6 @@ from app.services.embedding_service import (
 
 
 class KnowledgeSearchService:
-
     @staticmethod
     async def search(
         db: AsyncSession,
@@ -18,24 +17,17 @@ class KnowledgeSearchService:
         limit: int = 5,
     ) -> list[dict]:
 
-        query_embedding = (
-            await embedding_service.embed_text(
-                query
-            )
-        )
+        query_embedding = await embedding_service.embed_text(query)
 
-        matches = (
-            await KnowledgeRepository.semantic_search(
-                db=db,
-                embedding=query_embedding,
-                limit=limit,
-            )
+        matches = await KnowledgeRepository.semantic_search(
+            db=db,
+            embedding=query_embedding,
+            limit=limit,
         )
 
         results = []
 
         for chunk, distance in matches:
-
             similarity = 1.0 - distance
 
             results.append(
@@ -45,9 +37,7 @@ class KnowledgeSearchService:
                     "content": chunk.content,
                     "distance": distance,
                     "similarity": similarity,
-                    "metadata": (
-                        chunk.metadata_json
-                    ),
+                    "metadata": (chunk.metadata_json),
                 }
             )
 

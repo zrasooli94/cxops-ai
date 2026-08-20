@@ -5,7 +5,6 @@ from app.models.ticket import Ticket
 
 
 class TicketRepository:
-
     @staticmethod
     async def create(
         db: AsyncSession,
@@ -23,11 +22,7 @@ class TicketRepository:
         db: AsyncSession,
         ticket_id: int,
     ) -> Ticket | None:
-        result = await db.execute(
-            select(Ticket).where(
-                Ticket.id == ticket_id
-            )
-        )
+        result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
 
         return result.scalar_one_or_none()
 
@@ -66,12 +61,9 @@ class TicketRepository:
         db: AsyncSession,
         external_id: str,
     ) -> Ticket | None:
-    
+
         result = await db.execute(
-            select(Ticket).where(
-                Ticket.external_id == external_id
-            )
+            select(Ticket).where(Ticket.external_id == external_id)
         )
-    
+
         return result.scalar_one_or_none()
-    

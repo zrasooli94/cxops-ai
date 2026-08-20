@@ -14,7 +14,6 @@ from app.services.zendesk_sync_service import ZendeskSyncService
 
 
 class ZendeskWebhookService:
-
     @staticmethod
     async def process(
         db: AsyncSession,
@@ -71,9 +70,7 @@ class ZendeskWebhookService:
         )
 
         if local_ticket is None:
-            raise RuntimeError(
-                "Local ticket not found after automation"
-            )
+            raise RuntimeError("Local ticket not found after automation")
 
         note = (
             "CXOps AI automation result\n"
@@ -86,17 +83,13 @@ class ZendeskWebhookService:
 
         marker = f"CXOps Event: {invocation_id}"
 
-        comments_response = (
-            await zendesk_client.get_ticket_comments(
-                db=db,
-                ticket_id=zendesk_ticket_id,
-            )
+        comments_response = await zendesk_client.get_ticket_comments(
+            db=db,
+            ticket_id=zendesk_ticket_id,
         )
 
         already_written = any(
-            marker in (
-                comment.get("body") or ""
-            )
+            marker in (comment.get("body") or "")
             for comment in comments_response.get(
                 "comments",
                 [],

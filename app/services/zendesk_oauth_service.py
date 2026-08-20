@@ -20,7 +20,6 @@ class ZendeskReauthorizationRequired(ZendeskOAuthError):
 
 
 class ZendeskOAuthService:
-
     REFRESH_BUFFER_SECONDS = 60
 
     @staticmethod
@@ -29,8 +28,7 @@ class ZendeskOAuthService:
     ) -> str:
 
         base_url = (
-            f"https://{settings.zendesk_subdomain}"
-            ".zendesk.com/oauth/authorizations/new"
+            f"https://{settings.zendesk_subdomain}.zendesk.com/oauth/authorizations/new"
         )
 
         params = {
@@ -49,10 +47,7 @@ class ZendeskOAuthService:
         code: str,
     ) -> ZendeskOAuthToken:
 
-        url = (
-            f"https://{settings.zendesk_subdomain}"
-            ".zendesk.com/oauth/tokens"
-        )
+        url = f"https://{settings.zendesk_subdomain}.zendesk.com/oauth/tokens"
 
         payload = {
             "grant_type": "authorization_code",
@@ -71,10 +66,7 @@ class ZendeskOAuthService:
             )
 
         if response.is_error:
-            raise ZendeskOAuthError(
-                f"{response.status_code}: "
-                f"{response.text}"
-            )
+            raise ZendeskOAuthError(f"{response.status_code}: {response.text}")
 
         return await ZendeskOAuthService._store_token_response(
             db=db,
@@ -87,10 +79,7 @@ class ZendeskOAuthService:
         refresh_token: str,
     ) -> ZendeskOAuthToken:
 
-        url = (
-            f"https://{settings.zendesk_subdomain}"
-            ".zendesk.com/oauth/tokens"
-        )
+        url = f"https://{settings.zendesk_subdomain}.zendesk.com/oauth/tokens"
 
         payload = {
             "grant_type": "refresh_token",
@@ -109,9 +98,7 @@ class ZendeskOAuthService:
 
         if response.is_error:
             raise ZendeskReauthorizationRequired(
-                f"Zendesk token refresh failed: "
-                f"{response.status_code}: "
-                f"{response.text}"
+                f"Zendesk token refresh failed: {response.status_code}: {response.text}"
             )
 
         return await ZendeskOAuthService._store_token_response(
@@ -124,14 +111,10 @@ class ZendeskOAuthService:
         db: AsyncSession,
     ) -> ZendeskOAuthToken:
 
-        token = await ZendeskOAuthTokenRepository.get_latest(
-            db
-        )
+        token = await ZendeskOAuthTokenRepository.get_latest(db)
 
         if token is None:
-            raise ZendeskReauthorizationRequired(
-                "Zendesk is not connected"
-            )
+            raise ZendeskReauthorizationRequired("Zendesk is not connected")
 
         if token.expires_at is None:
             return token
@@ -146,17 +129,10 @@ class ZendeskOAuthService:
             return token
 
         if not token.refresh_token:
-            raise ZendeskReauthorizationRequired(
-                "Zendesk refresh token is unavailable"
-            )
+            raise ZendeskReauthorizationRequired("Zendesk refresh token is unavailable")
 
-        if (
-            token.refresh_token_expires_at
-            and now >= token.refresh_token_expires_at
-        ):
-            raise ZendeskReauthorizationRequired(
-                "Zendesk refresh token has expired"
-            )
+        if token.refresh_token_expires_at and now >= token.refresh_token_expires_at:
+            raise ZendeskReauthorizationRequired("Zendesk refresh token has expired")
 
         return await ZendeskOAuthService.refresh_access_token(
             db=db,
@@ -172,37 +148,23 @@ class ZendeskOAuthService:
         now = datetime.now(timezone.utc)
 
         expires_in = token_data.get("expires_in")
-        refresh_expires_in = token_data.get(
-            "refresh_token_expires_in"
-        )
+        refresh_expires_in = token_data.get("refresh_token_expires_in")
 
-        expires_at = (
-            now + timedelta(seconds=expires_in)
-            if expires_in
-            else None
-        )
+        expires_at = now + timedelta(seconds=expires_in) if expires_in else None
 
         refresh_token_expires_at = (
-            now + timedelta(
-                seconds=refresh_expires_in
-            )
-            if refresh_expires_in
-            else None
+            now + timedelta(seconds=refresh_expires_in) if refresh_expires_in else None
         )
 
         return await ZendeskOAuthTokenRepository.save(
             db=db,
             access_token=token_data["access_token"],
-            refresh_token=token_data.get(
-                "refresh_token"
-            ),
+            refresh_token=token_data.get("refresh_token"),
             token_type=token_data.get(
                 "token_type",
                 "bearer",
             ),
             scope=token_data.get("scope"),
             expires_at=expires_at,
-            refresh_token_expires_at=(
-                refresh_token_expires_at
-            ),
+            refresh_token_expires_at=(refresh_token_expires_at),
         )

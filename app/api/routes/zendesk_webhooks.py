@@ -15,8 +15,6 @@ from app.core.database import get_db
 from app.integrations.zendesk.security import (
     verify_zendesk_signature,
 )
-from app.schemas.webhook import WebhookReceipt
-
 from app.schemas.job import JobAccepted
 from app.services.integration_job_service import (
     IntegrationJobService,
@@ -43,17 +41,11 @@ async def receive_zendesk_ticket_webhook(
     request: Request,
     db: DatabaseSession,
 ):
-    signature = request.headers.get(
-        "x-zendesk-webhook-signature"
-    )
+    signature = request.headers.get("x-zendesk-webhook-signature")
 
-    timestamp = request.headers.get(
-        "x-zendesk-webhook-signature-timestamp"
-    )
+    timestamp = request.headers.get("x-zendesk-webhook-signature-timestamp")
 
-    invocation_id = request.headers.get(
-        "x-zendesk-webhook-invocation-id"
-    )
+    invocation_id = request.headers.get("x-zendesk-webhook-invocation-id")
 
     if not signature or not timestamp:
         raise HTTPException(
@@ -84,19 +76,13 @@ async def receive_zendesk_ticket_webhook(
 
     try:
         payload = json.loads(raw_body)
-    
-        raw_event_type = str(
-            payload["type"]
-        )
-    
-        ticket_id = int(
-            payload["detail"]["id"]
-        )
-    
-        event_type = raw_event_type.removeprefix(
-            "zen:event-type:"
-        )
-    
+
+        raw_event_type = str(payload["type"])
+
+        ticket_id = int(payload["detail"]["id"])
+
+        event_type = raw_event_type.removeprefix("zen:event-type:")
+
     except (
         json.JSONDecodeError,
         KeyError,

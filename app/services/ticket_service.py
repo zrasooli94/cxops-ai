@@ -6,7 +6,6 @@ from app.schemas.ticket import TicketCreate, TicketUpdate
 
 
 class TicketService:
-
     @staticmethod
     async def create_ticket(
         db: AsyncSession,
@@ -18,9 +17,7 @@ class TicketService:
             subject=data.subject,
             description=data.description,
             requester_email=(
-                str(data.requester_email)
-                if data.requester_email
-                else None
+                str(data.requester_email) if data.requester_email else None
             ),
             priority=data.priority,
             source=data.source,
@@ -75,13 +72,8 @@ class TicketService:
             exclude_unset=True,
         )
 
-        if (
-            "requester_email" in changes
-            and changes["requester_email"] is not None
-        ):
-            changes["requester_email"] = str(
-                changes["requester_email"]
-            )
+        if "requester_email" in changes and changes["requester_email"] is not None:
+            changes["requester_email"] = str(changes["requester_email"])
 
         return await TicketRepository.update(
             db=db,

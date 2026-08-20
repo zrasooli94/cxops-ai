@@ -1,11 +1,12 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ticket_event import TicketEvent
-from datetime import datetime, timezone
+
 
 class TicketEventRepository:
-
     @staticmethod
     async def get_by_event_key(
         db: AsyncSession,
@@ -13,9 +14,7 @@ class TicketEventRepository:
     ) -> TicketEvent | None:
 
         result = await db.execute(
-            select(TicketEvent).where(
-                TicketEvent.event_key == event_key
-            )
+            select(TicketEvent).where(TicketEvent.event_key == event_key)
         )
 
         return result.scalar_one_or_none()
@@ -40,26 +39,23 @@ class TicketEventRepository:
     ) -> list[TicketEvent]:
 
         result = await db.execute(
-            select(TicketEvent)
-            .order_by(TicketEvent.created_at.desc())
-            .limit(limit)
+            select(TicketEvent).order_by(TicketEvent.created_at.desc()).limit(limit)
         )
 
         return list(result.scalars().all())
-
 
     @staticmethod
     async def mark_processed(
         db: AsyncSession,
         event: TicketEvent,
     ) -> TicketEvent:
-        
+
         event.processed = True
         event.processed_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(event)
-        
+
         return event
 
     @staticmethod
@@ -75,5 +71,3 @@ class TicketEventRepository:
         await db.refresh(event)
 
         return event
-
-    

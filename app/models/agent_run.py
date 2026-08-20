@@ -48,33 +48,25 @@ class AgentRun(Base):
         nullable=False,
     )
 
-    recommended_team: Mapped[str | None] = (
-        mapped_column(
-            String(100),
-            nullable=True,
-        )
+    recommended_team: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
     )
 
-    recommended_priority: Mapped[str | None] = (
-        mapped_column(
-            String(30),
-            nullable=True,
-        )
+    recommended_priority: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
     )
 
-    response_draft: Mapped[str | None] = (
-        mapped_column(
-            Text,
-            nullable=True,
-        )
+    response_draft: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )
 
-    requires_human_approval: Mapped[bool] = (
-        mapped_column(
-            Boolean,
-            default=True,
-            nullable=False,
-        )
+    requires_human_approval: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
     )
 
     status: Mapped[str] = mapped_column(
@@ -113,23 +105,17 @@ class AgentRun(Base):
         nullable=False,
     )
 
-    reviewed_at: Mapped[datetime | None] = (
-        mapped_column(
-            DateTime(timezone=True),
-            nullable=True,
-        )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
-    executed_at: Mapped[datetime | None] = (
-        mapped_column(
-            DateTime(timezone=True),
-            nullable=True,
-        )
+    executed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
-    error_message: Mapped[str | None] = (
-        mapped_column(
-            Text,
-            nullable=True,
-        )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )

@@ -31,7 +31,6 @@ from app.services.integration_job_service import (
     IntegrationJobService,
 )
 
-
 router = APIRouter(
     prefix="/agent",
     tags=["Agentic AI"],
@@ -54,29 +53,13 @@ def serialize_run(
         "action": run.action,
         "status": run.status,
         "reason": run.reason,
-        "recommended_team": (
-            run.recommended_team
-        ),
-        "recommended_priority": (
-            run.recommended_priority
-        ),
-        "response_draft": (
-            run.response_draft
-        ),
-        "requires_human_approval": (
-            run.requires_human_approval
-        ),
-        "reviewer_note": (
-            run.reviewer_note
-        ),
-        "workflow_path": (
-            run.workflow_path
-            or []
-        ),
-        "tool_plan": (
-            run.tool_plan
-            or []
-        ),
+        "recommended_team": (run.recommended_team),
+        "recommended_priority": (run.recommended_priority),
+        "response_draft": (run.response_draft),
+        "requires_human_approval": (run.requires_human_approval),
+        "reviewer_note": (run.reviewer_note),
+        "workflow_path": (run.workflow_path or []),
+        "tool_plan": (run.tool_plan or []),
     }
 
 
@@ -90,21 +73,14 @@ async def analyze_ticket(
 ):
 
     try:
-
-        return await (
-            agent_workflow_service
-            .analyze(
-                db=db,
-                ticket_id=ticket_id,
-            )
+        return await agent_workflow_service.analyze(
+            db=db,
+            ticket_id=ticket_id,
         )
 
     except TicketNotFoundError as exc:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
+            status_code=(status.HTTP_404_NOT_FOUND),
             detail=str(exc),
         ) from exc
 
@@ -120,34 +96,23 @@ async def approve_agent_run(
 ):
 
     try:
-
-        run = await (
-            AgentApprovalService.approve(
-                db=db,
-                run_id=run_id,
-                note=data.note,
-            )
+        run = await AgentApprovalService.approve(
+            db=db,
+            run_id=run_id,
+            note=data.note,
         )
 
-        return serialize_run(
-            run
-        )
+        return serialize_run(run)
 
     except AgentRunNotFoundError as exc:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
+            status_code=(status.HTTP_404_NOT_FOUND),
             detail=str(exc),
         ) from exc
 
     except InvalidAgentRunStateError as exc:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-            ),
+            status_code=(status.HTTP_409_CONFLICT),
             detail=str(exc),
         ) from exc
 
@@ -163,119 +128,73 @@ async def reject_agent_run(
 ):
 
     try:
-
-        run = await (
-            AgentApprovalService.reject(
-                db=db,
-                run_id=run_id,
-                note=data.note,
-            )
+        run = await AgentApprovalService.reject(
+            db=db,
+            run_id=run_id,
+            note=data.note,
         )
 
-        return serialize_run(
-            run
-        )
+        return serialize_run(run)
 
     except AgentRunNotFoundError as exc:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
+            status_code=(status.HTTP_404_NOT_FOUND),
             detail=str(exc),
         ) from exc
 
     except InvalidAgentRunStateError as exc:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-            ),
+            status_code=(status.HTTP_409_CONFLICT),
             detail=str(exc),
         ) from exc
 
 
 @router.post(
     "/runs/{run_id}/execute",
-    response_model=(
-        AgentExecutionQueuedResponse
-    ),
-    status_code=(
-        status.HTTP_202_ACCEPTED
-    ),
+    response_model=(AgentExecutionQueuedResponse),
+    status_code=(status.HTTP_202_ACCEPTED),
 )
 async def execute_agent_run(
     run_id: str,
     db: DatabaseSession,
 ):
 
-    run = await (
-        AgentRunRepository
-        .get_by_run_id(
-            db=db,
-            run_id=run_id,
-        )
+    run = await AgentRunRepository.get_by_run_id(
+        db=db,
+        run_id=run_id,
     )
 
     if run is None:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-            ),
-            detail=(
-                f"Agent run {run_id} "
-                "was not found."
-            ),
+            status_code=(status.HTTP_404_NOT_FOUND),
+            detail=(f"Agent run {run_id} was not found."),
         )
 
     if run.status == "executed":
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-            ),
-            detail=(
-                "Agent run has already "
-                "been executed."
-            ),
+            status_code=(status.HTTP_409_CONFLICT),
+            detail=("Agent run has already been executed."),
         )
 
     if run.action in {
         "human_review",
         "no_action",
     }:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-            ),
-            detail=(
-                f"Action '{run.action}' "
-                "does not require external "
-                "execution."
-            ),
+            status_code=(status.HTTP_409_CONFLICT),
+            detail=(f"Action '{run.action}' does not require external execution."),
         )
 
     if run.status not in {
         "approved",
         "execution_failed",
     }:
-
         raise HTTPException(
-            status_code=(
-                status.HTTP_409_CONFLICT
-            ),
-            detail=(
-                "Agent run cannot be queued "
-                f"from status {run.status}."
-            ),
+            status_code=(status.HTTP_409_CONFLICT),
+            detail=(f"Agent run cannot be queued from status {run.status}."),
         )
 
-    return await (
-        IntegrationJobService
-        .enqueue_agent_execution(
-            db=db,
-            run_id=run_id,
-        )
+    return await IntegrationJobService.enqueue_agent_execution(
+        db=db,
+        run_id=run_id,
     )

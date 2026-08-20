@@ -74,4 +74,3 @@ class TicketEvent(Base):
         DateTime(timezone=True),
         nullable=True,
     )
-    

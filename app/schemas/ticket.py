@@ -17,6 +17,7 @@ class TicketCreate(BaseModel):
 
     customer_id: int | None = None
 
+
 class TicketUpdate(BaseModel):
     subject: str | None = Field(
         default=None,
@@ -31,27 +32,33 @@ class TicketUpdate(BaseModel):
 
     requester_email: EmailStr | None = None
 
-    status: Literal[
-        "new",
-        "open",
-        "pending",
-        "solved",
-        "closed",
-    ] | None = None
+    status: (
+        Literal[
+            "new",
+            "open",
+            "pending",
+            "solved",
+            "closed",
+        ]
+        | None
+    ) = None
 
-    priority: Literal[
-        "low",
-        "normal",
-        "high",
-        "urgent",
-    ] | None = None
+    priority: (
+        Literal[
+            "low",
+            "normal",
+            "high",
+            "urgent",
+        ]
+        | None
+    ) = None
 
     category: str | None = None
     assigned_team: str | None = None
 
     customer_id: int | None = None
 
-    
+
 class TicketRead(BaseModel):
     id: int
 
@@ -75,4 +82,3 @@ class TicketRead(BaseModel):
     assigned_team: str | None
 
     customer_id: int | None
-

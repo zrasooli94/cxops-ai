@@ -9,25 +9,21 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = True
 
-    database_url: str = (
-        "postgresql+asyncpg://cxops:cxops@localhost:5432/cxops"
-    )
+    database_url: str = "postgresql+asyncpg://cxops:cxops@localhost:5432/cxops"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
-    
+
     zendesk_webhook_secret: str = ""
     zendesk_oauth_token: str = ""
 
     zendesk_subdomain: str = ""
     zendesk_client_id: str = ""
     zendesk_client_secret: str = ""
-    zendesk_redirect_uri: str = (
-        "http://127.0.0.1:8000/auth/zendesk/callback"
-    )
+    zendesk_redirect_uri: str = "http://127.0.0.1:8000/auth/zendesk/callback"
     zendesk_oauth_scope: str = "read write"
 
     openai_api_key: str = ""
@@ -49,6 +45,7 @@ class Settings(BaseSettings):
     minutes_saved_per_autonomous_execution: float = 8.0
 
     roi_min_autonomous_samples: int = 20
+
 
 @lru_cache
 def get_settings() -> Settings:

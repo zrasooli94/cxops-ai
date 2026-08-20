@@ -18,7 +18,6 @@ from app.services.zendesk_oauth_service import (
     ZendeskOAuthService,
 )
 
-
 router = APIRouter(
     prefix="/auth/zendesk",
     tags=["Zendesk OAuth"],
@@ -36,15 +35,9 @@ async def zendesk_login():
 
     state = secrets.token_urlsafe(32)
 
-    authorization_url = (
-        ZendeskOAuthService.build_authorization_url(
-            state
-        )
-    )
+    authorization_url = ZendeskOAuthService.build_authorization_url(state)
 
-    response = RedirectResponse(
-        authorization_url
-    )
+    response = RedirectResponse(authorization_url)
 
     response.set_cookie(
         key="zendesk_oauth_state",
@@ -72,9 +65,7 @@ async def zendesk_callback(
             detail=f"Zendesk authorization failed: {error}",
         )
 
-    expected_state = request.cookies.get(
-        "zendesk_oauth_state"
-    )
+    expected_state = request.cookies.get("zendesk_oauth_state")
 
     if (
         not state

@@ -1,12 +1,13 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.metrics import (
+    record_agent_approval,
+)
 from app.models.agent_run import AgentRun
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
-from app.core.metrics import (
-    record_agent_approval,
-)
+
 
 class AgentRunNotFoundError(Exception):
     pass
@@ -17,29 +18,22 @@ class InvalidAgentRunStateError(Exception):
 
 
 class AgentApprovalService:
-
     @staticmethod
     async def _get_pending_run(
         db: AsyncSession,
         run_id: str,
     ) -> AgentRun:
 
-        run = await (
-            AgentRunRepository.get_by_run_id(
-                db,
-                run_id,
-            )
+        run = await AgentRunRepository.get_by_run_id(
+            db,
+            run_id,
         )
 
         if run is None:
-            raise AgentRunNotFoundError(
-                f"Agent run {run_id} was not found"
-            )
+            raise AgentRunNotFoundError(f"Agent run {run_id} was not found")
 
         if run.status != "pending_approval":
-            raise InvalidAgentRunStateError(
-                f"Agent run is already {run.status}"
-            )
+            raise InvalidAgentRunStateError(f"Agent run is already {run.status}")
 
         return run
 
@@ -52,22 +46,16 @@ class AgentApprovalService:
         actor: str = "human-reviewer",
     ) -> AgentRun:
 
-        run = await (
-            AgentApprovalService._get_pending_run(
-                db,
-                run_id,
-            )
+        run = await AgentApprovalService._get_pending_run(
+            db,
+            run_id,
         )
-        
-        if run.action == "human_review":
 
-            run = await (
-                AgentRunRepository
-                .mark_review_required(
-                    db,
-                    run,
-                    note,
-                )
+        if run.action == "human_review":
+            run = await AgentRunRepository.mark_review_required(
+                db,
+                run,
+                note,
             )
 
             await AgentRunRepository.add_event(
@@ -80,16 +68,11 @@ class AgentApprovalService:
 
             return run
 
-
         if run.action == "no_action":
-        
-            run = await (
-                AgentRunRepository
-                .mark_no_action(
-                    db,
-                    run,
-                    note,
-                )
+            run = await AgentRunRepository.mark_no_action(
+                db,
+                run,
+                note,
             )
 
             await AgentRunRepository.add_event(
@@ -110,23 +93,16 @@ class AgentApprovalService:
         updated_tool_plan = []
 
         for tool in run.tool_plan or []:
-        
-            updated_tool = dict(
-                tool
-            )
-        
+            updated_tool = dict(tool)
+
             if updated_tool.get(
                 "requires_approval",
                 True,
             ):
-                updated_tool[
-                    "authorized"
-                ] = True
-        
-            updated_tool_plan.append(
-                updated_tool
-            )
-        
+                updated_tool["authorized"] = True
+
+            updated_tool_plan.append(updated_tool)
+
         run.tool_plan = updated_tool_plan
 
         await AgentRunRepository.add_event(
@@ -137,14 +113,9 @@ class AgentApprovalService:
             note=note,
             event_data={
                 "action": run.action,
-                "recommended_team": (
-                    run.recommended_team
-                ),
-                "recommended_priority": (
-                    run.recommended_priority
-                ),
+                "recommended_team": (run.recommended_team),
+                "recommended_priority": (run.recommended_priority),
             },
-            
         )
         record_agent_approval(
             result="approved",
@@ -160,11 +131,9 @@ class AgentApprovalService:
         actor: str = "human-reviewer",
     ) -> AgentRun:
 
-        run = await (
-            AgentApprovalService._get_pending_run(
-                db,
-                run_id,
-            )
+        run = await AgentApprovalService._get_pending_run(
+            db,
+            run_id,
         )
 
         run = await AgentRunRepository.reject(

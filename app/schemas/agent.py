@@ -13,19 +13,21 @@ class AgentDecision(BaseModel):
         "internal_note",
         "human_review",
         "no_action",
-        
     ]
 
     reason: str
 
     recommended_team: str | None = None
 
-    recommended_priority: Literal[
-        "low",
-        "normal",
-        "high",
-        "urgent",
-    ] | None = None
+    recommended_priority: (
+        Literal[
+            "low",
+            "normal",
+            "high",
+            "urgent",
+        ]
+        | None
+    ) = None
 
     response_draft: str | None = None
 
@@ -46,9 +48,7 @@ class AgentToolCall(BaseModel):
         "none",
     ]
 
-    arguments: dict[str, Any] = Field(
-        default_factory=dict
-    )
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
     risk_level: Literal[
         "low",
@@ -67,20 +67,15 @@ class AgentAnalysisResponse(BaseModel):
 
     decision: AgentDecision
 
-    sources: list[RAGSource] = Field(
-        default_factory=list
-    )
+    sources: list[RAGSource] = Field(default_factory=list)
 
-    workflow_path: list[str] = Field(
-        default_factory=list
-    )
+    workflow_path: list[str] = Field(default_factory=list)
 
-    tool_plan: list[AgentToolCall] = Field(
-        default_factory=list
-    )
+    tool_plan: list[AgentToolCall] = Field(default_factory=list)
     auto_queued: bool = False
 
     job_id: int | None = None
+
 
 class AgentReviewRequest(BaseModel):
     note: str | None = Field(
@@ -104,13 +99,9 @@ class AgentRunResponse(BaseModel):
 
     reviewer_note: str | None = None
 
-    workflow_path: list[str] = Field(
-        default_factory=list
-    )
+    workflow_path: list[str] = Field(default_factory=list)
 
-    tool_plan: list[AgentToolCall] = Field(
-        default_factory=list
-    )
+    tool_plan: list[AgentToolCall] = Field(default_factory=list)
 
 
 class AgentExecutionResponse(BaseModel):

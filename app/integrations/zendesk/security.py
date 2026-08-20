@@ -19,9 +19,7 @@ def verify_zendesk_signature(
         hashlib.sha256,
     ).digest()
 
-    expected_signature = base64.b64encode(
-        digest
-    ).decode("utf-8")
+    expected_signature = base64.b64encode(digest).decode("utf-8")
 
     return hmac.compare_digest(
         expected_signature,

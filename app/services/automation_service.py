@@ -1,20 +1,17 @@
+from typing import ClassVar
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.automation_rule import AutomationRule
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
-from app.repositories.automation_rule_repository import (
-    AutomationRuleRepository,
-)
-from app.repositories.ticket_event_repository import (
-    TicketEventRepository,
-)
+from app.repositories.automation_rule_repository import AutomationRuleRepository
+from app.repositories.ticket_event_repository import TicketEventRepository
 from app.repositories.ticket_repository import TicketRepository
 
 
 class AutomationService:
-
-    ALLOWED_ACTION_FIELDS = {
+    ALLOWED_ACTION_FIELDS: ClassVar[set[str]] = {
         "category",
         "assigned_team",
         "priority",
@@ -29,10 +26,7 @@ class AutomationService:
 
         conditions = rule.conditions or {}
 
-        text = (
-            f"{ticket.subject} "
-            f"{ticket.description}"
-        ).lower()
+        text = (f"{ticket.subject} {ticket.description}").lower()
 
         any_keywords = conditions.get(
             "any_keywords",
@@ -41,8 +35,7 @@ class AutomationService:
 
         if any_keywords:
             keyword_match = any(
-                str(keyword).lower() in text
-                for keyword in any_keywords
+                str(keyword).lower() in text for keyword in any_keywords
             )
 
             if not keyword_match:
@@ -53,20 +46,15 @@ class AutomationService:
             [],
         )
 
-        if priorities:
-            if ticket.priority not in priorities:
-                return False
+        if priorities and ticket.priority not in priorities:
+            return False
 
         sources = conditions.get(
             "sources",
             [],
         )
 
-        if sources:
-            if ticket.source not in sources:
-                return False
-
-        return True
+        return not (sources and ticket.source not in sources)
 
     @staticmethod
     def build_changes(
@@ -113,7 +101,6 @@ class AutomationService:
         )
 
         for rule in rules:
-
             if not AutomationService.rule_matches(
                 rule=rule,
                 ticket=ticket,

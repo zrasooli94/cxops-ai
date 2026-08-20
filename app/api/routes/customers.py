@@ -8,7 +8,6 @@ from app.repositories.customer_repository import CustomerRepository
 from app.schemas.customer import CustomerCreate, CustomerRead
 from app.services.customer_service import CustomerService
 
-
 router = APIRouter(
     prefix="/customers",
     tags=["Customers"],

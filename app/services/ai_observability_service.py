@@ -6,17 +6,19 @@ from app.models.ai_request_log import AIRequestLog
 
 
 class AIObservabilityService:
-
     @staticmethod
     def extract_usage(
         response,
     ) -> tuple[int, int, int]:
 
-        usage = getattr(
-            response,
-            "usage_metadata",
-            None,
-        ) or {}
+        usage = (
+            getattr(
+                response,
+                "usage_metadata",
+                None,
+            )
+            or {}
+        )
 
         input_tokens = int(
             usage.get(
@@ -52,17 +54,9 @@ class AIObservabilityService:
         output_tokens: int,
     ) -> float:
 
-        input_cost = (
-            input_tokens
-            / 1_000_000
-            * settings.llm_input_cost_per_million
-        )
+        input_cost = input_tokens / 1_000_000 * settings.llm_input_cost_per_million
 
-        output_cost = (
-            output_tokens
-            / 1_000_000
-            * settings.llm_output_cost_per_million
-        )
+        output_cost = output_tokens / 1_000_000 * settings.llm_output_cost_per_million
 
         return input_cost + output_cost
 
@@ -88,20 +82,15 @@ class AIObservabilityService:
         error_message: str | None = None,
     ) -> AIRequestLog:
 
-        estimated_cost = (
-            AIObservabilityService.estimate_cost(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
+        estimated_cost = AIObservabilityService.estimate_cost(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
         log = AIRequestLog(
             request_id=request_id,
             feature=feature,
-            model=(
-                model
-                or settings.chat_model
-            ),
+            model=(model or settings.chat_model),
             status=status,
             question=question,
             answer=answer,
@@ -132,181 +121,94 @@ class AIObservabilityService:
 
         result = await db.execute(
             select(
-                func.count(
-                    AIRequestLog.id
-                ).label("total_requests"),
-
+                func.count(AIRequestLog.id).label("total_requests"),
                 func.sum(
                     case(
                         (
-                            AIRequestLog.status
-                            == "success",
+                            AIRequestLog.status == "success",
                             1,
                         ),
                         else_=0,
                     )
                 ).label("successful_requests"),
-
                 func.sum(
                     case(
                         (
-                            AIRequestLog.grounded
-                            .is_(True),
+                            AIRequestLog.grounded.is_(True),
                             1,
                         ),
                         else_=0,
                     )
                 ).label("grounded_requests"),
-
-                func.avg(
-                    AIRequestLog.latency_ms
-                ).label("avg_latency_ms"),
-
-                func.sum(
-                    AIRequestLog.total_tokens
-                ).label("total_tokens"),
-
-                func.sum(
-                    AIRequestLog.estimated_cost_usd
-                ).label("estimated_cost_usd"),
+                func.avg(AIRequestLog.latency_ms).label("avg_latency_ms"),
+                func.sum(AIRequestLog.total_tokens).label("total_tokens"),
+                func.sum(AIRequestLog.estimated_cost_usd).label("estimated_cost_usd"),
             )
         )
 
         row = result.one()
 
-        total = int(
-            row.total_requests or 0
-        )
+        total = int(row.total_requests or 0)
 
-        successful = int(
-            row.successful_requests or 0
-        )
+        successful = int(row.successful_requests or 0)
 
-        grounded = int(
-            row.grounded_requests or 0
-        )
+        grounded = int(row.grounded_requests or 0)
 
         return {
             "total_requests": total,
-            "success_rate": (
-                successful / total
-                if total
-                else 0.0
-            ),
-            "grounded_rate": (
-                grounded / total
-                if total
-                else 0.0
-            ),
-            "avg_latency_ms": float(
-                row.avg_latency_ms or 0
-            ),
-            "total_tokens": int(
-                row.total_tokens or 0
-            ),
-            "estimated_cost_usd": float(
-                row.estimated_cost_usd or 0
-            ),
+            "success_rate": (successful / total if total else 0.0),
+            "grounded_rate": (grounded / total if total else 0.0),
+            "avg_latency_ms": float(row.avg_latency_ms or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "estimated_cost_usd": float(row.estimated_cost_usd or 0),
         }
 
-    
     @staticmethod
     async def breakdown(
         db: AsyncSession,
     ) -> dict:
 
-        overall = await (
-            AIObservabilityService.summary(
-                db
-            )
-        )
+        overall = await AIObservabilityService.summary(db)
 
         result = await db.execute(
             select(
                 AIRequestLog.feature,
-
-                func.count(
-                    AIRequestLog.id
-                ).label(
-                    "total_requests"
-                ),
-
+                func.count(AIRequestLog.id).label("total_requests"),
                 func.sum(
                     case(
                         (
-                            AIRequestLog.status
-                            == "success",
+                            AIRequestLog.status == "success",
                             1,
                         ),
                         else_=0,
                     )
-                ).label(
-                    "successful_requests"
-                ),
-
+                ).label("successful_requests"),
                 func.sum(
                     case(
                         (
-                            AIRequestLog.grounded
-                            .is_(True),
+                            AIRequestLog.grounded.is_(True),
                             1,
                         ),
                         else_=0,
                     )
-                ).label(
-                    "grounded_requests"
-                ),
-
+                ).label("grounded_requests"),
                 func.sum(
                     case(
                         (
-                            AIRequestLog.llm_called
-                            .is_(True),
+                            AIRequestLog.llm_called.is_(True),
                             1,
                         ),
                         else_=0,
                     )
-                ).label(
-                    "llm_calls"
-                ),
-
-                func.avg(
-                    AIRequestLog.latency_ms
-                ).label(
-                    "avg_latency_ms"
-                ),
-
-                func.sum(
-                    AIRequestLog.input_tokens
-                ).label(
-                    "input_tokens"
-                ),
-
-                func.sum(
-                    AIRequestLog.output_tokens
-                ).label(
-                    "output_tokens"
-                ),
-
-                func.sum(
-                    AIRequestLog.total_tokens
-                ).label(
-                    "total_tokens"
-                ),
-
-                func.sum(
-                    AIRequestLog
-                    .estimated_cost_usd
-                ).label(
-                    "estimated_cost_usd"
-                ),
+                ).label("llm_calls"),
+                func.avg(AIRequestLog.latency_ms).label("avg_latency_ms"),
+                func.sum(AIRequestLog.input_tokens).label("input_tokens"),
+                func.sum(AIRequestLog.output_tokens).label("output_tokens"),
+                func.sum(AIRequestLog.total_tokens).label("total_tokens"),
+                func.sum(AIRequestLog.estimated_cost_usd).label("estimated_cost_usd"),
             )
-            .group_by(
-                AIRequestLog.feature
-            )
-            .order_by(
-                AIRequestLog.feature
-            )
+            .group_by(AIRequestLog.feature)
+            .order_by(AIRequestLog.feature)
         )
 
         rows = result.all()
@@ -315,9 +217,7 @@ class AIObservabilityService:
             select(
                 AIRequestLog.feature,
                 AIRequestLog.model,
-                func.count(
-                    AIRequestLog.id
-                ),
+                func.count(AIRequestLog.id),
             )
             .group_by(
                 AIRequestLog.feature,
@@ -339,105 +239,36 @@ class AIObservabilityService:
             model,
             count,
         ) in model_result.all():
+            if feature not in (models_by_feature):
+                models_by_feature[feature] = {}
 
-            if feature not in (
-                models_by_feature
-            ):
-                models_by_feature[
-                    feature
-                ] = {}
-
-            models_by_feature[
-                feature
-            ][model] = int(
-                count
-            )
+            models_by_feature[feature][model] = int(count)
 
         features = []
 
         for row in rows:
+            total = int(row.total_requests or 0)
 
-            total = int(
-                row.total_requests
-                or 0
-            )
+            successful = int(row.successful_requests or 0)
 
-            successful = int(
-                row.successful_requests
-                or 0
-            )
+            grounded = int(row.grounded_requests or 0)
 
-            grounded = int(
-                row.grounded_requests
-                or 0
-            )
-
-            llm_calls = int(
-                row.llm_calls
-                or 0
-            )
+            llm_calls = int(row.llm_calls or 0)
 
             features.append(
                 {
-                    "feature": (
-                        row.feature
-                    ),
-
-                    "total_requests": (
-                        total
-                    ),
-
-                    "success_rate": (
-                        successful / total
-                        if total
-                        else 0.0
-                    ),
-
-                    "grounded_rate": (
-                        grounded / total
-                        if total
-                        else 0.0
-                    ),
-
-                    "llm_call_rate": (
-                        llm_calls / total
-                        if total
-                        else 0.0
-                    ),
-
-                    "avg_latency_ms": (
-                        float(
-                            row.avg_latency_ms
-                            or 0
-                        )
-                    ),
-
-                    "input_tokens": int(
-                        row.input_tokens
-                        or 0
-                    ),
-
-                    "output_tokens": int(
-                        row.output_tokens
-                        or 0
-                    ),
-
-                    "total_tokens": int(
-                        row.total_tokens
-                        or 0
-                    ),
-
-                    "estimated_cost_usd": (
-                        float(
-                            row
-                            .estimated_cost_usd
-                            or 0
-                        )
-                    ),
-
+                    "feature": (row.feature),
+                    "total_requests": (total),
+                    "success_rate": (successful / total if total else 0.0),
+                    "grounded_rate": (grounded / total if total else 0.0),
+                    "llm_call_rate": (llm_calls / total if total else 0.0),
+                    "avg_latency_ms": (float(row.avg_latency_ms or 0)),
+                    "input_tokens": int(row.input_tokens or 0),
+                    "output_tokens": int(row.output_tokens or 0),
+                    "total_tokens": int(row.total_tokens or 0),
+                    "estimated_cost_usd": (float(row.estimated_cost_usd or 0)),
                     "models": (
-                        models_by_feature
-                        .get(
+                        models_by_feature.get(
                             row.feature,
                             {},
                         )

@@ -16,7 +16,6 @@ from app.services.automation_rule_service import (
     AutomationRuleService,
 )
 
-
 router = APIRouter(
     prefix="/automation-rules",
     tags=["Automation Rules"],

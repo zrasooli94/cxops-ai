@@ -11,7 +11,6 @@ from app.schemas.automation_rule import (
 
 
 class AutomationRuleService:
-
     @staticmethod
     async def create(
         db: AsyncSession,

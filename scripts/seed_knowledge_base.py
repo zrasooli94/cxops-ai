@@ -5,7 +5,6 @@ from app.services.knowledge_ingestion_service import (
     KnowledgeIngestionService,
 )
 
-
 DOCUMENTS = [
     {
         "title": "Deposit Processing Policy",
@@ -85,9 +84,7 @@ should not be asked to repeatedly retry failed transactions.
 
 async def main():
     async with AsyncSessionLocal() as db:
-
         for document in DOCUMENTS:
-
             result = await KnowledgeIngestionService.ingest(
                 db=db,
                 title=document["title"],
@@ -95,9 +92,7 @@ async def main():
                 source="cxops-policy",
                 source_uri=None,
                 metadata={
-                    "department": document[
-                        "department"
-                    ],
+                    "department": document["department"],
                     "policy_version": "1.0",
                 },
             )

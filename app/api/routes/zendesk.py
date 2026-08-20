@@ -13,6 +13,7 @@ from app.integrations.zendesk.client import (
     ZendeskAPIError,
     zendesk_client,
 )
+from app.schemas.ticket import TicketRead
 from app.schemas.zendesk import (
     ZendeskTicketCreate,
     ZendeskTicketUpdate,
@@ -20,7 +21,6 @@ from app.schemas.zendesk import (
 from app.services.zendesk_oauth_service import (
     ZendeskReauthorizationRequired,
 )
-from app.schemas.ticket import TicketRead
 from app.services.zendesk_sync_service import ZendeskSyncService
 
 router = APIRouter(
@@ -47,9 +47,7 @@ def handle_zendesk_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "message": str(exc),
-                "reauthorize": (
-                    "/auth/zendesk/login"
-                ),
+                "reauthorize": ("/auth/zendesk/login"),
             },
         )
 
@@ -64,9 +62,7 @@ async def get_zendesk_current_user(
     db: DatabaseSession,
 ):
     try:
-        return await zendesk_client.get_current_user(
-            db
-        )
+        return await zendesk_client.get_current_user(db)
 
     except (
         ZendeskAPIError,
@@ -105,9 +101,7 @@ async def create_zendesk_ticket(
             comment=data.comment,
             requester_name=data.requester_name,
             requester_email=(
-                str(data.requester_email)
-                if data.requester_email
-                else None
+                str(data.requester_email) if data.requester_email else None
             ),
             priority=data.priority,
         )
@@ -165,6 +159,7 @@ async def get_zendesk_user(
     ) as exc:
         raise handle_zendesk_error(exc)
 
+
 @router.post(
     "/tickets/{ticket_id}/sync",
     response_model=TicketRead,
@@ -184,6 +179,7 @@ async def sync_zendesk_ticket(
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
+
 
 @router.get("/tickets/{ticket_id}/comments")
 async def get_zendesk_ticket_comments(

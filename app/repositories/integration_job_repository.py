@@ -7,7 +7,6 @@ from app.models.integration_job import IntegrationJob
 
 
 class IntegrationJobRepository:
-
     @staticmethod
     async def get_by_id(
         db: AsyncSession,
@@ -15,9 +14,7 @@ class IntegrationJobRepository:
     ) -> IntegrationJob | None:
 
         result = await db.execute(
-            select(IntegrationJob).where(
-                IntegrationJob.id == job_id
-            )
+            select(IntegrationJob).where(IntegrationJob.id == job_id)
         )
 
         return result.scalar_one_or_none()
@@ -29,9 +26,7 @@ class IntegrationJobRepository:
     ) -> IntegrationJob | None:
 
         result = await db.execute(
-            select(IntegrationJob).where(
-                IntegrationJob.dedupe_key == dedupe_key
-            )
+            select(IntegrationJob).where(IntegrationJob.dedupe_key == dedupe_key)
         )
 
         return result.scalar_one_or_none()
@@ -54,35 +49,24 @@ class IntegrationJobRepository:
         db: AsyncSession,
     ) -> IntegrationJob | None:
 
-        now = datetime.now(
-            timezone.utc
-        )
+        now = datetime.now(timezone.utc)
 
-        stale_before = (
-            now
-            - timedelta(seconds=60)
-        )
+        stale_before = now - timedelta(seconds=60)
 
         # Recover jobs left in processing
         # after worker crash/restart.
         await db.execute(
             update(IntegrationJob)
             .where(
-                IntegrationJob.status
-                == "processing",
-                IntegrationJob.locked_at
-                .is_not(None),
-                IntegrationJob.locked_at
-                < stale_before,
+                IntegrationJob.status == "processing",
+                IntegrationJob.locked_at.is_not(None),
+                IntegrationJob.locked_at < stale_before,
             )
             .values(
                 status="retry",
                 locked_at=None,
                 available_at=now,
-                last_error=(
-                    "Recovered stale "
-                    "processing job"
-                ),
+                last_error=("Recovered stale processing job"),
             )
         )
 
@@ -97,21 +81,14 @@ class IntegrationJobRepository:
                         "retry",
                     ]
                 ),
-                IntegrationJob.available_at
-                <= now,
+                IntegrationJob.available_at <= now,
             )
-            .order_by(
-                IntegrationJob.id.asc()
-            )
-            .with_for_update(
-                skip_locked=True
-            )
+            .order_by(IntegrationJob.id.asc())
+            .with_for_update(skip_locked=True)
             .limit(1)
         )
 
-        job = (
-            result.scalar_one_or_none()
-        )
+        job = result.scalar_one_or_none()
 
         if job is None:
             return None
@@ -132,12 +109,9 @@ class IntegrationJobRepository:
         job_id: int,
     ) -> IntegrationJob | None:
 
-        job = await (
-            IntegrationJobRepository
-            .get_by_id(
-                db,
-                job_id,
-            )
+        job = await IntegrationJobRepository.get_by_id(
+            db,
+            job_id,
         )
 
         if job is None:
@@ -145,9 +119,7 @@ class IntegrationJobRepository:
 
         job.status = "completed"
 
-        job.completed_at = datetime.now(
-            timezone.utc
-        )
+        job.completed_at = datetime.now(timezone.utc)
 
         job.locked_at = None
         job.last_error = None
@@ -165,47 +137,32 @@ class IntegrationJobRepository:
         error_message: str,
     ) -> IntegrationJob | None:
 
-        now = datetime.now(
-            timezone.utc
-        )
+        now = datetime.now(timezone.utc)
 
-        job = await (
-            IntegrationJobRepository
-            .get_by_id(
-                db,
-                job_id,
-            )
+        job = await IntegrationJobRepository.get_by_id(
+            db,
+            job_id,
         )
 
         if job is None:
             return None
 
-        if (
-            job.attempts
-            >= job.max_attempts
-        ):
+        if job.attempts >= job.max_attempts:
             job.status = "failed"
 
         else:
             job.status = "retry"
 
             delay_seconds = min(
-                2 ** job.attempts,
+                2**job.attempts,
                 300,
             )
 
-            job.available_at = (
-                now
-                + timedelta(
-                    seconds=delay_seconds
-                )
-            )
+            job.available_at = now + timedelta(seconds=delay_seconds)
 
         job.locked_at = None
 
-        job.last_error = (
-            error_message[:4000]
-        )
+        job.last_error = error_message[:4000]
 
         await db.commit()
         await db.refresh(job)

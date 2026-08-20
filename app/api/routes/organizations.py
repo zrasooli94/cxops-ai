@@ -8,7 +8,6 @@ from app.repositories.organization_repository import OrganizationRepository
 from app.schemas.organization import OrganizationCreate, OrganizationRead
 from app.services.organization_service import OrganizationService
 
-
 router = APIRouter(
     prefix="/organizations",
     tags=["Organizations"],

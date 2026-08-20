@@ -9,7 +9,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -22,8 +21,9 @@ from app.schemas.knowledge import (
     RAGAnswerRequest,
     RAGAnswerResponse,
 )
-from app.services.rag_service import (
-    rag_service,
+from app.services.document_parser_service import (
+    DocumentParserService,
+    UnsupportedDocumentTypeError,
 )
 from app.services.knowledge_ingestion_service import (
     KnowledgeIngestionService,
@@ -31,9 +31,8 @@ from app.services.knowledge_ingestion_service import (
 from app.services.knowledge_search_service import (
     KnowledgeSearchService,
 )
-from app.services.document_parser_service import (
-    DocumentParserService,
-    UnsupportedDocumentTypeError,
+from app.services.rag_service import (
+    rag_service,
 )
 
 router = APIRouter(
@@ -81,6 +80,7 @@ async def search_knowledge(
         limit=data.limit,
     )
 
+
 @router.post(
     "/documents/upload",
     response_model=KnowledgeFileIngestionResult,
@@ -88,7 +88,7 @@ async def search_knowledge(
 )
 async def upload_document(
     db: DatabaseSession,
-    file: UploadFile = File(...),
+    file: Annotated[UploadFile, File()],
     title: str | None = Form(default=None),
     source: str = Form(default="uploaded-file"),
 ):
@@ -114,10 +114,7 @@ async def upload_document(
             detail="No readable text found in document",
         )
 
-    document_title = (
-        title
-        or filename.rsplit(".", 1)[0]
-    )
+    document_title = title or filename.rsplit(".", 1)[0]
 
     result = await KnowledgeIngestionService.ingest(
         db=db,
@@ -135,6 +132,7 @@ async def upload_document(
         **result,
         "filename": filename,
     }
+
 
 @router.post(
     "/answer",

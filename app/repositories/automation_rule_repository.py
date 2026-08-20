@@ -5,7 +5,6 @@ from app.models.automation_rule import AutomationRule
 
 
 class AutomationRuleRepository:
-
     @staticmethod
     async def create(
         db: AsyncSession,
@@ -26,9 +25,7 @@ class AutomationRuleRepository:
     ) -> AutomationRule | None:
 
         result = await db.execute(
-            select(AutomationRule).where(
-                AutomationRule.id == rule_id
-            )
+            select(AutomationRule).where(AutomationRule.id == rule_id)
         )
 
         return result.scalar_one_or_none()
@@ -39,8 +36,7 @@ class AutomationRuleRepository:
     ) -> list[AutomationRule]:
 
         result = await db.execute(
-            select(AutomationRule)
-            .order_by(
+            select(AutomationRule).order_by(
                 AutomationRule.priority.asc(),
                 AutomationRule.id.asc(),
             )

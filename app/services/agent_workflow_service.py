@@ -21,14 +21,13 @@ from app.core.metrics import (
     record_agent_auto_approval,
     record_agent_decision,
 )
-
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.schemas.agent import AgentDecision
-from app.services.knowledge_search_service import KnowledgeSearchService
-from app.services.integration_job_service import IntegrationJobService
-from app.services.tool_authorization_service import ToolAuthorizationService
 from app.services.ai_observability_service import AIObservabilityService
+from app.services.integration_job_service import IntegrationJobService
+from app.services.knowledge_search_service import KnowledgeSearchService
+from app.services.tool_authorization_service import ToolAuthorizationService
 
 
 class TicketNotFoundError(Exception):
@@ -55,22 +54,17 @@ class AgentState(TypedDict, total=False):
 
 
 class AgentWorkflowService:
-
     def __init__(self) -> None:
 
         llm = ChatOpenAI(
             model=settings.chat_model,
-            api_key=SecretStr(
-                settings.openai_api_key
-            ),
+            api_key=SecretStr(settings.openai_api_key),
             temperature=0,
         )
 
-        self.decision_llm = (
-            llm.with_structured_output(
-                AgentDecision,
-                include_raw=True,
-            )
+        self.decision_llm = llm.with_structured_output(
+            AgentDecision,
+            include_raw=True,
         )
 
     @staticmethod
@@ -85,9 +79,7 @@ class AgentWorkflowService:
         ):
             return value
 
-        return model_type.model_validate(
-            value
-        )
+        return model_type.model_validate(value)
 
     # -------------------------------------------------
     # Load ticket
@@ -100,30 +92,17 @@ class AgentWorkflowService:
         db: AsyncSession,
     ) -> dict:
 
-        ticket_id = state.get(
-            "ticket_id"
-        )
+        ticket_id = state.get("ticket_id")
 
         if ticket_id is None:
-            raise TicketNotFoundError(
-                "Ticket ID was not provided."
-            )
+            raise TicketNotFoundError("Ticket ID was not provided.")
 
-        result = await db.execute(
-            select(Ticket).where(
-                Ticket.id == ticket_id
-            )
-        )
+        result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
 
-        ticket = (
-            result.scalar_one_or_none()
-        )
+        ticket = result.scalar_one_or_none()
 
         if ticket is None:
-            raise TicketNotFoundError(
-                f"Ticket {ticket_id} "
-                "was not found."
-            )
+            raise TicketNotFoundError(f"Ticket {ticket_id} was not found.")
 
         path = state.get(
             "workflow_path",
@@ -134,19 +113,12 @@ class AgentWorkflowService:
             "ticket": {
                 "id": ticket.id,
                 "subject": ticket.subject,
-                "description": (
-                    ticket.description
-                    or ""
-                ),
+                "description": (ticket.description or ""),
                 "status": ticket.status,
                 "priority": ticket.priority,
                 "category": ticket.category,
-                "assigned_team": (
-                    ticket.assigned_team
-                ),
-                "requester_email": (
-                    ticket.requester_email
-                ),
+                "assigned_team": (ticket.assigned_team),
+                "requester_email": (ticket.requester_email),
                 "source": ticket.source,
             },
             "workflow_path": [
@@ -164,34 +136,16 @@ class AgentWorkflowService:
         state: AgentState,
     ) -> dict:
 
-        ticket = state.get(
-            "ticket"
-        )
+        ticket = state.get("ticket")
 
         if not ticket:
-            raise TicketNotFoundError(
-                "Ticket not found in "
-                "workflow state."
-            )
+            raise TicketNotFoundError("Ticket not found in workflow state.")
 
-        subject = str(
-            ticket.get(
-                "subject",
-                ""
-            )
-        ).strip().lower()
+        subject = str(ticket.get("subject", "")).strip().lower()
 
-        description = str(
-            ticket.get(
-                "description",
-                ""
-            )
-        ).strip().lower()
+        description = str(ticket.get("description", "")).strip().lower()
 
-        text = (
-            f"{subject}\n"
-            f"{description}"
-        )
+        text = f"{subject}\n{description}"
 
         # -------------------------------------------------
         # Conservative deterministic RAG gate
@@ -250,59 +204,36 @@ class AgentWorkflowService:
             "transaction",
         )
 
-        has_policy_signal = any(
-            term in text
-            for term in policy_sensitive_terms
-        )
+        has_policy_signal = any(term in text for term in policy_sensitive_terms)
 
-        is_acknowledgement = any(
-            phrase in text
-            for phrase in acknowledgement_phrases
-        )
+        is_acknowledgement = any(phrase in text for phrase in acknowledgement_phrases)
 
-        is_record_only = any(
-            phrase in text
-            for phrase in record_only_phrases
-        )
+        is_record_only = any(phrase in text for phrase in record_only_phrases)
 
         # Record-only messages can skip RAG only when
         # they are not asking for policy guidance.
-        if (
-            is_record_only
-            and not any(
-                phrase in text
-                for phrase in (
-                    "what documents",
-                    "what is required",
-                    "how long",
-                    "can i",
-                    "am i eligible",
-                    "please investigate",
-                )
-                
+        if is_record_only and not any(
+            phrase in text
+            for phrase in (
+                "what documents",
+                "what is required",
+                "how long",
+                "can i",
+                "am i eligible",
+                "please investigate",
             )
-            
         ):
-
             needs_knowledge = False
-            fast_path_action = (
-                "internal_note"
-            )
+            fast_path_action = "internal_note"
             reason = (
                 "The message only asks CXOps "
                 "to record information and does "
                 "not require company-policy guidance."
             )
 
-        elif (
-            is_acknowledgement
-            and not has_policy_signal
-        ):
-
+        elif is_acknowledgement and not has_policy_signal:
             needs_knowledge = False
-            fast_path_action = (
-                "no_action"
-            )
+            fast_path_action = "no_action"
             reason = (
                 "The message is a greeting, "
                 "acknowledgement, or resolved-case "
@@ -310,7 +241,6 @@ class AgentWorkflowService:
             )
 
         else:
-
             # Safety-first default.
             needs_knowledge = True
             fast_path_action = None
@@ -326,15 +256,9 @@ class AgentWorkflowService:
         )
 
         return {
-            "needs_knowledge": (
-                needs_knowledge
-            ),
-            "knowledge_reason": (
-                reason
-            ),
-            "fast_path_action": (
-                fast_path_action
-            ),
+            "needs_knowledge": (needs_knowledge),
+            "knowledge_reason": (reason),
+            "fast_path_action": (fast_path_action),
             "workflow_path": [
                 *path,
                 "assess_knowledge_need",
@@ -372,27 +296,17 @@ class AgentWorkflowService:
         db: AsyncSession,
     ) -> dict:
 
-        ticket = state.get(
-            "ticket"
-        )
+        ticket = state.get("ticket")
 
         if not ticket:
-            raise TicketNotFoundError(
-                "Ticket not found in "
-                "workflow state."
-            )
+            raise TicketNotFoundError("Ticket not found in workflow state.")
 
-        query = (
-            f"{ticket['subject']}\n\n"
-            f"{ticket['description']}"
-        )
+        query = f"{ticket['subject']}\n\n{ticket['description']}"
 
-        matches = (
-            await KnowledgeSearchService.search(
-                db=db,
-                query=query,
-                limit=settings.rag_top_k,
-            )
+        matches = await KnowledgeSearchService.search(
+            db=db,
+            query=query,
+            limit=settings.rag_top_k,
         )
 
         path = state.get(
@@ -409,30 +323,16 @@ class AgentWorkflowService:
                 ],
             }
 
-        best_similarity = float(
-            matches[0]["similarity"]
-        )
+        best_similarity = float(matches[0]["similarity"])
 
         threshold = max(
             settings.rag_min_similarity,
-            (
-                best_similarity
-                - settings.rag_similarity_margin
-            ),
+            (best_similarity - settings.rag_similarity_margin),
         )
 
         relevant_matches = [
-            match
-            for match in matches
-            if (
-                float(
-                    match["similarity"]
-                )
-                >= threshold
-            )
-        ][
-            : settings.rag_max_sources
-        ]
+            match for match in matches if (float(match["similarity"]) >= threshold)
+        ][: settings.rag_max_sources]
 
         sources: list[dict] = []
 
@@ -440,37 +340,19 @@ class AgentWorkflowService:
             relevant_matches,
             start=1,
         ):
-
-            metadata = (
-                match.get(
-                    "metadata"
-                )
-                or {}
-            )
+            metadata = match.get("metadata") or {}
 
             sources.append(
                 {
-                    "source_id": (
-                        f"S{index}"
-                    ),
-                    "chunk_id": (
-                        match["chunk_id"]
-                    ),
-                    "document_id": (
-                        match[
-                            "document_id"
-                        ]
-                    ),
+                    "source_id": (f"S{index}"),
+                    "chunk_id": (match["chunk_id"]),
+                    "document_id": (match["document_id"]),
                     "title": metadata.get(
                         "title",
                         "Unknown document",
                     ),
-                    "content": (
-                        match["content"]
-                    ),
-                    "similarity": float(
-                        match["similarity"]
-                    ),
+                    "content": (match["content"]),
+                    "similarity": float(match["similarity"]),
                 }
             )
 
@@ -491,23 +373,14 @@ class AgentWorkflowService:
         state: AgentState,
     ) -> dict:
 
-        decision_started = (
-            time.perf_counter()
-        )
+        decision_started = time.perf_counter()
 
-        ticket = state.get(
-            "ticket"
-        )
+        ticket = state.get("ticket")
 
         if not ticket:
-            raise TicketNotFoundError(
-                "Ticket not found in "
-                "workflow state."
-            )
+            raise TicketNotFoundError("Ticket not found in workflow state.")
 
-        fast_path_action = state.get(
-            "fast_path_action"
-        )
+        fast_path_action = state.get("fast_path_action")
 
         path = state.get(
             "workflow_path",
@@ -515,10 +388,7 @@ class AgentWorkflowService:
         )
 
         if fast_path_action == "no_action":
-            decision_latency_ms = (
-                time.perf_counter()
-                - decision_started
-            ) * 1000
+            decision_latency_ms = (time.perf_counter() - decision_started) * 1000
 
             return {
                 "decision": {
@@ -554,10 +424,7 @@ class AgentWorkflowService:
             }
 
         if fast_path_action == "internal_note":
-            decision_latency_ms = (
-                time.perf_counter()
-                - decision_started
-            ) * 1000
+            decision_latency_ms = (time.perf_counter() - decision_started) * 1000
 
             return {
                 "decision": {
@@ -604,7 +471,6 @@ class AgentWorkflowService:
         )
 
         if sources:
-
             context = "\n\n".join(
                 (
                     f"[{source['source_id']}]\n"
@@ -617,11 +483,7 @@ class AgentWorkflowService:
             )
 
         else:
-
-            context = (
-                "No knowledge-base policy "
-                "was supplied."
-            )
+            context = "No knowledge-base policy was supplied."
 
         system_prompt = """
 You are the decision engine for CXOps AI.
@@ -696,61 +558,28 @@ RETRIEVED KNOWLEDGE:
 Choose the safest next action.
 """
 
-        decision_started = (
-            time.perf_counter()
+        decision_started = time.perf_counter()
+
+        structured_result = await self.decision_llm.ainvoke(
+            [
+                SystemMessage(content=(system_prompt.strip())),
+                HumanMessage(content=(user_prompt.strip())),
+            ]
         )
 
-        structured_result = (
-            await self.decision_llm.ainvoke(
-                [
-                    SystemMessage(
-                        content=(
-                            system_prompt.strip()
-                        )
-                    ),
-                    HumanMessage(
-                        content=(
-                            user_prompt.strip()
-                        )
-                    ),
-                ]
-            )
-        )
+        decision_latency_ms = (time.perf_counter() - decision_started) * 1000
 
-        decision_latency_ms = (
-            time.perf_counter()
-            - decision_started
-        ) * 1000
+        raw_message = structured_result.get("raw")
 
-        raw_message = (
-            structured_result.get(
-                "raw"
-            )
-        )
+        parsed_decision = structured_result.get("parsed")
 
-        parsed_decision = (
-            structured_result.get(
-                "parsed"
-            )
-        )
-
-        parsing_error = (
-            structured_result.get(
-                "parsing_error"
-            )
-        )
+        parsing_error = structured_result.get("parsing_error")
 
         if parsing_error is not None:
-            raise ValueError(
-                "Agent decision parsing failed: "
-                f"{parsing_error}"
-            )
+            raise ValueError(f"Agent decision parsing failed: {parsing_error}")
 
         if parsed_decision is None:
-            raise ValueError(
-                "Agent decision model returned "
-                "no parsed decision."
-            )
+            raise ValueError("Agent decision model returned no parsed decision.")
 
         decision = self._as_model(
             parsed_decision,
@@ -761,59 +590,31 @@ Choose the safest next action.
             input_tokens,
             output_tokens,
             total_tokens,
-        ) = AIObservabilityService.extract_usage(
-            raw_message
-        )
+        ) = AIObservabilityService.extract_usage(raw_message)
 
         similarities = [
-            float(
-                source["similarity"]
-            )
+            float(source["similarity"])
             for source in sources
-            if source.get(
-                "similarity"
-            )
-            is not None
+            if source.get("similarity") is not None
         ]
 
-        best_similarity = (
-            max(similarities)
-            if similarities
-            else None
-        )
+        best_similarity = max(similarities) if similarities else None
 
         return {
-            "decision": (
-                decision.model_dump()
-            ),
+            "decision": (decision.model_dump()),
             "decision_observability": {
-                "model": (
-                    settings.chat_model
-                ),
+                "model": (settings.chat_model),
                 "llm_called": True,
-                "grounded": (
-                    not needs_knowledge
-                    or bool(sources)
-                ),
-                "retrieval_count": (
-                    len(sources)
-                ),
-                "best_similarity": (
-                    best_similarity
-                ),
+                "grounded": (not needs_knowledge or bool(sources)),
+                "retrieval_count": (len(sources)),
+                "best_similarity": (best_similarity),
                 "latency_ms": round(
                     decision_latency_ms,
                     2,
                 ),
-                "input_tokens": (
-                    input_tokens
-                ),
-                "output_tokens": (
-                    output_tokens
-                ),
-                "total_tokens": (
-                    total_tokens
-                ),
+                "input_tokens": (input_tokens),
+                "output_tokens": (output_tokens),
+                "total_tokens": (total_tokens),
             },
             "workflow_path": [
                 *path,
@@ -830,19 +631,12 @@ Choose the safest next action.
         state: AgentState,
     ) -> dict:
 
-        decision = state.get(
-            "decision"
-        )
+        decision = state.get("decision")
 
         if decision is None:
-            raise ValueError(
-                "Decision was not provided "
-                "in workflow state."
-            )
+            raise ValueError("Decision was not provided in workflow state.")
 
-        action = decision.get(
-            "action"
-        )
+        action = decision.get("action")
 
         tools: list[dict] = []
 
@@ -850,19 +644,12 @@ Choose the safest next action.
             "route",
             "escalate",
         }:
-
             tools.append(
                 {
-                    "tool": (
-                        "zendesk.update_ticket"
-                    ),
+                    "tool": ("zendesk.update_ticket"),
                     "arguments": {
-                        "team": decision.get(
-                            "recommended_team"
-                        ),
-                        "priority": decision.get(
-                            "recommended_priority"
-                        ),
+                        "team": decision.get("recommended_team"),
+                        "priority": decision.get("recommended_priority"),
                     },
                     "requires_approval": True,
                 }
@@ -870,66 +657,48 @@ Choose the safest next action.
 
             tools.append(
                 {
-                    "tool": (
-                        "zendesk.add_internal_note"
-                    ),
+                    "tool": ("zendesk.add_internal_note"),
                     "arguments": {
-                        "reason": decision.get(
-                            "reason"
-                        ),
+                        "reason": decision.get("reason"),
                     },
                     "requires_approval": True,
                 }
             )
 
         elif action == "respond":
-
             tools.append(
                 {
-                    "tool": (
-                        "zendesk.send_reply"
-                    ),
+                    "tool": ("zendesk.send_reply"),
                     "arguments": {
-                        "body": decision.get(
-                            "response_draft"
-                        ),
+                        "body": decision.get("response_draft"),
                     },
                     "requires_approval": True,
                 }
             )
-            
-        elif action == "internal_note":
 
+        elif action == "internal_note":
             tools.append(
                 {
-                    "tool": (
-                        "zendesk.add_internal_note"
-                    ),
+                    "tool": ("zendesk.add_internal_note"),
                     "arguments": {
-                        "reason": decision.get(
-                            "reason"
-                        ),
+                        "reason": decision.get("reason"),
                     },
                     "requires_approval": False,
                 }
             )
 
         elif action == "human_review":
-
             tools.append(
                 {
                     "tool": "human.review",
                     "arguments": {
-                        "reason": decision.get(
-                            "reason"
-                        ),
+                        "reason": decision.get("reason"),
                     },
                     "requires_approval": False,
                 }
             )
 
         elif action == "no_action":
-
             tools.append(
                 {
                     "tool": "none",
@@ -939,23 +708,14 @@ Choose the safest next action.
             )
 
         else:
-
-            raise ValueError(
-                f"Unsupported agent action: "
-                f"{action}"
-            )
+            raise ValueError(f"Unsupported agent action: {action}")
 
         path = state.get(
             "workflow_path",
             [],
         )
 
-        tools = (
-            ToolAuthorizationService
-            .authorize_plan(
-                tools
-            )
-        )
+        tools = ToolAuthorizationService.authorize_plan(tools)
 
         return {
             "tool_plan": tools,
@@ -998,9 +758,7 @@ Choose the safest next action.
                 db=db,
             )
 
-        graph = StateGraph(
-            AgentState
-        )
+        graph = StateGraph(AgentState)
 
         graph.add_node(
             "load_ticket",
@@ -1041,12 +799,8 @@ Choose the safest next action.
             "assess_knowledge_need",
             self._route_after_assessment,
             {
-                "retrieve_knowledge": (
-                    "retrieve_knowledge"
-                ),
-                "decide_action": (
-                    "decide_action"
-                ),
+                "retrieve_knowledge": ("retrieve_knowledge"),
+                "decide_action": ("decide_action"),
             },
         )
 
@@ -1076,9 +830,7 @@ Choose the safest next action.
             }
         )
 
-        decision = result[
-            "decision"
-        ]
+        decision = result["decision"]
 
         sources = result.get(
             "sources",
@@ -1103,7 +855,6 @@ Choose the safest next action.
         run = None
 
         if persist_run:
-
             run = await AgentRunRepository.create(
                 db=db,
                 run_id=run_id,
@@ -1126,83 +877,45 @@ Choose the safest next action.
                     "tool_plan": tool_plan,
                 },
             )
-            
-            action = decision.get(
-                "action"
-            )
 
-            if (
-                action == "no_action"
-                and run is not None
-            ):
+            action = decision.get("action")
 
-                run = await (
-                    AgentRunRepository
-                    .mark_no_action(
-                        db=db,
-                        run=run,
-                        note=(
-                            "No actionable request; "
-                            "no further action required."
-                        ),
-                    )
+            if action == "no_action" and run is not None:
+                run = await AgentRunRepository.mark_no_action(
+                    db=db,
+                    run=run,
+                    note=("No actionable request; no further action required."),
                 )
 
-                await (
-                    AgentRunRepository
-                    .add_event(
-                        db=db,
-                        agent_run_id=run.id,
-                        event_type="no_action",
-                        actor="cxops-agent",
-                        note=(
-                            "Agent determined that "
-                            "no further action was required."
-                        ),
-                        event_data={
-                            "decision": decision,
-                        },
-                    )
+                await AgentRunRepository.add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="no_action",
+                    actor="cxops-agent",
+                    note=("Agent determined that no further action was required."),
+                    event_data={
+                        "decision": decision,
+                    },
                 )
 
-            elif (
-                action == "human_review"
-                and run is not None
-            ):
-
-                run = await (
-                    AgentRunRepository
-                    .mark_review_required(
-                        db=db,
-                        run=run,
-                        note=(
-                            decision.get(
-                                "reason"
-                            )
-                        ),
-                    )
+            elif action == "human_review" and run is not None:
+                run = await AgentRunRepository.mark_review_required(
+                    db=db,
+                    run=run,
+                    note=(decision.get("reason")),
                 )
 
-                await (
-                    AgentRunRepository
-                    .add_event(
-                        db=db,
-                        agent_run_id=run.id,
-                        event_type=(
-                            "review_required"
-                        ),
-                        actor="cxops-agent",
-                        note=(
-                            "Agent requires "
-                            "human review before "
-                            "further action."
-                        ),
-                        event_data={
-                            "decision": decision,
-                        },
-                    )
+                await AgentRunRepository.add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type=("review_required"),
+                    actor="cxops-agent",
+                    note=("Agent requires human review before further action."),
+                    event_data={
+                        "decision": decision,
+                    },
                 )
-            
+
         auto_job_id = None
         auto_queued = False
 
@@ -1210,36 +923,22 @@ Choose the safest next action.
             persist_run
             and allow_auto_queue
             and run is not None
-            and ToolAuthorizationService
-            .can_auto_execute(
-                tool_plan
-            )
+            and ToolAuthorizationService.can_auto_execute(tool_plan)
         ):
-
-            run = await (
-                AgentRunRepository
-                .mark_auto_approved(
-                    db=db,
-                    run=run,
-                )
+            run = await AgentRunRepository.mark_auto_approved(
+                db=db,
+                run=run,
             )
 
-            await (
-                AgentRunRepository
-                .add_event(
-                    db=db,
-                    agent_run_id=run.id,
-                    event_type="auto_approved",
-                    actor="cxops-policy",
-                    note=(
-                        "All executable tools "
-                        "were low risk and "
-                        "pre-authorized."
-                    ),
-                    event_data={
-                        "tool_plan": tool_plan,
-                    },
-                )
+            await AgentRunRepository.add_event(
+                db=db,
+                agent_run_id=run.id,
+                event_type="auto_approved",
+                actor="cxops-policy",
+                note=("All executable tools were low risk and pre-authorized."),
+                event_data={
+                    "tool_plan": tool_plan,
+                },
             )
             record_agent_auto_approval(
                 action=str(
@@ -1250,13 +949,9 @@ Choose the safest next action.
                 ),
             )
 
-
-            job = await (
-                IntegrationJobService
-                .enqueue_agent_execution(
-                    db=db,
-                    run_id=run_id,
-                )
+            job = await IntegrationJobService.enqueue_agent_execution(
+                db=db,
+                run_id=run_id,
             )
 
             auto_job_id = job["job_id"]
@@ -1274,15 +969,11 @@ Choose the safest next action.
             ).strip()
 
             if not question:
-                question = (
-                    f"ticket_id={ticket_id}"
-                )
+                question = f"ticket_id={ticket_id}"
 
             await AIObservabilityService.record(
                 db,
-                request_id=(
-                    f"agent-{run_id}"
-                ),
+                request_id=(f"agent-{run_id}"),
                 feature="agent_decision",
                 model=(
                     decision_observability.get(
@@ -1291,13 +982,7 @@ Choose the safest next action.
                     )
                 ),
                 question=question,
-                answer=(
-                    AgentDecision
-                    .model_validate(
-                        decision
-                    )
-                    .model_dump_json()
-                ),
+                answer=(AgentDecision.model_validate(decision).model_dump_json()),
                 grounded=bool(
                     decision_observability.get(
                         "grounded",
@@ -1316,11 +1001,7 @@ Choose the safest next action.
                         0,
                     )
                 ),
-                best_similarity=(
-                    decision_observability.get(
-                        "best_similarity"
-                    )
-                ),
+                best_similarity=(decision_observability.get("best_similarity")),
                 sources=sources,
                 latency_ms=float(
                     decision_observability.get(
@@ -1399,6 +1080,4 @@ Choose the safest next action.
         }
 
 
-agent_workflow_service = (
-    AgentWorkflowService()
-)
+agent_workflow_service = AgentWorkflowService()

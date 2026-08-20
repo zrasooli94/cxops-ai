@@ -9,7 +9,6 @@ class UnsupportedDocumentTypeError(Exception):
 
 
 class DocumentParserService:
-
     @staticmethod
     def parse(
         *,
@@ -20,9 +19,7 @@ class DocumentParserService:
         extension = Path(filename).suffix.lower()
 
         if extension == ".pdf":
-            return DocumentParserService._parse_pdf(
-                content
-            )
+            return DocumentParserService._parse_pdf(content)
 
         if extension in {
             ".txt",
@@ -34,18 +31,14 @@ class DocumentParserService:
                 errors="ignore",
             )
 
-        raise UnsupportedDocumentTypeError(
-            f"Unsupported file type: {extension}"
-        )
+        raise UnsupportedDocumentTypeError(f"Unsupported file type: {extension}")
 
     @staticmethod
     def _parse_pdf(
         content: bytes,
     ) -> str:
 
-        reader = PdfReader(
-            BytesIO(content)
-        )
+        reader = PdfReader(BytesIO(content))
 
         pages: list[str] = []
 
@@ -53,8 +46,6 @@ class DocumentParserService:
             text = page.extract_text()
 
             if text:
-                pages.append(
-                    text.strip()
-                )
+                pages.append(text.strip())
 
         return "\n\n".join(pages)

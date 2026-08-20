@@ -6,7 +6,6 @@ from app.models.knowledge_document import KnowledgeDocument
 
 
 class KnowledgeRepository:
-
     @staticmethod
     async def get_document_by_checksum(
         db: AsyncSession,
@@ -14,9 +13,7 @@ class KnowledgeRepository:
     ) -> KnowledgeDocument | None:
 
         result = await db.execute(
-            select(KnowledgeDocument).where(
-                KnowledgeDocument.checksum == checksum
-            )
+            select(KnowledgeDocument).where(KnowledgeDocument.checksum == checksum)
         )
 
         return result.scalar_one_or_none()
@@ -56,11 +53,7 @@ class KnowledgeRepository:
         limit: int = 5,
     ) -> list[tuple[KnowledgeChunk, float]]:
 
-        distance = (
-            KnowledgeChunk.embedding.cosine_distance(
-                embedding
-            )
-        )
+        distance = KnowledgeChunk.embedding.cosine_distance(embedding)
 
         result = await db.execute(
             select(
@@ -79,5 +72,3 @@ class KnowledgeRepository:
             )
             for row in rows
         ]
-
-    

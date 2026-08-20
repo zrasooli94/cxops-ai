@@ -7,22 +7,19 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-
 from app.schemas.observability import (
     AgentObservabilitySummary,
-    AIObservabilitySummary,
-    AIObservabilityBreakdown,
     AgentOperationalKPIs,
     AgentROISummary,
+    AIObservabilityBreakdown,
+    AIObservabilitySummary,
 )
-
 from app.services.agent_observability_service import (
     AgentObservabilityService,
 )
 from app.services.ai_observability_service import (
     AIObservabilityService,
 )
-
 
 router = APIRouter(
     prefix="/observability",
@@ -43,9 +40,7 @@ DatabaseSession = Annotated[
 async def ai_summary(
     db: DatabaseSession,
 ):
-    return await AIObservabilityService.summary(
-        db
-    )
+    return await AIObservabilityService.summary(db)
 
 
 @router.get(
@@ -55,9 +50,8 @@ async def ai_summary(
 async def agent_summary(
     db: DatabaseSession,
 ):
-    return await AgentObservabilityService.summary(
-        db
-    )
+    return await AgentObservabilityService.summary(db)
+
 
 @router.get(
     "/ai/by-feature",
@@ -66,12 +60,8 @@ async def agent_summary(
 async def ai_by_feature(
     db: DatabaseSession,
 ):
-    return await (
-        AIObservabilityService
-        .breakdown(
-            db
-        )
-    )
+    return await AIObservabilityService.breakdown(db)
+
 
 @router.get(
     "/agent/kpis",
@@ -80,12 +70,8 @@ async def ai_by_feature(
 async def agent_operational_kpis(
     db: DatabaseSession,
 ):
-    return await (
-        AgentObservabilityService
-        .operational_kpis(
-            db
-        )
-    )
+    return await AgentObservabilityService.operational_kpis(db)
+
 
 @router.get(
     "/agent/roi",
@@ -94,10 +80,4 @@ async def agent_operational_kpis(
 async def agent_roi(
     db: DatabaseSession,
 ):
-    return await (
-        AgentObservabilityService
-        .roi_summary(
-            db
-        )
-    )
-
+    return await AgentObservabilityService.roi_summary(db)

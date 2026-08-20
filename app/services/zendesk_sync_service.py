@@ -12,7 +12,6 @@ from app.repositories.ticket_repository import (
 
 
 class ZendeskSyncService:
-
     @staticmethod
     async def sync_ticket(
         db: AsyncSession,
@@ -30,9 +29,7 @@ class ZendeskSyncService:
         requester_name = None
         customer_id = None
 
-        requester_id = zendesk_ticket.get(
-            "requester_id"
-        )
+        requester_id = zendesk_ticket.get("requester_id")
 
         if requester_id:
             user_response = await zendesk_client.get_user(
@@ -42,22 +39,16 @@ class ZendeskSyncService:
 
             zendesk_user = user_response["user"]
 
-            requester_email = zendesk_user.get(
-                "email"
-            )
+            requester_email = zendesk_user.get("email")
 
             requester_name = (
-                zendesk_user.get("name")
-                or requester_email
-                or "Zendesk Customer"
+                zendesk_user.get("name") or requester_email or "Zendesk Customer"
             )
 
             if requester_email:
-                customer = (
-                    await CustomerRepository.get_by_email(
-                        db=db,
-                        email=requester_email,
-                    )
+                customer = await CustomerRepository.get_by_email(
+                    db=db,
+                    email=requester_email,
                 )
 
                 if customer is None:
@@ -67,24 +58,18 @@ class ZendeskSyncService:
                         email=requester_email,
                     )
 
-                    customer = (
-                        await CustomerRepository.create(
-                            db=db,
-                            customer=customer,
-                        )
+                    customer = await CustomerRepository.create(
+                        db=db,
+                        customer=customer,
                     )
 
                 customer_id = customer.id
 
-        external_id = str(
-            zendesk_ticket["id"]
-        )
+        external_id = str(zendesk_ticket["id"])
 
-        existing = (
-            await TicketRepository.get_by_external_id(
-                db=db,
-                external_id=external_id,
-            )
+        existing = await TicketRepository.get_by_external_id(
+            db=db,
+            external_id=external_id,
         )
 
         description = (
@@ -93,18 +78,11 @@ class ZendeskSyncService:
             or "No description"
         )
 
-        priority = (
-            zendesk_ticket.get("priority")
-            or "normal"
-        )
+        priority = zendesk_ticket.get("priority") or "normal"
 
-        status = (
-            zendesk_ticket.get("status")
-            or "new"
-        )
+        status = zendesk_ticket.get("status") or "new"
 
         if existing:
-
             changes = {
                 "subject": zendesk_ticket["subject"],
                 "description": description,

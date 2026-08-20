@@ -10,7 +10,6 @@ from app.schemas.webhook import (
 )
 from app.services.webhook_service import WebhookService
 
-
 router = APIRouter(
     prefix="/webhooks",
     tags=["Webhooks"],

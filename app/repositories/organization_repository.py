@@ -5,7 +5,6 @@ from app.models.organization import Organization
 
 
 class OrganizationRepository:
-
     @staticmethod
     async def create(
         db: AsyncSession,
@@ -22,9 +21,7 @@ class OrganizationRepository:
         organization_id: int,
     ) -> Organization | None:
         result = await db.execute(
-            select(Organization).where(
-                Organization.id == organization_id
-            )
+            select(Organization).where(Organization.id == organization_id)
         )
         return result.scalar_one_or_none()
 
@@ -33,8 +30,6 @@ class OrganizationRepository:
         db: AsyncSession,
     ) -> list[Organization]:
         result = await db.execute(
-            select(Organization).order_by(
-                Organization.created_at.desc()
-            )
+            select(Organization).order_by(Organization.created_at.desc())
         )
         return list(result.scalars().all())

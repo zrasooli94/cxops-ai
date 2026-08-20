@@ -55,9 +55,8 @@ class AgentObservabilitySummary(BaseModel):
     approval_gated_tools: int
     authorized_tools: int
 
-    integration_jobs: (
-        IntegrationJobObservabilitySummary
-    )
+    integration_jobs: IntegrationJobObservabilitySummary
+
 
 class AIFeatureObservabilitySummary(BaseModel):
     feature: str
@@ -82,9 +81,8 @@ class AIFeatureObservabilitySummary(BaseModel):
 class AIObservabilityBreakdown(BaseModel):
     overall: AIObservabilitySummary
 
-    features: list[
-        AIFeatureObservabilitySummary
-    ]
+    features: list[AIFeatureObservabilitySummary]
+
 
 class AgentOperationalKPIs(BaseModel):
     total_runs: int
@@ -109,6 +107,7 @@ class AgentOperationalKPIs(BaseModel):
 
     average_job_attempts: float
 
+
 class AgentROISummary(BaseModel):
     total_runs: int
 
@@ -120,14 +119,12 @@ class AgentROISummary(BaseModel):
 
     estimated_minutes_saved: float
     estimated_hours_saved: float
-
     estimated_labor_savings_usd: float
 
     agent_ai_cost_usd: float
     estimated_net_savings_usd: float
 
     pricing_configured: bool
-    roi_percent: float | None
 
     measurement_status: str
     minimum_autonomous_samples: int

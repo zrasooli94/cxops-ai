@@ -6,7 +6,6 @@ from app.schemas.customer import CustomerCreate
 
 
 class CustomerService:
-
     @staticmethod
     async def create(
         db: AsyncSession,

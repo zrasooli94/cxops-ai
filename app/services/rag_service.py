@@ -22,13 +22,10 @@ from app.services.knowledge_search_service import (
 
 
 class RAGService:
-
     def __init__(self) -> None:
         self.llm = ChatOpenAI(
             model=settings.chat_model,
-            api_key=SecretStr(
-                settings.openai_api_key
-            ),
+            api_key=SecretStr(settings.openai_api_key),
         )
 
     @staticmethod
@@ -48,11 +45,7 @@ class RAGService:
             return content.strip()
 
         return "".join(
-            (
-                item.get("text", "")
-                if isinstance(item, dict)
-                else str(item)
-            )
+            (item.get("text", "") if isinstance(item, dict) else str(item))
             for item in content
         ).strip()
 
@@ -67,21 +60,16 @@ class RAGService:
         request_id = uuid4().hex
         started_at = perf_counter()
 
-        limit = (
-            top_k
-            or settings.rag_top_k
-        )
+        limit = top_k or settings.rag_top_k
 
         # -------------------------------------------------
         # 1. Retrieve relevant knowledge
         # -------------------------------------------------
 
-        matches = (
-            await KnowledgeSearchService.search(
-                db=db,
-                query=question,
-                limit=limit,
-            )
+        matches = await KnowledgeSearchService.search(
+            db=db,
+            query=question,
+            limit=limit,
         )
 
         # -------------------------------------------------
@@ -89,15 +77,9 @@ class RAGService:
         # -------------------------------------------------
 
         if not matches:
+            answer_text = self._insufficient_answer()
 
-            answer_text = (
-                self._insufficient_answer()
-            )
-
-            latency_ms = (
-                perf_counter()
-                - started_at
-            ) * 1000
+            latency_ms = (perf_counter() - started_at) * 1000
 
             await AIObservabilityService.record(
                 db=db,
@@ -125,41 +107,25 @@ class RAGService:
         # 3. Adaptive retrieval filtering
         # -------------------------------------------------
 
-        best_similarity = float(
-            matches[0]["similarity"]
-        )
+        best_similarity = float(matches[0]["similarity"])
 
         adaptive_threshold = max(
             settings.rag_min_similarity,
-            best_similarity
-            - settings.rag_similarity_margin,
+            best_similarity - settings.rag_similarity_margin,
         )
 
         relevant_matches = [
-            match
-            for match in matches
-            if (
-                match["similarity"]
-                >= adaptive_threshold
-            )
-        ][
-            : settings.rag_max_sources
-        ]
+            match for match in matches if (match["similarity"] >= adaptive_threshold)
+        ][: settings.rag_max_sources]
 
         # -------------------------------------------------
         # 4. Retrieval confidence too low
         # -------------------------------------------------
 
         if not relevant_matches:
+            answer_text = self._insufficient_answer()
 
-            answer_text = (
-                self._insufficient_answer()
-            )
-
-            latency_ms = (
-                perf_counter()
-                - started_at
-            ) * 1000
+            latency_ms = (perf_counter() - started_at) * 1000
 
             await AIObservabilityService.record(
                 db=db,
@@ -194,13 +160,9 @@ class RAGService:
             relevant_matches,
             start=1,
         ):
-
             source_id = f"S{index}"
 
-            metadata = (
-                match["metadata"]
-                or {}
-            )
+            metadata = match["metadata"] or {}
 
             title = metadata.get(
                 "title",
@@ -212,10 +174,7 @@ class RAGService:
                     [
                         f"[{source_id}]",
                         f"Title: {title}",
-                        (
-                            "Content: "
-                            f"{match['content']}"
-                        ),
+                        (f"Content: {match['content']}"),
                     ]
                 )
             )
@@ -223,27 +182,15 @@ class RAGService:
             sources.append(
                 {
                     "source_id": source_id,
-                    "chunk_id": match[
-                        "chunk_id"
-                    ],
-                    "document_id": match[
-                        "document_id"
-                    ],
+                    "chunk_id": match["chunk_id"],
+                    "document_id": match["document_id"],
                     "title": title,
-                    "content": match[
-                        "content"
-                    ],
-                    "similarity": float(
-                        match[
-                            "similarity"
-                        ]
-                    ),
+                    "content": match["content"],
+                    "similarity": float(match["similarity"]),
                 }
             )
 
-        context = "\n\n".join(
-            context_sections
-        )
+        context = "\n\n".join(context_sections)
 
         # -------------------------------------------------
         # 6. Grounding / security prompt
@@ -289,12 +236,8 @@ Answer the question and cite the supporting sources.
 
         response = await self.llm.ainvoke(
             [
-                SystemMessage(
-                    content=system_prompt.strip()
-                ),
-                HumanMessage(
-                    content=user_prompt.strip()
-                ),
+                SystemMessage(content=system_prompt.strip()),
+                HumanMessage(content=user_prompt.strip()),
             ]
         )
 
@@ -306,36 +249,22 @@ Answer the question and cite the supporting sources.
             input_tokens,
             output_tokens,
             total_tokens,
-        ) = (
-            AIObservabilityService
-            .extract_usage(
-                response
-            )
-        )
+        ) = AIObservabilityService.extract_usage(response)
 
-        answer_text = (
-            self._extract_answer_text(
-                response.content
-            )
-        )
+        answer_text = self._extract_answer_text(response.content)
 
         # -------------------------------------------------
         # 9. Validate citations
         # -------------------------------------------------
 
-        valid_source_ids = {
-            source["source_id"]
-            for source in sources
-        }
+        valid_source_ids = {source["source_id"] for source in sources}
 
         (
             citations_valid,
             _invalid_citations,
         ) = CitationService.validate(
             answer=answer_text,
-            valid_source_ids=(
-                valid_source_ids
-            ),
+            valid_source_ids=(valid_source_ids),
         )
 
         # -------------------------------------------------
@@ -343,7 +272,6 @@ Answer the question and cite the supporting sources.
         # -------------------------------------------------
 
         if not citations_valid:
-
             fallback_answer = (
                 "I found potentially relevant "
                 "information, but I could not "
@@ -351,10 +279,7 @@ Answer the question and cite the supporting sources.
                 "answer with valid citations."
             )
 
-            latency_ms = (
-                perf_counter()
-                - started_at
-            ) * 1000
+            latency_ms = (perf_counter() - started_at) * 1000
 
             await AIObservabilityService.record(
                 db=db,
@@ -363,18 +288,12 @@ Answer the question and cite the supporting sources.
                 answer=fallback_answer,
                 grounded=False,
                 llm_called=True,
-                retrieval_count=len(
-                    sources
-                ),
-                best_similarity=(
-                    best_similarity
-                ),
+                retrieval_count=len(sources),
+                best_similarity=(best_similarity),
                 sources=sources,
                 latency_ms=latency_ms,
                 input_tokens=input_tokens,
-                output_tokens=(
-                    output_tokens
-                ),
+                output_tokens=(output_tokens),
                 total_tokens=total_tokens,
             )
 
@@ -383,22 +302,15 @@ Answer the question and cite the supporting sources.
                 "answer": fallback_answer,
                 "grounded": False,
                 "sources": sources,
-                "retrieval_count": len(
-                    sources
-                ),
-                "best_similarity": (
-                    best_similarity
-                ),
+                "retrieval_count": len(sources),
+                "best_similarity": (best_similarity),
             }
 
         # -------------------------------------------------
         # 11. Successful grounded answer
         # -------------------------------------------------
 
-        latency_ms = (
-            perf_counter()
-            - started_at
-        ) * 1000
+        latency_ms = (perf_counter() - started_at) * 1000
 
         await AIObservabilityService.record(
             db=db,
@@ -407,18 +319,12 @@ Answer the question and cite the supporting sources.
             answer=answer_text,
             grounded=True,
             llm_called=True,
-            retrieval_count=len(
-                sources
-            ),
-            best_similarity=(
-                best_similarity
-            ),
+            retrieval_count=len(sources),
+            best_similarity=(best_similarity),
             sources=sources,
             latency_ms=latency_ms,
             input_tokens=input_tokens,
-            output_tokens=(
-                output_tokens
-            ),
+            output_tokens=(output_tokens),
             total_tokens=total_tokens,
         )
 
@@ -427,12 +333,8 @@ Answer the question and cite the supporting sources.
             "answer": answer_text,
             "grounded": True,
             "sources": sources,
-            "retrieval_count": len(
-                sources
-            ),
-            "best_similarity": (
-                best_similarity
-            ),
+            "retrieval_count": len(sources),
+            "best_similarity": (best_similarity),
         }
 
 
