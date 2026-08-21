@@ -787,7 +787,7 @@ export default function ObservabilityPage() {
 
                       <div className="rounded-xl bg-slate-950/60 p-4">
                         <p className="text-xs text-slate-500">
-                          Failed jobs
+                          Historical failed jobs
                         </p>
 
                         <p className="mt-2 text-2xl font-semibold text-red-300">
@@ -799,7 +799,7 @@ export default function ObservabilityPage() {
 
                     <div className="mt-6 space-y-4">
                       <ProgressRow
-                        label="Retry rate"
+                        label="All-time retry rate"
                         value={
                           kpis?.queue_retry_rate ??
                           0
@@ -807,7 +807,7 @@ export default function ObservabilityPage() {
                       />
 
                       <ProgressRow
-                        label="Failure rate"
+                        label="All-time failure rate"
                         value={
                           kpis?.queue_failure_rate ??
                           0

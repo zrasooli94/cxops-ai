@@ -510,7 +510,7 @@ export default function Home() {
                           <RefreshCw className="h-4 w-4 text-amber-400" />
 
                           <span className="text-sm text-slate-300">
-                            Retry rate
+                            All-time retry rate
                           </span>
                         </div>
 
@@ -526,7 +526,7 @@ export default function Home() {
                           <TriangleAlert className="h-4 w-4 text-red-400" />
 
                           <span className="text-sm text-slate-300">
-                            Failure rate
+                            All-time failure rate
                           </span>
                         </div>
 
