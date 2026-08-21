@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8faff;
+  --foreground: #111827;
 }
 
 @theme inline {
@@ -12,15 +12,121 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
 }
 
 body {
-  background: var(--background);
+  margin: 0;
+  min-height: 100vh;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, sans-serif;
+  overflow-x: hidden;
+
+  background:
+    radial-gradient(
+      circle at 70% 3%,
+      rgba(128, 104, 255, 0.10),
+      transparent 28rem
+    ),
+    radial-gradient(
+      circle at 40% 34%,
+      rgba(74, 163, 255, 0.07),
+      transparent 32rem
+    ),
+    linear-gradient(
+      180deg,
+      #ffffff 0%,
+      #f8faff 46%,
+      #f5f8ff 100%
+    );
+}
+
+::selection {
+  background: #6c63ff;
+  color: white;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f5f7fb;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ccd4e2;
+  border-radius: 999px;
+}
+
+.app-panel {
+  border: 1px solid rgba(218, 224, 234, 0.86);
+  background: rgba(255, 255, 255, 0.79);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+
+  box-shadow:
+    0 18px 55px rgba(69, 83, 116, 0.055),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.soft-grid {
+  background-image:
+    linear-gradient(
+      rgba(87, 113, 170, 0.045) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      rgba(87, 113, 170, 0.045) 1px,
+      transparent 1px
+    );
+  background-size: 54px 54px;
+}
+
+.dot-grid {
+  background-image:
+    radial-gradient(
+      rgba(83, 103, 151, 0.18) 0.8px,
+      transparent 0.8px
+    );
+  background-size: 20px 20px;
+}
+
+.gradient-text {
+  background: linear-gradient(
+    90deg,
+    #7b5cff,
+    #5c85ff 48%,
+    #53b4ff
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.editorial-number {
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

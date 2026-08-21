@@ -1,25 +1,28 @@
 "use client";
 
 import {
-  Activity,
   Bot,
   BrainCircuit,
   CheckCircle2,
+  ChevronRight,
+  CircleDot,
   Database,
   FileText,
-  Gauge,
+  Layers3,
   LoaderCircle,
   Search,
   Send,
   ShieldCheck,
   Sparkles,
-  Ticket,
   Upload,
-  Workflow,
   XCircle,
 } from "lucide-react";
-import Link from "next/link";
-import { FormEvent, useState } from "react";
+import {
+  type FormEvent,
+  useState,
+} from "react";
+
+import AppSidebar from "@/components/app-sidebar";
 
 type RAGSource = {
   source_id: string;
@@ -68,60 +71,39 @@ type Tab =
   | "search"
   | "ingest";
 
-function SidebarItem({
-  href,
-  icon: Icon,
-  label,
-  active = false,
-}: {
-  href: string;
-  icon: typeof Activity;
-  label: string;
-  active?: boolean;
-}) {
-  return (
-    <Link
-      href={href}
-      className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${
-        active
-          ? "bg-cyan-400/10 text-cyan-300"
-          : "text-slate-400 hover:bg-slate-900 hover:text-white"
-      }`}
-    >
-      <Icon className="h-4 w-4" />
-      {label}
-    </Link>
-  );
-}
+type BadgeVariant =
+  | "default"
+  | "success"
+  | "warning"
+  | "danger"
+  | "info"
+  | "violet";
 
 function Badge({
   children,
   variant = "default",
 }: {
   children: React.ReactNode;
-  variant?:
-    | "default"
-    | "success"
-    | "warning"
-    | "danger"
-    | "info";
+  variant?: BadgeVariant;
 }) {
-  const styles = {
+  const styles: Record<BadgeVariant, string> = {
     default:
-      "bg-slate-800 text-slate-300",
+      "border-slate-200 bg-slate-50 text-slate-600",
     success:
-      "bg-emerald-400/10 text-emerald-300",
+      "border-emerald-200 bg-emerald-50 text-emerald-700",
     warning:
-      "bg-amber-400/10 text-amber-300",
+      "border-amber-200 bg-amber-50 text-amber-700",
     danger:
-      "bg-red-400/10 text-red-300",
+      "border-rose-200 bg-rose-50 text-rose-700",
     info:
-      "bg-cyan-400/10 text-cyan-300",
+      "border-blue-200 bg-blue-50 text-blue-700",
+    violet:
+      "border-violet-200 bg-violet-50 text-violet-700",
   };
 
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${styles[variant]}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${styles[variant]}`}
     >
       {children}
     </span>
@@ -140,13 +122,66 @@ function metadataTitle(
   return null;
 }
 
+function TechnologyCard({
+  title,
+  value,
+  description,
+  icon: Icon,
+  tone,
+}: {
+  title: string;
+  value: string;
+  description: string;
+  icon: typeof Database;
+  tone: "violet" | "blue" | "emerald";
+}) {
+  const styles = {
+    violet:
+      "bg-violet-50 text-violet-500",
+    blue: "bg-blue-50 text-blue-500",
+    emerald:
+      "bg-emerald-50 text-emerald-500",
+  }[tone];
+
+  return (
+    <div className="app-panel rounded-[20px] p-6">
+      <div
+        className={`flex h-10 w-10 items-center justify-center rounded-xl ${styles}`}
+      >
+        <Icon className="h-5 w-5" />
+      </div>
+
+      <p className="mt-5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+        {title}
+      </p>
+
+      <p className="mt-2 font-medium tracking-[-0.025em] text-slate-900">
+        {value}
+      </p>
+
+      <p className="mt-2 text-xs leading-5 text-slate-500">
+        {description}
+      </p>
+    </div>
+  );
+}
+
+function FieldLabel({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-400">
+      {children}
+    </label>
+  );
+}
+
 export default function KnowledgePage() {
   const [tab, setTab] =
     useState<Tab>("rag");
 
-  /*
-   * RAG Playground
-   */
   const [question, setQuestion] =
     useState(
       "How long does a normal withdrawal take?",
@@ -158,45 +193,57 @@ export default function KnowledgePage() {
   const [answer, setAnswer] =
     useState<RAGAnswer | null>(null);
 
-  const [answerLoading, setAnswerLoading] =
-    useState(false);
+  const [
+    answerLoading,
+    setAnswerLoading,
+  ] = useState(false);
 
-  const [answerError, setAnswerError] =
-    useState("");
+  const [
+    answerError,
+    setAnswerError,
+  ] = useState("");
 
-  /*
-   * Semantic Search
-   */
-  const [searchQuery, setSearchQuery] =
-    useState(
-      "withdrawal processing time",
-    );
+  const [
+    searchQuery,
+    setSearchQuery,
+  ] = useState(
+    "withdrawal processing time",
+  );
 
-  const [searchLimit, setSearchLimit] =
-    useState(5);
+  const [
+    searchLimit,
+    setSearchLimit,
+  ] = useState(5);
 
-  const [searchResults, setSearchResults] =
-    useState<SearchResult[]>([]);
+  const [
+    searchResults,
+    setSearchResults,
+  ] = useState<SearchResult[]>([]);
 
-  const [searchLoading, setSearchLoading] =
-    useState(false);
+  const [
+    searchLoading,
+    setSearchLoading,
+  ] = useState(false);
 
-  const [searchError, setSearchError] =
-    useState("");
+  const [
+    searchError,
+    setSearchError,
+  ] = useState("");
 
-  /*
-   * Manual ingestion
-   */
-  const [documentTitle, setDocumentTitle] =
-    useState("");
+  const [
+    documentTitle,
+    setDocumentTitle,
+  ] = useState("");
 
   const [
     documentContent,
     setDocumentContent,
   ] = useState("");
 
-  const [documentSource, setDocumentSource] =
-    useState("manual");
+  const [
+    documentSource,
+    setDocumentSource,
+  ] = useState("manual");
 
   const [
     ingestLoading,
@@ -210,17 +257,20 @@ export default function KnowledgePage() {
     null,
   );
 
-  const [ingestError, setIngestError] =
-    useState("");
+  const [
+    ingestError,
+    setIngestError,
+  ] = useState("");
 
-  /*
-   * File ingestion
-   */
-  const [uploadFile, setUploadFile] =
-    useState<File | null>(null);
+  const [
+    uploadFile,
+    setUploadFile,
+  ] = useState<File | null>(null);
 
-  const [uploadTitle, setUploadTitle] =
-    useState("");
+  const [
+    uploadTitle,
+    setUploadTitle,
+  ] = useState("");
 
   const [
     uploadLoading,
@@ -234,8 +284,10 @@ export default function KnowledgePage() {
     null,
   );
 
-  const [uploadError, setUploadError] =
-    useState("");
+  const [
+    uploadError,
+    setUploadError,
+  ] = useState("");
 
   async function askKnowledge(
     event?: FormEvent,
@@ -255,12 +307,10 @@ export default function KnowledgePage() {
         "/api/backend/knowledge/answer",
         {
           method: "POST",
-
           headers: {
             "content-type":
               "application/json",
           },
-
           body: JSON.stringify({
             question: question.trim(),
             top_k: topK,
@@ -268,7 +318,8 @@ export default function KnowledgePage() {
         },
       );
 
-      const body = await response.json();
+      const body =
+        await response.json();
 
       if (!response.ok) {
         throw new Error(
@@ -307,12 +358,10 @@ export default function KnowledgePage() {
         "/api/backend/knowledge/search",
         {
           method: "POST",
-
           headers: {
             "content-type":
               "application/json",
           },
-
           body: JSON.stringify({
             query: searchQuery.trim(),
             limit: searchLimit,
@@ -320,7 +369,8 @@ export default function KnowledgePage() {
         },
       );
 
-      const body = await response.json();
+      const body =
+        await response.json();
 
       if (!response.ok) {
         throw new Error(
@@ -364,25 +414,19 @@ export default function KnowledgePage() {
         "/api/backend/knowledge/documents",
         {
           method: "POST",
-
           headers: {
             "content-type":
               "application/json",
           },
-
           body: JSON.stringify({
             title:
               documentTitle.trim(),
-
             content:
               documentContent.trim(),
-
             source:
               documentSource.trim() ||
               "manual",
-
             source_uri: null,
-
             metadata: {
               ingested_from:
                 "cxops-control-center",
@@ -391,7 +435,8 @@ export default function KnowledgePage() {
         },
       );
 
-      const body = await response.json();
+      const body =
+        await response.json();
 
       if (!response.ok) {
         throw new Error(
@@ -428,7 +473,8 @@ export default function KnowledgePage() {
     setUploadResult(null);
 
     try {
-      const formData = new FormData();
+      const formData =
+        new FormData();
 
       formData.append(
         "file",
@@ -455,7 +501,8 @@ export default function KnowledgePage() {
         },
       );
 
-      const body = await response.json();
+      const body =
+        await response.json();
 
       if (!response.ok) {
         throw new Error(
@@ -478,481 +525,460 @@ export default function KnowledgePage() {
     }
   }
 
+  const examples = [
+    "How long does a withdrawal normally take?",
+    "What happens if a deposit is missing?",
+    "What are the identity verification requirements?",
+    "What is the company vacation policy?",
+  ];
+
   return (
-    <div className="min-h-screen bg-[#070b14] text-white">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-[#090e18] p-5 lg:block">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-400 text-slate-950">
-              <BrainCircuit className="h-6 w-6" />
-            </div>
+    <div className="min-h-screen">
+      <AppSidebar active="/knowledge" />
 
+      <div className="xl:pl-[230px]">
+        <header className="fixed left-0 right-0 top-0 z-40 border-b border-slate-200/60 bg-white/70 backdrop-blur-xl xl:left-[230px]">
+          <div className="mx-auto flex h-[74px] max-w-[1450px] items-center justify-between px-6 lg:px-10">
             <div>
-              <h1 className="font-semibold">
-                CXOps AI
-              </h1>
-
-              <p className="text-xs text-slate-500">
-                Control Center
+              <p className="text-sm font-semibold tracking-[-0.03em] text-slate-950">
+                Knowledge
               </p>
-            </div>
-          </div>
 
-          <nav className="space-y-1">
-            <SidebarItem
-              href="/"
-              icon={Gauge}
-              label="Operations"
-            />
-
-            <SidebarItem
-              href="/tickets"
-              icon={Ticket}
-              label="Tickets"
-            />
-
-            <SidebarItem
-              href="/agent"
-              icon={Bot}
-              label="AI Agent"
-            />
-
-            <SidebarItem
-              href="/approvals"
-              icon={ShieldCheck}
-              label="Approval Queue"
-            />
-
-            <SidebarItem
-              href="/knowledge"
-              icon={BrainCircuit}
-              label="Knowledge / RAG"
-              active
-            />
-
-            <SidebarItem
-              href="/runs"
-              icon={Workflow}
-              label="Agent Runs"
-            />
-
-            <SidebarItem
-              href="/observability"
-              icon={Activity}
-              label="Observability"
-            />
-          </nav>
-
-          <div className="mt-10 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <div className="flex items-center gap-2 text-sm">
-              <div className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-
-              <span>
-                Vector search active
-              </span>
-            </div>
-
-            <p className="mt-2 text-xs leading-5 text-slate-500">
-              OpenAI embeddings +
-              PostgreSQL pgvector
-            </p>
-          </div>
-        </aside>
-
-        <main className="min-w-0 flex-1">
-          <header className="border-b border-slate-800 bg-[#090e18]/80 px-6 py-5 xl:px-10">
-            <div>
-              <p className="text-sm font-medium text-cyan-400">
+              <p className="hidden text-[11px] text-slate-400 sm:block">
                 Retrieval-Augmented Generation
               </p>
-
-              <h2 className="mt-1 text-2xl font-semibold">
-                Knowledge / RAG
-              </h2>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Query the live vector knowledge
-                base, inspect retrieval evidence
-                and ingest new policy documents.
-              </p>
-            </div>
-          </header>
-
-          <div className="p-6 xl:p-10">
-            <section className="mb-6 grid gap-4 md:grid-cols-3">
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-xl bg-cyan-400/10 p-3">
-                    <Database className="h-5 w-5 text-cyan-400" />
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">
-                      Vector Store
-                    </p>
-
-                    <p className="mt-1 font-semibold">
-                      PostgreSQL + pgvector
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-xl bg-emerald-400/10 p-3">
-                    <BrainCircuit className="h-5 w-5 text-emerald-400" />
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">
-                      Retrieval
-                    </p>
-
-                    <p className="mt-1 font-semibold">
-                      Semantic similarity
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-xl bg-amber-400/10 p-3">
-                    <ShieldCheck className="h-5 w-5 text-amber-400" />
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">
-                      Generation
-                    </p>
-
-                    <p className="mt-1 font-semibold">
-                      Grounded + cited
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <div className="mb-6 flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-2">
-              <button
-                onClick={() => setTab("rag")}
-                className={`rounded-lg px-4 py-2 text-sm transition ${
-                  tab === "rag"
-                    ? "bg-cyan-400 text-slate-950"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                }`}
-              >
-                RAG Playground
-              </button>
-
-              <button
-                onClick={() =>
-                  setTab("search")
-                }
-                className={`rounded-lg px-4 py-2 text-sm transition ${
-                  tab === "search"
-                    ? "bg-cyan-400 text-slate-950"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                }`}
-              >
-                Semantic Search
-              </button>
-
-              <button
-                onClick={() =>
-                  setTab("ingest")
-                }
-                className={`rounded-lg px-4 py-2 text-sm transition ${
-                  tab === "ingest"
-                    ? "bg-cyan-400 text-slate-950"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                }`}
-              >
-                Ingest Knowledge
-              </button>
             </div>
 
-            {tab === "rag" && (
-              <div className="grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
-                <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-cyan-400" />
+            <div className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-4 py-2 text-[11px] text-slate-500 shadow-sm sm:flex">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
+              Vector search active
+            </div>
+          </div>
+        </header>
 
-                    <h3 className="font-semibold">
+        <main className="mx-auto max-w-[1450px] px-6 pb-16 pt-[112px] lg:px-10">
+          <section className="mb-8">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#7160ff]">
+              Retrieval-Augmented Generation
+            </p>
+
+            <h1 className="mt-4 text-4xl font-light tracking-[-0.055em] text-slate-950 md:text-5xl">
+              Knowledge / RAG
+            </h1>
+
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-500">
+              Query the live vector knowledge
+              base, inspect the exact evidence
+              used by generation, and add new
+              policy documents to the retrieval
+              pipeline.
+            </p>
+          </section>
+
+          <section className="mb-7 grid gap-4 md:grid-cols-3">
+            <TechnologyCard
+              title="Vector store"
+              value="PostgreSQL + pgvector"
+              description="Persistent semantic vectors stored alongside operational data."
+              icon={Database}
+              tone="violet"
+            />
+
+            <TechnologyCard
+              title="Retrieval"
+              value="Semantic similarity"
+              description="Relevant policy chunks are ranked by vector similarity."
+              icon={BrainCircuit}
+              tone="blue"
+            />
+
+            <TechnologyCard
+              title="Generation"
+              value="Grounded + cited"
+              description="Answers expose supporting evidence rather than hiding retrieval."
+              icon={ShieldCheck}
+              tone="emerald"
+            />
+          </section>
+
+          <div className="app-panel mb-7 inline-flex flex-wrap gap-1 rounded-[18px] p-1.5">
+            {[
+              {
+                id: "rag" as Tab,
+                label: "RAG Playground",
+                icon: Sparkles,
+              },
+              {
+                id: "search" as Tab,
+                label: "Semantic Search",
+                icon: Search,
+              },
+              {
+                id: "ingest" as Tab,
+                label: "Ingest Knowledge",
+                icon: Upload,
+              },
+            ].map((item) => {
+              const Icon = item.icon;
+              const active =
+                tab === item.id;
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() =>
+                    setTab(item.id)
+                  }
+                  className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-medium transition ${
+                    active
+                      ? "bg-[#111827] text-white shadow-[0_8px_22px_rgba(17,24,39,0.12)]"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {tab === "rag" && (
+            <div className="grid gap-6 xl:grid-cols-[390px_minmax(0,1fr)]">
+              <section className="app-panel self-start rounded-[22px] p-6 xl:sticky xl:top-[96px]">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-blue-500 text-white shadow-[0_12px_28px_rgba(105,87,255,0.2)]">
+                    <Sparkles className="h-5 w-5" />
+                  </div>
+
+                  <div>
+                    <h2 className="font-medium text-slate-950">
                       Ask Knowledge Base
-                    </h3>
+                    </h2>
+
+                    <p className="text-xs text-slate-400">
+                      Grounded policy answer
+                    </p>
                   </div>
+                </div>
 
-                  <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Ask a customer-support
-                    policy question. The backend
-                    retrieves relevant pgvector
-                    chunks before generating a
-                    grounded answer.
-                  </p>
+                <p className="mt-5 text-sm leading-6 text-slate-500">
+                  Ask a customer-support policy
+                  question. CXOps retrieves
+                  relevant chunks before the
+                  answer is generated.
+                </p>
 
-                  <form
-                    onSubmit={askKnowledge}
-                    className="mt-6"
-                  >
-                    <textarea
-                      value={question}
+                <form
+                  onSubmit={askKnowledge}
+                  className="mt-6"
+                >
+                  <FieldLabel>
+                    Question
+                  </FieldLabel>
+
+                  <textarea
+                    value={question}
+                    onChange={(event) =>
+                      setQuestion(
+                        event.target.value,
+                      )
+                    }
+                    rows={7}
+                    maxLength={2000}
+                    placeholder="Ask a policy question..."
+                    className="mt-2 w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 text-sm leading-6 text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                  />
+
+                  <div className="mt-4">
+                    <FieldLabel>
+                      Maximum retrieval candidates
+                    </FieldLabel>
+
+                    <select
+                      value={topK}
                       onChange={(event) =>
-                        setQuestion(
-                          event.target.value,
+                        setTopK(
+                          Number(
+                            event.target.value,
+                          ),
                         )
                       }
-                      rows={7}
-                      maxLength={2000}
-                      className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm leading-6 outline-none transition placeholder:text-slate-600 focus:border-cyan-500"
-                      placeholder="Ask a policy question..."
-                    />
-
-                    <div className="mt-4">
-                      <label className="text-xs text-slate-500">
-                        Maximum retrieval
-                        candidates
-                      </label>
-
-                      <select
-                        value={topK}
-                        onChange={(event) =>
-                          setTopK(
-                            Number(
-                              event.target.value,
-                            ),
-                          )
-                        }
-                        className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm outline-none focus:border-cyan-500"
-                      >
-                        {[1, 2, 3, 4, 5, 6, 8, 10].map(
-                          (value) => (
-                            <option
-                              key={value}
-                              value={value}
-                            >
-                              Top {value}
-                            </option>
-                          ),
-                        )}
-                      </select>
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={
-                        answerLoading ||
-                        question.trim().length <
-                          2
-                      }
-                      className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50"
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:ring-4 focus:ring-violet-100/50"
                     >
-                      {answerLoading ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Send className="h-4 w-4" />
-                      )}
-
-                      {answerLoading
-                        ? "Retrieving & generating..."
-                        : "Ask CXOps RAG"}
-                    </button>
-                  </form>
-
-                  <div className="mt-6 border-t border-slate-800 pt-5">
-                    <p className="text-xs uppercase tracking-wider text-slate-600">
-                      Example questions
-                    </p>
-
-                    <div className="mt-3 space-y-2">
                       {[
-                        "How long does a withdrawal normally take?",
-                        "What happens if a deposit is missing?",
-                        "What are the identity verification requirements?",
-                        "What is the company vacation policy?",
-                      ].map((example) => (
-                        <button
-                          key={example}
-                          onClick={() =>
-                            setQuestion(example)
-                          }
-                          className="block w-full rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2.5 text-left text-xs leading-5 text-slate-400 transition hover:border-slate-700 hover:text-white"
+                        1,
+                        2,
+                        3,
+                        4,
+                        5,
+                        6,
+                        8,
+                        10,
+                      ].map((value) => (
+                        <option
+                          key={value}
+                          value={value}
                         >
-                          {example}
-                        </button>
+                          Top {value}
+                        </option>
                       ))}
-                    </div>
+                    </select>
                   </div>
-                </section>
 
-                <section className="min-w-0">
-                  {answerError && (
-                    <div className="flex items-center gap-3 rounded-2xl border border-red-900/50 bg-red-950/20 p-5 text-sm text-red-300">
-                      <XCircle className="h-5 w-5" />
-
-                      {answerError}
-                    </div>
-                  )}
-
-                  {answerLoading && (
-                    <div className="flex min-h-[420px] items-center justify-center rounded-2xl border border-cyan-900/40 bg-cyan-950/10">
-                      <div className="text-center">
-                        <LoaderCircle className="mx-auto h-8 w-8 animate-spin text-cyan-400" />
-
-                        <p className="mt-4 font-medium">
-                          Running RAG pipeline
-                        </p>
-
-                        <p className="mt-2 text-sm text-slate-500">
-                          Embedding → pgvector
-                          retrieval → grounding →
-                          generation
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {!answer &&
-                    !answerLoading &&
-                    !answerError && (
-                      <div className="flex min-h-[420px] items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/30">
-                        <div className="max-w-md text-center">
-                          <BrainCircuit className="mx-auto h-10 w-10 text-slate-600" />
-
-                          <p className="mt-4 font-medium text-slate-300">
-                            RAG Playground
-                          </p>
-
-                          <p className="mt-2 text-sm leading-6 text-slate-500">
-                            Ask a question to inspect
-                            the generated answer and
-                            the exact knowledge chunks
-                            used as evidence.
-                          </p>
-                        </div>
-                      </div>
+                  <button
+                    type="submit"
+                    disabled={
+                      answerLoading ||
+                      question.trim().length <
+                        2
+                    }
+                    className="mt-5 flex w-full items-center justify-center gap-2.5 rounded-full bg-[#111827] px-5 py-3.5 text-sm font-medium text-white shadow-[0_12px_30px_rgba(17,24,39,0.15)] transition hover:-translate-y-0.5 hover:bg-gradient-to-r hover:from-[#765cff] hover:to-[#508cff] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {answerLoading ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
                     )}
 
-                  {answer && !answerLoading && (
-                    <div className="space-y-6">
-                      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-                          <div className="flex items-center gap-2">
-                            <Bot className="h-5 w-5 text-cyan-400" />
+                    {answerLoading
+                      ? "Retrieving & generating..."
+                      : "Ask CXOps RAG"}
+                  </button>
+                </form>
 
-                            <h3 className="font-semibold">
-                              Grounded Answer
-                            </h3>
-                          </div>
+                <div className="mt-6 border-t border-slate-200/70 pt-5">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                    Example questions
+                  </p>
 
-                          {answer.grounded ? (
-                            <Badge variant="success">
-                              Grounded
-                            </Badge>
-                          ) : (
-                            <Badge variant="warning">
-                              Insufficient grounding
-                            </Badge>
-                          )}
-                        </div>
+                  <div className="mt-3 space-y-2">
+                    {examples.map(
+                      (example) => (
+                        <button
+                          key={example}
+                          type="button"
+                          onClick={() =>
+                            setQuestion(
+                              example,
+                            )
+                          }
+                          className="group flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white/70 px-3.5 py-3 text-left text-xs leading-5 text-slate-500 transition hover:border-violet-200 hover:bg-violet-50/40 hover:text-slate-800"
+                        >
+                          <span>
+                            {example}
+                          </span>
 
-                        <p className="mt-5 whitespace-pre-wrap text-sm leading-7 text-slate-300">
-                          {answer.answer}
-                        </p>
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-violet-400" />
+                        </button>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </section>
 
-                        <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                          <div className="rounded-xl bg-slate-950/60 p-4">
-                            <p className="text-xs text-slate-500">
-                              Retrieved sources
-                            </p>
+              <section className="min-w-0">
+                {answerError && (
+                  <div className="flex items-start gap-3 rounded-[20px] border border-red-200 bg-red-50/80 p-5 text-sm text-red-700">
+                    <XCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                    {answerError}
+                  </div>
+                )}
 
-                            <p className="mt-2 text-xl font-semibold">
-                              {
-                                answer.retrieval_count
-                              }
-                            </p>
-                          </div>
+                {answerLoading && (
+                  <div className="app-panel relative flex min-h-[520px] overflow-hidden rounded-[22px]">
+                    <div className="absolute inset-0 bg-gradient-to-br from-violet-50/80 via-white to-blue-50/60" />
+                    <div className="soft-grid absolute inset-0 opacity-25" />
 
-                          <div className="rounded-xl bg-slate-950/60 p-4">
-                            <p className="text-xs text-slate-500">
-                              Best similarity
-                            </p>
-
-                            <p className="mt-2 text-xl font-semibold">
-                              {answer.best_similarity !==
-                              null
-                                ? `${(
-                                    answer.best_similarity *
-                                    100
-                                  ).toFixed(1)}%`
-                                : "—"}
-                            </p>
-                          </div>
-
-                          <div className="rounded-xl bg-slate-950/60 p-4">
-                            <p className="text-xs text-slate-500">
-                              Grounding
-                            </p>
-
-                            <p
-                              className={`mt-2 text-xl font-semibold ${
-                                answer.grounded
-                                  ? "text-emerald-400"
-                                  : "text-amber-400"
-                              }`}
-                            >
-                              {answer.grounded
-                                ? "Verified"
-                                : "Guarded"}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="mt-5 rounded-lg border border-slate-800 bg-slate-950/40 px-4 py-3">
-                          <p className="text-xs text-slate-600">
-                            Request ID
-                          </p>
-
-                          <p className="mt-1 break-all font-mono text-xs text-slate-400">
-                            {answer.request_id}
-                          </p>
-                        </div>
+                    <div className="relative m-auto px-8 text-center">
+                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[22px] bg-white shadow-[0_20px_55px_rgba(98,82,255,0.14)]">
+                        <LoaderCircle className="h-8 w-8 animate-spin text-violet-500" />
                       </div>
 
-                      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                        <div className="flex items-center justify-between gap-4">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <Database className="h-5 w-5 text-cyan-400" />
+                      <h3 className="mt-6 text-lg font-medium text-slate-950">
+                        Running RAG pipeline
+                      </h3>
 
-                              <h3 className="font-semibold">
-                                Retrieved Evidence
-                              </h3>
+                      <p className="mt-2 text-sm text-slate-500">
+                        Embedding → pgvector
+                        retrieval → grounding →
+                        generation
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {!answer &&
+                  !answerLoading &&
+                  !answerError && (
+                    <div className="app-panel relative flex min-h-[520px] overflow-hidden rounded-[22px]">
+                      <div className="soft-grid absolute inset-0 opacity-20" />
+
+                      <div className="relative m-auto max-w-lg px-8 text-center">
+                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[22px] bg-gradient-to-br from-violet-50 to-blue-50 text-violet-500">
+                          <BrainCircuit className="h-7 w-7" />
+                        </div>
+
+                        <p className="mt-6 text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-500">
+                          RAG Playground
+                        </p>
+
+                        <h2 className="mt-4 text-3xl font-light tracking-[-0.045em] text-slate-950">
+                          Inspect what the AI
+                          actually knows.
+                        </h2>
+
+                        <p className="mt-4 text-sm leading-7 text-slate-500">
+                          Ask a question to view
+                          both the generated answer
+                          and the exact knowledge
+                          chunks used as evidence.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                {answer &&
+                  !answerLoading && (
+                    <div className="space-y-6">
+                      <section className="app-panel overflow-hidden rounded-[22px]">
+                        <div className="border-b border-slate-200/70 bg-gradient-to-r from-violet-50/70 via-white to-blue-50/55 p-6 md:p-7">
+                          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-blue-500 text-white">
+                                <Bot className="h-5 w-5" />
+                              </div>
+
+                              <div>
+                                <h2 className="font-medium text-slate-950">
+                                  Grounded Answer
+                                </h2>
+
+                                <p className="text-xs text-slate-400">
+                                  Generated from retrieved evidence
+                                </p>
+                              </div>
                             </div>
 
-                            <p className="mt-1 text-sm text-slate-500">
-                              Knowledge chunks supplied
-                              to the generation layer.
+                            {answer.grounded ? (
+                              <Badge variant="success">
+                                Grounded
+                              </Badge>
+                            ) : (
+                              <Badge variant="warning">
+                                Insufficient grounding
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="p-6 md:p-7">
+                          <p className="whitespace-pre-wrap text-sm leading-8 text-slate-600">
+                            {answer.answer}
+                          </p>
+
+                          <div className="mt-7 grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                                Retrieved sources
+                              </p>
+
+                              <p className="editorial-number mt-2 text-2xl font-medium text-slate-950">
+                                {
+                                  answer.retrieval_count
+                                }
+                              </p>
+                            </div>
+
+                            <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                                Best similarity
+                              </p>
+
+                              <p className="editorial-number mt-2 text-2xl font-medium text-slate-950">
+                                {answer.best_similarity !==
+                                null
+                                  ? `${(
+                                      answer.best_similarity *
+                                      100
+                                    ).toFixed(
+                                      1,
+                                    )}%`
+                                  : "—"}
+                              </p>
+                            </div>
+
+                            <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                                Grounding
+                              </p>
+
+                              <p
+                                className={`mt-2 text-xl font-medium ${
+                                  answer.grounded
+                                    ? "text-emerald-600"
+                                    : "text-amber-600"
+                                }`}
+                              >
+                                {answer.grounded
+                                  ? "Verified"
+                                  : "Guarded"}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
+                            <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                              Request ID
                             </p>
+
+                            <p className="mt-1 break-all font-mono text-xs text-slate-500">
+                              {answer.request_id}
+                            </p>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="app-panel rounded-[22px] p-6 md:p-7">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-500">
+                              <Database className="h-5 w-5" />
+                            </div>
+
+                            <div>
+                              <h2 className="font-medium text-slate-900">
+                                Retrieved Evidence
+                              </h2>
+
+                              <p className="text-xs text-slate-400">
+                                Knowledge supplied
+                                to generation
+                              </p>
+                            </div>
                           </div>
 
                           <Badge variant="info">
-                            {answer.sources.length}{" "}
-                            sources
+                            {
+                              answer.sources.length
+                            }{" "}
+                            source
+                            {answer.sources
+                              .length === 1
+                              ? ""
+                              : "s"}
                           </Badge>
                         </div>
 
                         {answer.sources.length ===
                         0 ? (
-                          <div className="mt-5 rounded-xl border border-amber-900/30 bg-amber-950/10 p-5">
-                            <p className="text-sm font-medium text-amber-300">
+                          <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50/65 p-5">
+                            <p className="font-medium text-amber-800">
                               No relevant policy
                               evidence found
                             </p>
 
-                            <p className="mt-2 text-sm leading-6 text-slate-500">
+                            <p className="mt-2 text-sm leading-6 text-amber-700">
                               CXOps should refuse to
                               invent company policy
                               when the knowledge base
@@ -961,30 +987,33 @@ export default function KnowledgePage() {
                             </p>
                           </div>
                         ) : (
-                          <div className="mt-5 space-y-4">
+                          <div
+                            data-lenis-prevent
+                            className="mt-6 max-h-[760px] space-y-4 overflow-y-auto overscroll-contain pr-1"
+                          >
                             {answer.sources.map(
                               (source) => (
                                 <div
                                   key={`${source.source_id}-${source.chunk_id}`}
-                                  className="rounded-xl border border-slate-800 bg-slate-950/50 p-5"
+                                  className="rounded-2xl border border-slate-200/80 bg-[#fbfcff] p-5"
                                 >
                                   <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
                                     <div>
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex flex-wrap items-center gap-2">
                                         <Badge variant="info">
                                           {
                                             source.source_id
                                           }
                                         </Badge>
 
-                                        <p className="font-medium text-slate-200">
+                                        <p className="font-medium text-slate-800">
                                           {
                                             source.title
                                           }
                                         </p>
                                       </div>
 
-                                      <p className="mt-2 text-xs text-slate-600">
+                                      <p className="mt-2 text-xs text-slate-400">
                                         Document{" "}
                                         {
                                           source.document_id
@@ -1007,7 +1036,7 @@ export default function KnowledgePage() {
                                     </Badge>
                                   </div>
 
-                                  <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-slate-400">
+                                  <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-slate-500">
                                     {
                                       source.content
                                     }
@@ -1017,48 +1046,61 @@ export default function KnowledgePage() {
                             )}
                           </div>
                         )}
-                      </div>
+                      </section>
                     </div>
                   )}
-                </section>
-              </div>
-            )}
+              </section>
+            </div>
+          )}
 
-            {tab === "search" && (
-              <div className="grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
-                <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                  <div className="flex items-center gap-2">
-                    <Search className="h-5 w-5 text-cyan-400" />
-
-                    <h3 className="font-semibold">
-                      Vector Search
-                    </h3>
+          {tab === "search" && (
+            <div className="grid gap-6 xl:grid-cols-[390px_minmax(0,1fr)]">
+              <section className="app-panel self-start rounded-[22px] p-6 xl:sticky xl:top-[96px]">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 text-blue-500">
+                    <Search className="h-5 w-5" />
                   </div>
 
-                  <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Inspect raw semantic retrieval
-                    independently from the LLM
-                    generation layer.
-                  </p>
+                  <div>
+                    <h2 className="font-medium text-slate-950">
+                      Vector Search
+                    </h2>
 
-                  <form
-                    onSubmit={runSearch}
-                    className="mt-6"
-                  >
-                    <textarea
-                      value={searchQuery}
-                      onChange={(event) =>
-                        setSearchQuery(
-                          event.target.value,
-                        )
-                      }
-                      rows={5}
-                      className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm outline-none focus:border-cyan-500"
-                    />
+                    <p className="text-xs text-slate-400">
+                      Raw semantic retrieval
+                    </p>
+                  </div>
+                </div>
 
-                    <label className="mt-4 block text-xs text-slate-500">
+                <p className="mt-5 text-sm leading-6 text-slate-500">
+                  Inspect semantic retrieval
+                  independently from the language
+                  model generation layer.
+                </p>
+
+                <form
+                  onSubmit={runSearch}
+                  className="mt-6"
+                >
+                  <FieldLabel>
+                    Search query
+                  </FieldLabel>
+
+                  <textarea
+                    value={searchQuery}
+                    onChange={(event) =>
+                      setSearchQuery(
+                        event.target.value,
+                      )
+                    }
+                    rows={5}
+                    className="mt-2 w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                  />
+
+                  <div className="mt-4">
+                    <FieldLabel>
                       Result limit
-                    </label>
+                    </FieldLabel>
 
                     <select
                       value={searchLimit}
@@ -1069,98 +1111,130 @@ export default function KnowledgePage() {
                           ),
                         )
                       }
-                      className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm outline-none"
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-700 outline-none focus:border-violet-300 focus:ring-4 focus:ring-violet-100/50"
                     >
-                      {[1, 3, 5, 10, 20].map(
-                        (value) => (
-                          <option
-                            key={value}
-                            value={value}
-                          >
-                            {value} results
-                          </option>
-                        ),
-                      )}
+                      {[
+                        1,
+                        3,
+                        5,
+                        10,
+                        20,
+                      ].map((value) => (
+                        <option
+                          key={value}
+                          value={value}
+                        >
+                          {value} results
+                        </option>
+                      ))}
                     </select>
+                  </div>
 
-                    <button
-                      disabled={searchLoading}
-                      className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
-                    >
-                      {searchLoading ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4" />
-                      )}
+                  <button
+                    type="submit"
+                    disabled={searchLoading}
+                    className="mt-5 flex w-full items-center justify-center gap-2 rounded-full bg-[#111827] px-5 py-3.5 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-gradient-to-r hover:from-[#765cff] hover:to-[#508cff] disabled:opacity-50"
+                  >
+                    {searchLoading ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Search className="h-4 w-4" />
+                    )}
 
-                      Search pgvector
-                    </button>
-                  </form>
-                </section>
+                    Search pgvector
+                  </button>
+                </form>
+              </section>
 
-                <section>
-                  {searchError && (
-                    <div className="mb-5 rounded-xl border border-red-900/40 bg-red-950/20 p-4 text-sm text-red-300">
-                      {searchError}
+              <section>
+                {searchError && (
+                  <div className="mb-5 flex gap-3 rounded-[18px] border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
+                    <XCircle className="h-5 w-5 shrink-0" />
+                    {searchError}
+                  </div>
+                )}
+
+                <div className="app-panel rounded-[22px] p-6 md:p-7">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-500">
+                          <Layers3 className="h-5 w-5" />
+                        </div>
+
+                        <div>
+                          <h2 className="font-medium text-slate-900">
+                            Semantic Results
+                          </h2>
+
+                          <p className="text-xs text-slate-400">
+                            Ranked directly by
+                            vector similarity
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                  )}
 
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="font-semibold">
-                          Semantic Results
-                        </h3>
+                    <Badge variant="violet">
+                      {searchResults.length}{" "}
+                      result
+                      {searchResults.length ===
+                      1
+                        ? ""
+                        : "s"}
+                    </Badge>
+                  </div>
 
-                        <p className="mt-1 text-sm text-slate-500">
-                          Ranked directly by vector
-                          similarity.
+                  {searchLoading ? (
+                    <div className="flex h-80 items-center justify-center">
+                      <LoaderCircle className="h-7 w-7 animate-spin text-violet-500" />
+                    </div>
+                  ) : searchResults.length ===
+                    0 ? (
+                    <div className="mt-6 flex min-h-[320px] items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/50">
+                      <div className="text-center">
+                        <Search className="mx-auto h-8 w-8 text-slate-300" />
+
+                        <p className="mt-3 text-sm text-slate-400">
+                          Run a semantic search to
+                          inspect pgvector results.
                         </p>
                       </div>
-
-                      <Badge>
-                        {
-                          searchResults.length
-                        }{" "}
-                        results
-                      </Badge>
                     </div>
+                  ) : (
+                    <div
+                      data-lenis-prevent
+                      className="mt-6 max-h-[760px] space-y-4 overflow-y-auto overscroll-contain pr-1"
+                    >
+                      {searchResults.map(
+                        (
+                          result,
+                          index,
+                        ) => {
+                          const title =
+                            metadataTitle(
+                              result.metadata,
+                            );
 
-                    {searchLoading ? (
-                      <div className="flex h-60 items-center justify-center">
-                        <LoaderCircle className="h-7 w-7 animate-spin text-cyan-400" />
-                      </div>
-                    ) : searchResults.length ===
-                      0 ? (
-                      <div className="mt-6 rounded-xl border border-dashed border-slate-800 p-12 text-center text-sm text-slate-500">
-                        Run a semantic search to
-                        inspect pgvector results.
-                      </div>
-                    ) : (
-                      <div className="mt-6 space-y-4">
-                        {searchResults.map(
-                          (result, index) => (
+                          return (
                             <div
                               key={
                                 result.chunk_id
                               }
-                              className="rounded-xl border border-slate-800 bg-slate-950/50 p-5"
+                              className="rounded-2xl border border-slate-200/80 bg-[#fbfcff] p-5"
                             >
-                              <div className="flex flex-col justify-between gap-3 sm:flex-row">
+                              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
                                 <div>
-                                  <p className="font-medium">
+                                  <p className="font-medium text-slate-800">
                                     #
                                     {index +
                                       1}{" "}
-                                    {metadataTitle(
-                                      result.metadata,
-                                    ) &&
-                                      `— ${metadataTitle(
-                                        result.metadata,
-                                      )}`}
+                                    {title
+                                      ? `— ${title}`
+                                      : ""}
                                   </p>
 
-                                  <p className="mt-1 text-xs text-slate-600">
+                                  <p className="mt-1 text-xs text-slate-400">
                                     Document{" "}
                                     {
                                       result.document_id
@@ -1172,7 +1246,7 @@ export default function KnowledgePage() {
                                   </p>
                                 </div>
 
-                                <div className="flex gap-2">
+                                <div className="flex flex-wrap gap-2">
                                   <Badge variant="success">
                                     {(
                                       result.similarity *
@@ -1192,306 +1266,343 @@ export default function KnowledgePage() {
                                 </div>
                               </div>
 
-                              <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-slate-400">
+                              <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-slate-500">
                                 {
                                   result.content
                                 }
                               </p>
                             </div>
-                          ),
-                        )}
-                      </div>
-                    )}
+                          );
+                        },
+                      )}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {tab === "ingest" && (
+            <div className="grid gap-6 xl:grid-cols-2">
+              <section className="app-panel rounded-[22px] p-6 md:p-7">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-50 text-violet-500">
+                    <FileText className="h-5 w-5" />
                   </div>
-                </section>
-              </div>
-            )}
 
-            {tab === "ingest" && (
-              <div className="grid gap-6 xl:grid-cols-2">
-                <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-5 w-5 text-cyan-400" />
-
-                    <h3 className="font-semibold">
+                  <div>
+                    <h2 className="font-medium text-slate-950">
                       Manual Knowledge Ingestion
-                    </h3>
+                    </h2>
+
+                    <p className="text-xs text-slate-400">
+                      Create a knowledge document
+                    </p>
                   </div>
+                </div>
 
-                  <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Add a policy or operating
-                    procedure directly to the RAG
-                    knowledge base.
-                  </p>
+                <p className="mt-5 text-sm leading-6 text-slate-500">
+                  Add a policy or operating
+                  procedure directly to the live
+                  RAG knowledge base.
+                </p>
 
-                  <form
-                    onSubmit={ingestDocument}
-                    className="mt-6 space-y-4"
-                  >
-                    <div>
-                      <label className="text-xs text-slate-500">
-                        Document title
-                      </label>
+                <form
+                  onSubmit={ingestDocument}
+                  className="mt-6 space-y-4"
+                >
+                  <div>
+                    <FieldLabel>
+                      Document title
+                    </FieldLabel>
 
-                      <input
-                        value={documentTitle}
-                        onChange={(event) =>
-                          setDocumentTitle(
-                            event.target.value,
-                          )
-                        }
-                        placeholder="Example: VIP Support Policy"
-                        className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-cyan-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-500">
-                        Source
-                      </label>
-
-                      <input
-                        value={documentSource}
-                        onChange={(event) =>
-                          setDocumentSource(
-                            event.target.value,
-                          )
-                        }
-                        className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-cyan-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-500">
-                        Content
-                      </label>
-
-                      <textarea
-                        value={documentContent}
-                        onChange={(event) =>
-                          setDocumentContent(
-                            event.target.value,
-                          )
-                        }
-                        rows={12}
-                        placeholder="Paste policy content..."
-                        className="mt-2 w-full resize-none rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm leading-6 outline-none focus:border-cyan-500"
-                      />
-                    </div>
-
-                    <button
-                      disabled={ingestLoading}
-                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
-                    >
-                      {ingestLoading ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Database className="h-4 w-4" />
-                      )}
-
-                      Ingest & Embed
-                    </button>
-                  </form>
-
-                  {ingestError && (
-                    <div className="mt-5 rounded-xl border border-red-900/40 bg-red-950/20 p-4 text-sm text-red-300">
-                      {ingestError}
-                    </div>
-                  )}
-
-                  {ingestResult && (
-                    <div className="mt-5 rounded-xl border border-emerald-900/40 bg-emerald-950/20 p-5">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5 text-emerald-400" />
-
-                        <p className="font-medium text-emerald-300">
-                          {ingestResult.duplicate
-                            ? "Document already exists"
-                            : "Knowledge ingested"}
-                        </p>
-                      </div>
-
-                      <div className="mt-4 space-y-2 text-sm text-slate-400">
-                        <p>
-                          Document ID:{" "}
-                          {
-                            ingestResult.document_id
-                          }
-                        </p>
-
-                        <p>
-                          Title:{" "}
-                          {ingestResult.title}
-                        </p>
-
-                        <p>
-                          Chunks created:{" "}
-                          {
-                            ingestResult.chunks_created
-                          }
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                  <div className="flex items-center gap-2">
-                    <Upload className="h-5 w-5 text-cyan-400" />
-
-                    <h3 className="font-semibold">
-                      Upload Knowledge Document
-                    </h3>
-                  </div>
-
-                  <p className="mt-2 text-sm leading-6 text-slate-500">
-                    Upload a PDF, TXT or Markdown
-                    document. CXOps extracts the
-                    text, chunks it, embeds it and
-                    stores the vectors.
-                  </p>
-
-                  <form
-                    onSubmit={uploadDocument}
-                    className="mt-6"
-                  >
-                    <label className="block rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-10 text-center transition hover:border-cyan-700">
-                      <Upload className="mx-auto h-9 w-9 text-slate-500" />
-
-                      <p className="mt-4 text-sm font-medium text-slate-300">
-                        {uploadFile
-                          ? uploadFile.name
-                          : "Choose a knowledge document"}
-                      </p>
-
-                      <p className="mt-2 text-xs text-slate-600">
-                        PDF · TXT · Markdown
-                      </p>
-
-                      <input
-                        type="file"
-                        accept=".pdf,.txt,.md"
-                        onChange={(event) =>
-                          setUploadFile(
-                            event.target
-                              .files?.[0] ??
-                              null,
-                          )
-                        }
-                        className="hidden"
-                      />
-                    </label>
-
-                    <div className="mt-5">
-                      <label className="text-xs text-slate-500">
-                        Optional title
-                      </label>
-
-                      <input
-                        value={uploadTitle}
-                        onChange={(event) =>
-                          setUploadTitle(
-                            event.target.value,
-                          )
-                        }
-                        placeholder="Defaults to filename"
-                        className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-cyan-500"
-                      />
-                    </div>
-
-                    <button
-                      disabled={
-                        uploadLoading ||
-                        !uploadFile
+                    <input
+                      value={documentTitle}
+                      onChange={(event) =>
+                        setDocumentTitle(
+                          event.target.value,
+                        )
                       }
-                      className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
-                    >
-                      {uploadLoading ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Upload className="h-4 w-4" />
-                      )}
+                      placeholder="Example: VIP Support Policy"
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                    />
+                  </div>
 
-                      Upload & Embed
-                    </button>
-                  </form>
+                  <div>
+                    <FieldLabel>
+                      Source
+                    </FieldLabel>
 
-                  {uploadError && (
-                    <div className="mt-5 rounded-xl border border-red-900/40 bg-red-950/20 p-4 text-sm text-red-300">
-                      {uploadError}
+                    <input
+                      value={documentSource}
+                      onChange={(event) =>
+                        setDocumentSource(
+                          event.target.value,
+                        )
+                      }
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                    />
+                  </div>
+
+                  <div>
+                    <FieldLabel>
+                      Content
+                    </FieldLabel>
+
+                    <textarea
+                      value={documentContent}
+                      onChange={(event) =>
+                        setDocumentContent(
+                          event.target.value,
+                        )
+                      }
+                      rows={12}
+                      placeholder="Paste policy content..."
+                      className="mt-2 w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 text-sm leading-6 text-slate-700 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={ingestLoading}
+                    className="flex w-full items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#765cff] to-[#508cff] px-5 py-3.5 text-sm font-medium text-white shadow-[0_10px_28px_rgba(105,87,255,0.2)] transition hover:-translate-y-0.5 disabled:opacity-50"
+                  >
+                    {ingestLoading ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Database className="h-4 w-4" />
+                    )}
+
+                    Ingest & Embed
+                  </button>
+                </form>
+
+                {ingestError && (
+                  <div className="mt-5 flex gap-3 rounded-2xl border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
+                    <XCircle className="h-5 w-5 shrink-0" />
+                    {ingestError}
+                  </div>
+                )}
+
+                {ingestResult && (
+                  <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/65 p-5">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+
+                      <p className="font-medium text-emerald-800">
+                        {ingestResult.duplicate
+                          ? "Document already exists"
+                          : "Knowledge ingested"}
+                      </p>
                     </div>
-                  )}
 
-                  {uploadResult && (
-                    <div className="mt-5 rounded-xl border border-emerald-900/40 bg-emerald-950/20 p-5">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+                    <div className="mt-4 space-y-2 text-sm text-emerald-700">
+                      <p>
+                        Document ID:{" "}
+                        {
+                          ingestResult.document_id
+                        }
+                      </p>
 
-                        <p className="font-medium text-emerald-300">
-                          {uploadResult.duplicate
-                            ? "Document already exists"
-                            : "Document embedded successfully"}
-                        </p>
-                      </div>
+                      <p>
+                        Title:{" "}
+                        {
+                          ingestResult.title
+                        }
+                      </p>
 
-                      <div className="mt-4 space-y-2 text-sm text-slate-400">
-                        <p>
-                          File:{" "}
-                          {
-                            uploadResult.filename
-                          }
-                        </p>
-
-                        <p>
-                          Document ID:{" "}
-                          {
-                            uploadResult.document_id
-                          }
-                        </p>
-
-                        <p>
-                          Chunks:{" "}
-                          {
-                            uploadResult.chunks_created
-                          }
-                        </p>
-                      </div>
+                      <p>
+                        Chunks created:{" "}
+                        {
+                          ingestResult.chunks_created
+                        }
+                      </p>
                     </div>
-                  )}
+                  </div>
+                )}
+              </section>
 
-                  <div className="mt-6 rounded-xl border border-cyan-900/30 bg-cyan-950/10 p-5">
-                    <p className="text-sm font-medium text-cyan-300">
+              <section className="app-panel rounded-[22px] p-6 md:p-7">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 text-blue-500">
+                    <Upload className="h-5 w-5" />
+                  </div>
+
+                  <div>
+                    <h2 className="font-medium text-slate-950">
+                      Upload Knowledge Document
+                    </h2>
+
+                    <p className="text-xs text-slate-400">
+                      PDF · TXT · Markdown
+                    </p>
+                  </div>
+                </div>
+
+                <p className="mt-5 text-sm leading-6 text-slate-500">
+                  Upload a document. CXOps
+                  extracts the text, chunks it,
+                  creates embeddings and stores
+                  the vectors for retrieval.
+                </p>
+
+                <form
+                  onSubmit={uploadDocument}
+                  className="mt-6"
+                >
+                  <label className="group block cursor-pointer rounded-[22px] border border-dashed border-violet-200 bg-gradient-to-br from-violet-50/55 via-white to-blue-50/45 p-10 text-center transition hover:border-violet-300">
+                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-violet-500 shadow-[0_12px_30px_rgba(96,82,255,0.1)] transition group-hover:-translate-y-0.5">
+                      <Upload className="h-6 w-6" />
+                    </div>
+
+                    <p className="mt-4 text-sm font-medium text-slate-800">
+                      {uploadFile
+                        ? uploadFile.name
+                        : "Choose a knowledge document"}
+                    </p>
+
+                    <p className="mt-2 text-xs text-slate-400">
+                      PDF · TXT · Markdown
+                    </p>
+
+                    <input
+                      type="file"
+                      accept=".pdf,.txt,.md"
+                      onChange={(event) =>
+                        setUploadFile(
+                          event.target
+                            .files?.[0] ??
+                            null,
+                        )
+                      }
+                      className="hidden"
+                    />
+                  </label>
+
+                  <div className="mt-5">
+                    <FieldLabel>
+                      Optional title
+                    </FieldLabel>
+
+                    <input
+                      value={uploadTitle}
+                      onChange={(event) =>
+                        setUploadTitle(
+                          event.target.value,
+                        )
+                      }
+                      placeholder="Defaults to filename"
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={
+                      uploadLoading ||
+                      !uploadFile
+                    }
+                    className="mt-5 flex w-full items-center justify-center gap-2 rounded-full bg-[#111827] px-5 py-3.5 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-gradient-to-r hover:from-[#765cff] hover:to-[#508cff] disabled:opacity-50"
+                  >
+                    {uploadLoading ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Upload className="h-4 w-4" />
+                    )}
+
+                    Upload & Embed
+                  </button>
+                </form>
+
+                {uploadError && (
+                  <div className="mt-5 flex gap-3 rounded-2xl border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
+                    <XCircle className="h-5 w-5 shrink-0" />
+                    {uploadError}
+                  </div>
+                )}
+
+                {uploadResult && (
+                  <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/65 p-5">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+
+                      <p className="font-medium text-emerald-800">
+                        {uploadResult.duplicate
+                          ? "Document already exists"
+                          : "Document embedded successfully"}
+                      </p>
+                    </div>
+
+                    <div className="mt-4 space-y-2 text-sm text-emerald-700">
+                      <p>
+                        File:{" "}
+                        {
+                          uploadResult.filename
+                        }
+                      </p>
+
+                      <p>
+                        Document ID:{" "}
+                        {
+                          uploadResult.document_id
+                        }
+                      </p>
+
+                      <p>
+                        Chunks:{" "}
+                        {
+                          uploadResult.chunks_created
+                        }
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-6 rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50/55 to-blue-50/45 p-5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-slate-800">
                       Ingestion pipeline
                     </p>
 
-                    <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                      <span className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2">
-                        Parse
-                      </span>
-
-                      <span>→</span>
-
-                      <span className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2">
-                        Chunk
-                      </span>
-
-                      <span>→</span>
-
-                      <span className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2">
-                        Embed
-                      </span>
-
-                      <span>→</span>
-
-                      <span className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2">
-                        pgvector
-                      </span>
+                    <div className="flex items-center gap-2 text-[10px] text-emerald-600">
+                      <CircleDot className="h-3 w-3" />
+                      Active
                     </div>
                   </div>
-                </section>
-              </div>
-            )}
-          </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    {[
+                      "Parse",
+                      "Chunk",
+                      "Embed",
+                      "pgvector",
+                    ].map(
+                      (
+                        item,
+                        index,
+                        items,
+                      ) => (
+                        <div
+                          key={item}
+                          className="flex items-center gap-2"
+                        >
+                          <span className="rounded-xl border border-white bg-white/80 px-3 py-2 text-xs font-medium text-slate-600 shadow-sm">
+                            {item}
+                          </span>
+
+                          {index <
+                            items.length -
+                              1 && (
+                            <ChevronRight className="h-4 w-4 text-violet-300" />
+                          )}
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
         </main>
       </div>
     </div>

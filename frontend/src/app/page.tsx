@@ -1,24 +1,35 @@
 "use client";
 
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 import {
   Activity,
+  ArrowRight,
   Bot,
   BrainCircuit,
   CheckCircle2,
-  Clock3,
-  DollarSign,
-  Gauge,
-  Headphones,
+  Cpu,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
   Ticket,
-  TriangleAlert,
-  Users,
   Workflow,
-  XCircle,
+  Zap,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import AppSidebar from "@/components/app-sidebar";
+
+gsap.registerPlugin(ScrollTrigger, useGSAP);
 
 type AgentKPIs = {
   total_runs: number;
@@ -58,135 +69,151 @@ type AgentROI = {
 
 type Health = Record<string, unknown>;
 
-function MetricCard({
+function formatPercent(value?: number) {
+  return `${(value ?? 0).toFixed(1)}%`;
+}
+
+function formatMoney(value?: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value ?? 0);
+}
+
+function KpiCard({
   title,
   value,
-  subtitle,
+  description,
   icon: Icon,
+  iconClass,
 }: {
   title: string;
   value: string;
-  subtitle: string;
-  icon: typeof Activity;
+  description: string;
+  icon: LucideIcon;
+  iconClass: string;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-sm">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm font-medium text-slate-400">
-            {title}
-          </p>
-
-          <p className="mt-3 text-3xl font-semibold tracking-tight text-white">
-            {value}
-          </p>
+    <div className="kpi-card min-h-[180px] border-r border-slate-200/70 p-7 last:border-r-0">
+      <div className="flex items-center gap-3">
+        <div
+          className={`flex h-9 w-9 items-center justify-center rounded-xl ${iconClass}`}
+        >
+          <Icon className="h-4 w-4" strokeWidth={1.8} />
         </div>
 
-        <div className="rounded-xl border border-slate-700 bg-slate-800 p-3">
-          <Icon className="h-5 w-5 text-cyan-400" />
-        </div>
+        <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-500">
+          {title}
+        </p>
       </div>
 
-      <p className="mt-3 text-xs text-slate-500">
-        {subtitle}
+      <p className="editorial-number mt-7 text-4xl font-medium tracking-[-0.04em] text-slate-950">
+        {value}
+      </p>
+
+      <p className="mt-4 max-w-[220px] text-xs leading-5 text-slate-500">
+        {description}
       </p>
     </div>
   );
 }
 
-function ProgressMetric({
+function OperatingRow({
+  icon: Icon,
   label,
   value,
+  iconClass,
 }: {
+  icon: LucideIcon;
   label: string;
-  value: number;
+  value: string;
+  iconClass: string;
 }) {
-  const safeValue = Math.min(Math.max(value, 0), 100);
-
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm text-slate-300">
+    <div className="flex items-center justify-between border-b border-slate-200/70 py-5 last:border-0">
+      <div className="flex items-center gap-3">
+        <span
+          className={`flex h-9 w-9 items-center justify-center rounded-xl ${iconClass}`}
+        >
+          <Icon className="h-4 w-4" />
+        </span>
+
+        <span className="text-sm text-slate-600">
           {label}
         </span>
-
-        <span className="text-sm font-medium text-white">
-          {value.toFixed(2)}%
-        </span>
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-        <div
-          className="h-full rounded-full bg-cyan-400 transition-all"
-          style={{ width: `${safeValue}%` }}
-        />
-      </div>
+      <span className="editorial-number text-lg font-medium text-slate-950">
+        {value}
+      </span>
     </div>
   );
 }
 
-function NavItem({
-  href,
-  icon: Icon,
-  label,
-  active = false,
-}: {
-  href: string;
-  icon: typeof Activity;
-  label: string;
-  active?: boolean;
-}) {
+function CyberVisual() {
   return (
-    <Link
-      href={href}
-      className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
-        active
-          ? "bg-cyan-400/10 text-cyan-300"
-          : "text-slate-400 hover:bg-slate-900 hover:text-white"
-      }`}
-    >
-      <Icon className="h-4 w-4" />
-      {label}
-    </Link>
+    <div className="relative mx-auto h-[400px] w-full max-w-[530px]">
+      <div className="dot-grid absolute inset-0 opacity-35 [mask-image:radial-gradient(circle,black,transparent_72%)]" />
+
+      <div className="absolute left-[19%] top-[21%] h-44 w-44 rotate-[30deg] rounded-[32px] border border-[#8679ff]/25 bg-gradient-to-br from-white/90 via-[#e8ecff]/60 to-[#9c92ff]/30 shadow-[0_35px_80px_rgba(88,76,255,0.15)] backdrop-blur-md" />
+
+      <div className="absolute left-[44%] top-[11%] h-52 w-52 rotate-[30deg] rounded-[34px] border border-[#5d6dff]/25 bg-gradient-to-br from-white/75 via-[#dce4ff]/60 to-[#675aff]/25 shadow-[0_30px_100px_rgba(101,89,255,0.18)] backdrop-blur-md" />
+
+      <div className="absolute left-[43%] top-[41%] h-36 w-36 rotate-[30deg] rounded-[28px] border border-[#6bbcff]/30 bg-gradient-to-br from-white/90 to-[#8dbaff]/30 shadow-[0_30px_70px_rgba(83,164,255,0.18)] backdrop-blur-md" />
+
+      <div className="absolute left-[25%] top-[46%] h-28 w-28 rotate-[30deg] rounded-[24px] border border-[#796aff]/20 bg-white/55 backdrop-blur-xl" />
+
+      <div className="absolute left-[13%] right-[7%] top-[49%] h-px bg-gradient-to-r from-transparent via-[#806fff]/40 to-transparent" />
+
+      <div className="absolute bottom-[16%] left-[12%] right-[7%] h-px rotate-[-18deg] bg-gradient-to-r from-transparent via-[#5fa8ff]/30 to-transparent" />
+
+      <span className="absolute left-[10%] top-[48%] h-2 w-2 rounded-full bg-[#7468ff] shadow-[0_0_14px_#7468ff]" />
+
+      <span className="absolute right-[11%] top-[27%] h-2 w-2 rounded-full bg-[#5fa8ff] shadow-[0_0_14px_#5fa8ff]" />
+    </div>
   );
 }
 
 export default function Home() {
-  const [kpis, setKpis] = useState<AgentKPIs | null>(null);
-  const [roi, setRoi] = useState<AgentROI | null>(null);
-  const [health, setHealth] = useState<Health | null>(null);
+  const root = useRef<HTMLDivElement>(null);
 
+  const [kpis, setKpis] =
+    useState<AgentKPIs | null>(null);
+  const [roi, setRoi] =
+    useState<AgentROI | null>(null);
+  const [health, setHealth] =
+    useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  const [lastUpdated, setLastUpdated] =
-    useState<Date | null>(null);
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError("");
 
     try {
-      const [healthResponse, kpiResponse, roiResponse] =
-        await Promise.all([
-          fetch("/api/backend/health", {
+      const [
+        healthResponse,
+        kpiResponse,
+        roiResponse,
+      ] = await Promise.all([
+        fetch("/api/backend/health", {
+          cache: "no-store",
+        }),
+        fetch(
+          "/api/backend/observability/agent/kpis",
+          {
             cache: "no-store",
-          }),
-
-          fetch(
-            "/api/backend/observability/agent/kpis",
-            {
-              cache: "no-store",
-            },
-          ),
-
-          fetch(
-            "/api/backend/observability/agent/roi",
-            {
-              cache: "no-store",
-            },
-          ),
-        ]);
+          },
+        ),
+        fetch(
+          "/api/backend/observability/agent/roi",
+          {
+            cache: "no-store",
+          },
+        ),
+      ]);
 
       if (
         !healthResponse.ok ||
@@ -198,20 +225,15 @@ export default function Home() {
         );
       }
 
-      const healthData =
-        (await healthResponse.json()) as Health;
-
-      const kpiData =
-        (await kpiResponse.json()) as AgentKPIs;
-
-      const roiData =
-        (await roiResponse.json()) as AgentROI;
-
-      setHealth(healthData);
-      setKpis(kpiData);
-      setRoi(roiData);
-
-      setLastUpdated(new Date());
+      setHealth(
+        (await healthResponse.json()) as Health,
+      );
+      setKpis(
+        (await kpiResponse.json()) as AgentKPIs,
+      );
+      setRoi(
+        (await roiResponse.json()) as AgentROI,
+      );
     } catch (err) {
       setError(
         err instanceof Error
@@ -227,560 +249,638 @@ export default function Home() {
     const timer = window.setTimeout(() => {
       void loadDashboard();
     }, 0);
-  
+
     return () => {
       window.clearTimeout(timer);
     };
   }, [loadDashboard]);
 
+  const healthy = useMemo(() => {
+    const status = health?.status;
+
+    return (
+      status === "healthy" ||
+      status === "ok" ||
+      status === "running"
+    );
+  }, [health]);
+
+  useGSAP(
+    () => {
+      if (
+        window.matchMedia(
+          "(prefers-reduced-motion: reduce)",
+        ).matches
+      ) {
+        return;
+      }
+
+      gsap
+        .timeline({
+          defaults: {
+            ease: "power3.out",
+          },
+        })
+        .from(".hero-element", {
+          opacity: 0,
+          y: 28,
+          stagger: 0.09,
+          duration: 0.9,
+        })
+        .from(
+          ".cyber-visual",
+          {
+            opacity: 0,
+            scale: 0.94,
+            x: 30,
+            duration: 1.1,
+          },
+          "-=0.75",
+        )
+        .from(
+          ".kpi-card",
+          {
+            opacity: 0,
+            y: 20,
+            stagger: 0.07,
+            duration: 0.7,
+          },
+          "-=0.6",
+        );
+
+      gsap.utils
+        .toArray<HTMLElement>(".scroll-reveal")
+        .forEach((element) => {
+          gsap.from(element, {
+            opacity: 0,
+            y: 45,
+            duration: 1,
+            ease: "power3.out",
+            scrollTrigger: {
+              trigger: element,
+              start: "top 88%",
+              once: true,
+            },
+          });
+        });
+
+      gsap.to(".cyber-visual", {
+        y: 50,
+        ease: "none",
+        scrollTrigger: {
+          trigger: ".hero-area",
+          start: "top top",
+          end: "bottom top",
+          scrub: 1.4,
+        },
+      });
+    },
+    {
+      scope: root,
+    },
+  );
+
+  const navigationCards = [
+    {
+      href: "/tickets",
+      title: "Tickets",
+      description:
+        "Track and manage customer conversations",
+      icon: Ticket,
+      iconClass:
+        "bg-blue-50 text-blue-500",
+    },
+    {
+      href: "/agent",
+      title: "AI Agent",
+      description:
+        "Configure and monitor AI agents",
+      icon: Bot,
+      iconClass:
+        "bg-violet-50 text-violet-500",
+    },
+    {
+      href: "/approvals",
+      title: "Approvals",
+      description:
+        "Review and approve agent actions",
+      icon: ShieldCheck,
+      iconClass:
+        "bg-emerald-50 text-emerald-500",
+    },
+    {
+      href: "/knowledge",
+      title: "Knowledge",
+      description:
+        "Manage your knowledge base and RAG",
+      icon: BrainCircuit,
+      iconClass:
+        "bg-indigo-50 text-indigo-500",
+    },
+    {
+      href: "/runs",
+      title: "Runs",
+      description:
+        "View agent runs and execution history",
+      icon: Workflow,
+      iconClass:
+        "bg-fuchsia-50 text-fuchsia-500",
+    },
+    {
+      href: "/observability",
+      title: "Observability",
+      description:
+        "Monitor performance and system health",
+      icon: Activity,
+      iconClass:
+        "bg-sky-50 text-sky-500",
+    },
+  ];
+
   return (
-    <div className="min-h-screen bg-[#070b14] text-white">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-64 shrink-0 border-r border-slate-800 bg-[#090e18] p-5 lg:block">
-          <div className="mb-8 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-400 text-slate-950">
-              <BrainCircuit className="h-6 w-6" />
-            </div>
+    <div ref={root}>
+      <AppSidebar active="/" />
 
-            <div>
-              <h1 className="font-semibold tracking-tight">
+      <div className="xl:pl-[230px]">
+        <header className="fixed left-0 right-0 top-0 z-40 border-b border-slate-200/60 bg-white/65 backdrop-blur-xl xl:left-[230px]">
+          <div className="mx-auto flex h-[74px] max-w-[1450px] items-center justify-between px-6 lg:px-10">
+            <div className="xl:hidden">
+              <p className="text-sm font-semibold">
                 CXOps AI
-              </h1>
-
-              <p className="text-xs text-slate-500">
-                Control Center
               </p>
             </div>
+
+            <div />
+
+            <div className="flex items-center gap-3">
+              <div className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white/85 px-4 py-2 text-xs text-slate-600 shadow-sm sm:flex">
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    healthy
+                      ? "bg-emerald-400"
+                      : "bg-amber-400"
+                  }`}
+                />
+
+                {healthy
+                  ? "Systems operational"
+                  : "Checking systems"}
+              </div>
+
+              <button
+                onClick={() =>
+                  void loadDashboard()
+                }
+                disabled={loading}
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white shadow-sm transition hover:border-violet-300"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 text-slate-600 ${
+                    loading
+                      ? "animate-spin"
+                      : ""
+                  }`}
+                />
+              </button>
+
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#111827] text-xs font-medium text-white">
+                AI
+              </div>
+            </div>
           </div>
+        </header>
 
-          <div className="space-y-1">
-            <NavItem
-              href="/"
-              icon={Gauge}
-              label="Operations"
-              active
-            />
+        <main className="mx-auto max-w-[1450px] px-6 pb-16 pt-[120px] lg:px-10">
+          <section className="hero-area relative grid min-h-[540px] items-center gap-8 lg:grid-cols-[1.03fr_0.97fr]">
+            <div className="relative z-10">
+              <p className="hero-element text-[10px] font-medium uppercase tracking-[0.28em] text-slate-400">
+                Intelligent customer operations
+              </p>
 
-            <NavItem
-              href="/tickets"
-              icon={Ticket}
-              label="Tickets"
-            />
+              <h1 className="hero-element mt-8 max-w-[690px] text-[clamp(4rem,7vw,7.4rem)] font-light leading-[0.84] tracking-[-0.075em] text-slate-950">
+                AI operations,
+                <span className="gradient-text mt-2 block font-serif italic">
+                  under control.
+                </span>
+              </h1>
 
-            <NavItem
-              href="/agent"
-              icon={Bot}
-              label="AI Agent"
-            />
+              <p className="hero-element mt-9 max-w-[600px] text-base leading-8 text-slate-600">
+                One calm control plane for
+                customer support, RAG,
+                autonomous agents, human
+                approvals and production
+                telemetry.
+              </p>
 
-            <NavItem
-              href="/approvals"
-              icon={ShieldCheck}
-              label="Approval Queue"
-            />
+              <div className="hero-element mt-8 flex flex-wrap gap-3">
+                <Link
+                  href="/agent"
+                  className="group inline-flex items-center gap-3 rounded-full bg-[#111827] px-6 py-3.5 text-sm font-medium text-white shadow-[0_12px_30px_rgba(17,24,39,0.15)] transition hover:-translate-y-0.5"
+                >
+                  Open AI Agent
 
-            <NavItem
-              href="/knowledge"
-              icon={BrainCircuit}
-              label="Knowledge / RAG"
-            />
+                  <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
+                </Link>
 
-            <NavItem
-              href="/runs"
-              icon={Workflow}
-              label="Agent Runs"
-            />
+                <Link
+                  href="/observability"
+                  className="inline-flex items-center gap-3 rounded-full border border-slate-200 bg-white/85 px-6 py-3.5 text-sm text-slate-700 shadow-sm transition hover:border-violet-300"
+                >
+                  View telemetry
+                </Link>
+              </div>
+            </div>
 
-            <NavItem
-              href="/observability"
-              icon={Activity}
-              label="Observability"
-            />
-          </div>
+            <div className="cyber-visual hidden lg:block">
+              <CyberVisual />
+            </div>
+          </section>
 
-          <div className="mt-10 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <div className="flex items-center gap-2 text-sm">
-              <div
-                className={`h-2.5 w-2.5 rounded-full ${
-                  health
-                    ? "bg-emerald-400"
-                    : "bg-red-400"
-                }`}
+          {error && (
+            <div className="mb-7 rounded-2xl border border-red-200 bg-red-50/90 p-4 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          <section className="app-panel scroll-reveal overflow-hidden rounded-[22px]">
+            <div className="grid md:grid-cols-2 xl:grid-cols-4">
+              <KpiCard
+                title="Agent runs"
+                value={`${kpis?.total_runs ?? 0}`}
+                description="Persisted AI decisions across the support workflow"
+                icon={Cpu}
+                iconClass="bg-violet-50 text-violet-500"
               />
 
-              <span className="font-medium">
-                Backend
-              </span>
-            </div>
+              <KpiCard
+                title="Autonomous executions"
+                value={`${
+                  kpis?.autonomous_executed_runs ??
+                  0
+                }`}
+                description="Low-risk operations completed without unnecessary delay"
+                icon={Zap}
+                iconClass="bg-blue-50 text-blue-500"
+              />
 
-            <p className="mt-2 text-xs text-slate-500">
-              FastAPI + PostgreSQL + pgvector
-            </p>
-          </div>
-        </aside>
-
-        <main className="min-w-0 flex-1">
-          <header className="border-b border-slate-800 bg-[#090e18]/80 px-6 py-5 backdrop-blur xl:px-10">
-            <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
-              <div>
-                <p className="text-sm font-medium text-cyan-400">
-                  CXOps AI
-                </p>
-
-                <h2 className="mt-1 text-2xl font-semibold tracking-tight">
-                  Operations Dashboard
-                </h2>
-
-                <p className="mt-1 text-sm text-slate-500">
-                  Live AI customer operations,
-                  automation and reliability metrics.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3">
-                {lastUpdated && (
-                  <span className="hidden text-xs text-slate-500 sm:block">
-                    Updated{" "}
-                    {lastUpdated.toLocaleTimeString()}
-                  </span>
+              <KpiCard
+                title="Autonomous success"
+                value={formatPercent(
+                  kpis?.autonomous_success_rate,
                 )}
+                description="Success rate for safely auto-approved execution paths"
+                icon={Bot}
+                iconClass="bg-emerald-50 text-emerald-500"
+              />
 
-                <button
-                  onClick={() =>
-                    void loadDashboard()
-                  }
-                  disabled={loading}
-                  className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium transition hover:border-slate-600 hover:bg-slate-800 disabled:opacity-50"
-                >
-                  <RefreshCw
-                    className={`h-4 w-4 ${
-                      loading
-                        ? "animate-spin"
-                        : ""
-                    }`}
-                  />
-
-                  Refresh
-                </button>
-              </div>
+              <KpiCard
+                title="Execution success"
+                value={formatPercent(
+                  kpis?.execution_success_rate,
+                )}
+                description="Overall execution reliability across agent tool runs"
+                icon={Activity}
+                iconClass="bg-fuchsia-50 text-fuchsia-500"
+              />
             </div>
-          </header>
+          </section>
 
-          <div className="p-6 xl:p-10">
-            {error && (
-              <div className="mb-6 flex items-center gap-3 rounded-xl border border-red-900/50 bg-red-950/30 p-4 text-sm text-red-300">
-                <XCircle className="h-5 w-5" />
-                {error}
-              </div>
-            )}
+          <section className="scroll-reveal mt-7 grid gap-7 xl:grid-cols-[1.45fr_0.85fr]">
+            <div className="app-panel rounded-[22px] p-7">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-900">
+                    Execution overview
+                  </p>
 
-            {loading && !kpis ? (
-              <div className="flex min-h-[60vh] items-center justify-center">
-                <div className="text-center">
-                  <RefreshCw className="mx-auto h-7 w-7 animate-spin text-cyan-400" />
-
-                  <p className="mt-3 text-sm text-slate-500">
-                    Loading CXOps telemetry...
+                  <p className="mt-1 text-xs text-slate-400">
+                    Live performance of your AI
+                    operations
                   </p>
                 </div>
+
+                <span className="rounded-full border border-slate-200 bg-white px-4 py-2 text-[11px] text-slate-500">
+                  Live
+                </span>
               </div>
-            ) : (
-              <>
-                <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                  <MetricCard
-                    title="Total Agent Runs"
-                    value={`${
-                      kpis?.total_runs ?? 0
-                    }`}
-                    subtitle="Persisted production agent decisions"
-                    icon={Bot}
-                  />
 
-                  <MetricCard
-                    title="Autonomous Executions"
-                    value={`${
-                      kpis?.autonomous_executed_runs ??
-                      0
-                    }`}
-                    subtitle={`${
-                      kpis?.autonomous_execution_rate ??
-                      0
-                    }% of agent runs`}
-                    icon={Workflow}
-                  />
-
-                  <MetricCard
-                    title="Autonomous Success"
-                    value={`${
-                      kpis?.autonomous_success_rate ??
-                      0
-                    }%`}
-                    subtitle="Successful low-risk autonomous actions"
-                    icon={CheckCircle2}
-                  />
-
-                  <MetricCard
-                    title="Execution Success"
-                    value={`${
-                      kpis?.execution_success_rate ??
-                      0
-                    }%`}
-                    subtitle="Across executed agent workflows"
-                    icon={Activity}
-                  />
-                </section>
-
-                <section className="mt-6 grid gap-6 xl:grid-cols-[1.35fr_1fr]">
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                    <div className="mb-6">
-                      <h3 className="font-semibold">
-                        Agent Decision Distribution
-                      </h3>
-
-                      <p className="mt-1 text-sm text-slate-500">
-                        Current workflow routing and
-                        human oversight rates.
-                      </p>
-                    </div>
-
-                    <div className="space-y-6">
-                      <ProgressMetric
-                        label="Escalation rate"
-                        value={
-                          kpis?.escalation_rate ??
-                          0
-                        }
-                      />
-
-                      <ProgressMetric
-                        label="Human review rate"
-                        value={
-                          kpis?.human_review_rate ??
-                          0
-                        }
-                      />
-
-                      <ProgressMetric
-                        label="No-action rate"
-                        value={
-                          kpis?.no_action_rate ??
-                          0
-                        }
-                      />
-
-                      <ProgressMetric
-                        label="Approval required"
-                        value={
-                          kpis?.approval_required_rate ??
-                          0
-                        }
-                      />
-
-                      <ProgressMetric
-                        label="Pending approval"
-                        value={
-                          kpis?.pending_approval_rate ??
-                          0
-                        }
-                      />
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <h3 className="font-semibold">
-                          Queue Reliability
-                        </h3>
-
-                        <p className="mt-1 text-sm text-slate-500">
-                          Durable background job
-                          processing.
-                        </p>
-                      </div>
-
-                      <div className="rounded-xl bg-slate-800 p-3">
-                        <Clock3 className="h-5 w-5 text-cyan-400" />
-                      </div>
-                    </div>
-
-                    <div className="mt-7 space-y-4">
-                      <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-                        <div className="flex items-center gap-3">
-                          <RefreshCw className="h-4 w-4 text-amber-400" />
-
-                          <span className="text-sm text-slate-300">
-                            All-time retry rate
-                          </span>
-                        </div>
-
-                        <strong>
-                          {kpis?.queue_retry_rate ??
-                            0}
-                          %
-                        </strong>
-                      </div>
-
-                      <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-                        <div className="flex items-center gap-3">
-                          <TriangleAlert className="h-4 w-4 text-red-400" />
-
-                          <span className="text-sm text-slate-300">
-                            All-time failure rate
-                          </span>
-                        </div>
-
-                        <strong>
-                          {kpis?.queue_failure_rate ??
-                            0}
-                          %
-                        </strong>
-                      </div>
-
-                      <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-                        <div className="flex items-center gap-3">
-                          <Activity className="h-4 w-4 text-emerald-400" />
-
-                          <span className="text-sm text-slate-300">
-                            Avg. job attempts
-                          </span>
-                        </div>
-
-                        <strong>
-                          {kpis?.average_job_attempts ??
-                            0}
-                        </strong>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="mt-6 grid gap-6 xl:grid-cols-3">
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 xl:col-span-2">
-                    <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <DollarSign className="h-5 w-5 text-emerald-400" />
-
-                          <h3 className="font-semibold">
-                            Automation Value
-                          </h3>
-                        </div>
-
-                        <p className="mt-2 text-sm text-slate-500">
-                          Estimated operational
-                          savings under configured
-                          assumptions.
-                        </p>
-                      </div>
-
-                      <span
-                        className={`w-fit rounded-full px-3 py-1 text-xs font-medium ${
-                          roi?.sample_size_sufficient
-                            ? "bg-emerald-400/10 text-emerald-300"
-                            : "bg-amber-400/10 text-amber-300"
-                        }`}
-                      >
-                        {roi?.sample_size_sufficient
-                          ? "Measurement ready"
-                          : "Collecting samples"}
-                      </span>
-                    </div>
-
-                    <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                      <div className="rounded-xl bg-slate-950/60 p-4">
-                        <p className="text-xs text-slate-500">
-                          Labor savings
-                        </p>
-
-                        <p className="mt-2 text-xl font-semibold">
-                          $
-                          {roi?.estimated_labor_savings_usd.toFixed(
-                            2,
-                          ) ?? "0.00"}
-                        </p>
-                      </div>
-
-                      <div className="rounded-xl bg-slate-950/60 p-4">
-                        <p className="text-xs text-slate-500">
-                          AI cost
-                        </p>
-
-                        <p className="mt-2 text-xl font-semibold">
-                          $
-                          {roi?.agent_ai_cost_usd.toFixed(
-                            6,
-                          ) ??
-                            "0.000000"}
-                        </p>
-                      </div>
-
-                      <div className="rounded-xl bg-slate-950/60 p-4">
-                        <p className="text-xs text-slate-500">
-                          Net savings
-                        </p>
-
-                        <p className="mt-2 text-xl font-semibold text-emerald-400">
-                          $
-                          {roi?.estimated_net_savings_usd.toFixed(
-                            2,
-                          ) ?? "0.00"}
-                        </p>
-                      </div>
-
-                      <div className="rounded-xl bg-slate-950/60 p-4">
-                        <p className="text-xs text-slate-500">
-                          Time saved
-                        </p>
-
-                        <p className="mt-2 text-xl font-semibold">
-                          {roi?.estimated_minutes_saved ??
-                            0}{" "}
-                          min
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 rounded-xl border border-amber-900/30 bg-amber-950/20 p-4">
-                      <div className="flex gap-3">
-                        <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
-
-                        <div>
-                          <p className="text-sm font-medium text-amber-200">
-                            ROI measurement
-                            guardrail
-                          </p>
-
-                          <p className="mt-1 text-xs leading-5 text-slate-400">
-                            Formal ROI is withheld
-                            until at least{" "}
-                            {
-                              roi?.minimum_autonomous_samples
-                            }{" "}
-                            autonomous execution
-                            samples are available.
-                            Current instrumented
-                            autonomous samples:{" "}
-                            {
-                              roi?.instrumented_autonomous_executed_runs
-                            }
-                            .
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                    <h3 className="font-semibold">
-                      Automation Controls
-                    </h3>
-
-                    <p className="mt-1 text-sm text-slate-500">
-                      Safety and human oversight.
+              <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  [
+                    "Total runs",
+                    `${kpis?.total_runs ?? 0}`,
+                  ],
+                  [
+                    "Autonomous",
+                    `${kpis?.autonomous_executed_runs ?? 0}`,
+                  ],
+                  [
+                    "Success rate",
+                    formatPercent(
+                      kpis?.execution_success_rate,
+                    ),
+                  ],
+                  [
+                    "Human review",
+                    formatPercent(
+                      kpis?.human_review_rate,
+                    ),
+                  ],
+                ].map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="rounded-2xl border border-slate-200/80 bg-white/65 p-4"
+                  >
+                    <p className="text-[10px] text-slate-400">
+                      {label}
                     </p>
 
-                    <div className="mt-6 space-y-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-slate-400">
-                          Auto-approved runs
-                        </span>
-
-                        <span className="font-semibold">
-                          {kpis?.auto_approved_runs ??
-                            0}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-slate-400">
-                          Approval required
-                        </span>
-
-                        <span className="font-semibold">
-                          {kpis?.approval_required_rate ??
-                            0}
-                          %
-                        </span>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-slate-400">
-                          Human review
-                        </span>
-
-                        <span className="font-semibold">
-                          {kpis?.human_review_rate ??
-                            0}
-                          %
-                        </span>
-                      </div>
-
-                      <div className="mt-5 border-t border-slate-800 pt-5">
-                        <div className="flex items-center gap-3 text-sm text-emerald-300">
-                          <ShieldCheck className="h-5 w-5" />
-
-                          Risk-based authorization
-                          active
-                        </div>
-                      </div>
-                    </div>
+                    <p className="editorial-number mt-3 text-2xl font-medium tracking-[-0.04em] text-slate-950">
+                      {value}
+                    </p>
                   </div>
-                </section>
+                ))}
+              </div>
 
-                <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                  <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-                    <div>
-                      <h3 className="font-semibold">
-                        CXOps AI Platform
-                      </h3>
+              <div className="relative mt-7 h-[220px] overflow-hidden rounded-2xl bg-gradient-to-b from-[#fbfcff] to-[#f8faff]">
+                <div className="soft-grid absolute inset-0 opacity-50" />
 
-                      <p className="mt-1 text-sm text-slate-500">
-                        Production-style agentic
-                        customer operations
-                        architecture.
-                      </p>
-                    </div>
+                <svg
+                  viewBox="0 0 800 220"
+                  className="absolute inset-0 h-full w-full"
+                  preserveAspectRatio="none"
+                >
+                  <defs>
+                    <linearGradient
+                      id="lineGradient"
+                      x1="0"
+                      x2="1"
+                    >
+                      <stop
+                        offset="0%"
+                        stopColor="#a866ff"
+                      />
+                      <stop
+                        offset="50%"
+                        stopColor="#5f74ff"
+                      />
+                      <stop
+                        offset="100%"
+                        stopColor="#4db5ff"
+                      />
+                    </linearGradient>
 
-                    <div className="flex items-center gap-2 text-sm text-emerald-400">
-                      <CheckCircle2 className="h-4 w-4" />
+                    <linearGradient
+                      id="fillGradient"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop
+                        offset="0%"
+                        stopColor="#7c6cff"
+                        stopOpacity="0.18"
+                      />
+                      <stop
+                        offset="100%"
+                        stopColor="#7c6cff"
+                        stopOpacity="0"
+                      />
+                    </linearGradient>
+                  </defs>
 
-                      Systems operational
-                    </div>
+                  <path
+                    d="M0 164 C80 160 92 115 145 137 C205 163 220 99 284 120 C350 143 368 78 428 105 C496 138 516 70 579 91 C640 112 664 63 725 84 C759 96 780 111 800 104 L800 220 L0 220 Z"
+                    fill="url(#fillGradient)"
+                  />
+
+                  <path
+                    d="M0 164 C80 160 92 115 145 137 C205 163 220 99 284 120 C350 143 368 78 428 105 C496 138 516 70 579 91 C640 112 664 63 725 84 C759 96 780 111 800 104"
+                    fill="none"
+                    stroke="url(#lineGradient)"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            <div className="app-panel rounded-[22px] p-7">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-900">
+                Estimated value
+              </p>
+
+              <p className="mt-1 text-xs text-slate-400">
+                Measured impact of automation
+              </p>
+
+              <div className="mt-9 flex items-center justify-between gap-6">
+                <div>
+                  <p className="editorial-number text-5xl font-medium tracking-[-0.05em] text-slate-950">
+                    {formatMoney(
+                      roi?.estimated_net_savings_usd,
+                    )}
+                  </p>
+
+                  <p className="mt-2 text-sm text-slate-500">
+                    Net estimated savings
+                  </p>
+                </div>
+
+                <div
+                  className="h-[108px] w-[108px] rounded-full p-[9px]"
+                  style={{
+                    background: `conic-gradient(
+                      #725cff 0deg,
+                      #55a7ff ${
+                        (kpis?.execution_success_rate ??
+                          0) * 3.6
+                      }deg,
+                      #e9edff 0deg
+                    )`,
+                  }}
+                >
+                  <div className="flex h-full w-full items-center justify-center rounded-full bg-white">
+                    <span className="text-sm font-semibold text-slate-700">
+                      {formatPercent(
+                        kpis?.execution_success_rate,
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-8 divide-y divide-slate-200/70">
+                {[
+                  [
+                    "Time saved",
+                    `${
+                      roi?.estimated_minutes_saved ??
+                      0
+                    } min`,
+                  ],
+                  [
+                    "Labor value",
+                    formatMoney(
+                      roi?.estimated_labor_savings_usd,
+                    ),
+                  ],
+                  [
+                    "AI cost",
+                    formatMoney(
+                      roi?.agent_ai_cost_usd,
+                    ),
+                  ],
+                  [
+                    "Autonomous samples",
+                    `${
+                      roi?.instrumented_autonomous_executed_runs ??
+                      0
+                    } / ${
+                      roi?.minimum_autonomous_samples ??
+                      0
+                    }`,
+                  ],
+                ].map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="flex justify-between py-4 text-sm"
+                  >
+                    <span className="text-slate-500">
+                      {label}
+                    </span>
+
+                    <span className="editorial-number font-medium text-slate-950">
+                      {value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="app-panel scroll-reveal mt-7 grid overflow-hidden rounded-[22px] lg:grid-cols-[0.8fr_1fr_1.1fr]">
+            <div className="border-b border-slate-200/70 p-8 lg:border-b-0 lg:border-r">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.17em] text-[#765cff]">
+                Operating model
+              </p>
+
+              <h2 className="mt-8 text-4xl font-light leading-[1.03] tracking-[-0.055em] text-slate-950">
+                Human when
+                <br />
+                it matters.
+              </h2>
+
+              <p className="gradient-text mt-4 font-serif text-4xl italic leading-tight">
+                Autonomous
+                <br />
+                when it doesn&apos;t.
+              </p>
+            </div>
+
+            <div className="border-b border-slate-200/70 px-8 py-5 lg:border-b-0 lg:border-r">
+              <OperatingRow
+                icon={ShieldCheck}
+                label="Approval required"
+                value={formatPercent(
+                  kpis?.approval_required_rate,
+                )}
+                iconClass="bg-violet-50 text-violet-500"
+              />
+
+              <OperatingRow
+                icon={Bot}
+                label="Human review"
+                value={formatPercent(
+                  kpis?.human_review_rate,
+                )}
+                iconClass="bg-blue-50 text-blue-500"
+              />
+
+              <OperatingRow
+                icon={CheckCircle2}
+                label="Autonomous execution"
+                value={formatPercent(
+                  kpis?.autonomous_execution_rate,
+                )}
+                iconClass="bg-emerald-50 text-emerald-500"
+              />
+
+              <OperatingRow
+                icon={Activity}
+                label="No-action decisions"
+                value={formatPercent(
+                  kpis?.no_action_rate,
+                )}
+                iconClass="bg-slate-100 text-slate-500"
+              />
+            </div>
+
+            <div className="flex flex-col justify-between p-8">
+              <p className="max-w-sm text-sm leading-7 text-slate-600">
+                CXOps does not treat automation
+                as an all-or-nothing decision.
+                Every proposed action passes
+                through explicit risk and
+                authorization rules before it
+                can touch an external system.
+              </p>
+
+              <Link
+                href="/agent"
+                className="mt-10 inline-flex items-center gap-2 text-sm font-medium text-[#6654ff]"
+              >
+                Learn about our approach
+
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </section>
+
+          <section className="scroll-reveal mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            {navigationCards.map((item) => {
+              const Icon = item.icon;
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="app-panel group flex min-h-[245px] flex-col rounded-[20px] p-6 transition duration-300 hover:-translate-y-1 hover:border-[#b9b0ff]"
+                >
+                  <div
+                    className={`flex h-10 w-10 items-center justify-center rounded-xl ${item.iconClass}`}
+                  >
+                    <Icon className="h-5 w-5" />
                   </div>
 
-                  <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                    {[
-                      ["FastAPI", Headphones],
-                      ["LangGraph Agent", Bot],
-                      [
-                        "RAG + pgvector",
-                        BrainCircuit,
-                      ],
-                      ["Zendesk", Users],
-                      ["Durable Worker", Workflow],
-                    ].map(([label, Icon]) => {
-                      const Component =
-                        Icon as typeof Activity;
+                  <h3 className="mt-7 text-lg font-medium tracking-[-0.03em] text-slate-950">
+                    {item.title}
+                  </h3>
 
-                      return (
-                        <div
-                          key={label as string}
-                          className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3"
-                        >
-                          <Component className="h-4 w-4 text-cyan-400" />
+                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                    {item.description}
+                  </p>
 
-                          <span className="text-sm text-slate-300">
-                            {label as string}
-                          </span>
-                        </div>
-                      );
-                    })}
+                  <div className="mt-auto flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white transition group-hover:border-violet-300">
+                    <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
                   </div>
-                </section>
-              </>
-            )}
-          </div>
+                </Link>
+              );
+            })}
+          </section>
+
+          <footer className="mt-16 flex items-center justify-between border-t border-slate-200/70 py-8 text-xs text-slate-400">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-[#725cff]" />
+              CXOps AI
+            </div>
+
+            <p>
+              Intelligent Customer Experience
+              Automation
+            </p>
+          </footer>
         </main>
       </div>
     </div>
