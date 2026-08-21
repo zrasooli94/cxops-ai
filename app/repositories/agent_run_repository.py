@@ -7,6 +7,7 @@ from app.models.agent_action_event import (
     AgentActionEvent,
 )
 from app.models.agent_run import AgentRun
+from app.models.ticket import Ticket
 
 
 class AgentRunRepository:
@@ -21,6 +22,40 @@ class AgentRunRepository:
         workflow_path: list[str],
         tool_plan: list[dict],
     ) -> AgentRun:
+        # Serialize AgentRun persistence per ticket so two
+        # simultaneous analyses cannot leave two active approvals.
+        await db.execute(
+            select(Ticket.id).where(Ticket.id == ticket_id).with_for_update()
+        )
+
+        # Preserve previous decisions for audit history, but remove
+        # them from the active approval queue.
+        result = await db.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.ticket_id == ticket_id,
+                AgentRun.status == "pending_approval",
+            )
+            .with_for_update()
+        )
+
+        previous_runs = list(result.scalars().all())
+
+        for previous_run in previous_runs:
+            previous_run.status = "superseded"
+
+            db.add(
+                AgentActionEvent(
+                    agent_run_id=previous_run.id,
+                    event_type="superseded",
+                    actor="cxops-policy",
+                    note="Superseded by a newer analysis of the same ticket.",
+                    event_data={
+                        "replacement_run_id": run_id,
+                        "ticket_id": ticket_id,
+                    },
+                )
+            )
 
         run = AgentRun(
             run_id=run_id,
