@@ -30,3 +30,8 @@ evals/latest_agent_repeatability_report.json
 evals/latest_agent_latency_profile.json
 # Database backups
 *.dump
+
+docs/screenshots/Thumbnail1.png
+docs/screenshots/Thumbnail2.png
+docs/screenshots/Thumbnail3.jpg
+
