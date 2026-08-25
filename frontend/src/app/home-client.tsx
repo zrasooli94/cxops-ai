@@ -490,6 +490,14 @@ export default function Home() {
                 >
                   View telemetry
                 </Link>
+
+                <Link
+                  href="/platform"
+                  className="inline-flex items-center gap-3 rounded-full border border-violet-200 bg-violet-50/80 px-6 py-3.5 text-sm font-medium text-violet-700 transition hover:border-violet-300 hover:bg-violet-100"
+                >
+                  Platform Overview
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
               </div>
             </div>
 
