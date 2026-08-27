@@ -73,6 +73,10 @@ const structuredData = {
   url:
     siteUrl,
 
+  sameAs: [
+    "https://github.com/zrasooli94/cxops-ai",
+  ],
+
   applicationCategory:
     "BusinessApplication",
 

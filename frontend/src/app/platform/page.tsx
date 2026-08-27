@@ -46,6 +46,10 @@ const structuredData = {
     url:
       siteUrl,
 
+    sameAs: [
+      "https://github.com/zrasooli94/cxops-ai",
+    ],
+
     applicationCategory:
       "BusinessApplication",
   },
@@ -159,6 +163,15 @@ export default function PlatformPage() {
               >
                 Explore Tickets
               </Link>
+
+              <a
+                href="https://github.com/zrasooli94/cxops-ai"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-800 transition hover:border-violet-300"
+              >
+                View Source on GitHub
+              </a>
             </div>
           </div>
 

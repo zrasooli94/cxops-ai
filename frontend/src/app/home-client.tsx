@@ -498,6 +498,16 @@ export default function Home() {
                   Platform Overview
                   <ArrowRight className="h-4 w-4" />
                 </Link>
+
+                <a
+                  href="https://github.com/zrasooli94/cxops-ai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-3 rounded-full border border-slate-200 bg-white/85 px-6 py-3.5 text-sm text-slate-700 shadow-sm transition hover:border-violet-300"
+                >
+                  View Source on GitHub
+                  <ArrowRight className="h-4 w-4" />
+                </a>
               </div>
             </div>
 
