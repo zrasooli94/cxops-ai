@@ -15,6 +15,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.95,
     },
+    {
+      url: `${baseUrl}/platform/evaluating-ai-support-platforms`,
+      changeFrequency: "monthly",
+      priority: 0.9,
+    },
 
     {
       url: `${baseUrl}/tickets`,

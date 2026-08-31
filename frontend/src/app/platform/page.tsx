@@ -228,6 +228,33 @@ export default function PlatformPage() {
             </p>
           </section>
 
+          <section className="mt-20 rounded-3xl border border-violet-200 bg-violet-50/60 p-7 lg:p-10">
+            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-violet-600">
+              Evaluation guide
+            </p>
+
+            <h2 className="mt-4 text-2xl font-semibold tracking-[-0.025em]">
+              Compare controls before allowing AI agents to take high-impact actions
+            </h2>
+
+            <p className="mt-5 max-w-4xl leading-7 text-slate-600">
+              Our evidence-backed guide explains how to
+              evaluate authorization, human approval,
+              policy enforcement, auditability,
+              escalation, observability, and recovery
+              boundaries across customer-support AI
+              platforms without assuming that every vendor
+              exposes the same controls.
+            </p>
+
+            <Link
+              href="/platform/evaluating-ai-support-platforms"
+              className="mt-7 inline-flex rounded-xl bg-violet-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-violet-700"
+            >
+              Read the high-risk action evaluation guide
+            </Link>
+          </section>
+
           <section className="mt-20">
             <h2 className="text-2xl font-semibold tracking-[-0.025em]">
               Explore the CXOps AI system
