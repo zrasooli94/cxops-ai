@@ -28,7 +28,9 @@ from app.core.auth import (
 from app.core.config import reset_settings_cache
 from app.main import app
 
-TEST_SECRET = "test-secret-32-characters-long-enough"
+# Synthetic test fixtures — obviously non-secret deterministic values.
+TEST_SECRET = "x" * 32
+ALT_SECRET = "y" * 32
 TEST_ISSUER = "test-issuer"
 TEST_AUDIENCE = "test-audience"
 DEV_MODE_SECRET = "dev-secret-not-for-production-use"
@@ -174,8 +176,8 @@ class TestTokenValidation:
             _decode_and_validate_token(token)
 
     def test_invalid_signature_raises_invalid_token(self, monkeypatch):
-        _configure(monkeypatch, AUTH_JWT_SECRET="other-secret-32-characters-long")
-        token = _build_token(secret="another-secret-32-characters-long")
+        _configure(monkeypatch, AUTH_JWT_SECRET=ALT_SECRET)
+        token = _build_token(secret=TEST_SECRET)
 
         with pytest.raises(InvalidTokenError):
             _decode_and_validate_token(token)

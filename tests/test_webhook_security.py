@@ -17,7 +17,9 @@ from app.core.config import reset_settings_cache
 from app.integrations.webhooks.security import compute_signature, verify_signature
 from app.main import app
 
-TEST_SECRET = "test-ticket-event-webhook-secret"
+# Synthetic test fixtures — obviously non-secret deterministic values.
+TEST_SECRET = "x" * 32
+ALT_SECRET = "y" * 32
 SIGNATURE_HEADER = "x-cxops-signature"
 
 
@@ -99,7 +101,7 @@ class TestSignatureVerification:
 
     def test_wrong_secret_rejected(self):
         body = b'{"event_id": "evt-1"}'
-        signature = compute_signature(secret="other-secret", body=body)
+        signature = compute_signature(secret=ALT_SECRET, body=body)
 
         assert not verify_signature(
             secret=TEST_SECRET,
@@ -149,7 +151,7 @@ class TestWebhookEndpoint:
         _configure(monkeypatch)
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()
-        bad_signature = compute_signature(secret="other-secret", body=body)
+        bad_signature = compute_signature(secret=ALT_SECRET, body=body)
 
         async with client:
             response = await client.post(
