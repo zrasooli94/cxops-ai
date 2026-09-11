@@ -178,7 +178,8 @@ jobs:
 
       - name: RAG evaluation skipped
         if: ${{ env.OPENAI_API_KEY == '' }}
-        run: echo "Live RAG evaluation skipped: OPENAI_API_KEY is not configured."
+        run: |
+          echo "Live RAG evaluation skipped: OPENAI_API_KEY is not configured."
 
   agent-evaluation:
     name: Agent Evaluation (Live - Optional)
@@ -235,7 +236,8 @@ jobs:
 
       - name: Agent evaluation skipped
         if: ${{ env.OPENAI_API_KEY == '' }}
-        run: echo "Live Agent evaluation skipped: OPENAI_API_KEY is not configured."
+        run: |
+          echo "Live Agent evaluation skipped: OPENAI_API_KEY is not configured."
 
   secret-scan:
     name: Secret Scan
