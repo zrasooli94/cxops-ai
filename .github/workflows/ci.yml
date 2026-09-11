@@ -1,0 +1,265 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Ruff check
+        run: |
+          python -m ruff check app tests scripts alembic
+
+      - name: Mypy typecheck
+        run: |
+          python -m mypy app
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+  backend-tests:
+    name: Backend Tests (Unit)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops
+          POSTGRES_USER: cxops
+          POSTGRES_PASSWORD: cxops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops -d cxops"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
+      ENVIRONMENT: development
+      DEBUG: "true"
+      OPENAI_API_KEY: test-key
+      ZENDESK_WEBHOOK_SECRET: test-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Run pytest (unit)
+        run: |
+          pytest -q --tb=short -m "not integration"
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  rag-evaluation:
+    name: RAG Evaluation (Live - Optional)
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
+      ENVIRONMENT: development
+      DEBUG: "true"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ZENDESK_WEBHOOK_SECRET: test-secret
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops
+          POSTGRES_USER: cxops
+          POSTGRES_PASSWORD: cxops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops -d cxops"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Seed knowledge base
+        if: ${{ env.OPENAI_API_KEY != '' }}
+        run: python -m scripts.seed_knowledge_base
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Run RAG evaluation
+        if: ${{ env.OPENAI_API_KEY != '' }}
+        run: python -m scripts.evaluate_rag
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: RAG evaluation skipped
+        if: ${{ env.OPENAI_API_KEY == '' }}
+        run: echo "Live RAG evaluation skipped: OPENAI_API_KEY is not configured."
+
+  agent-evaluation:
+    name: Agent Evaluation (Live - Optional)
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
+      ENVIRONMENT: development
+      DEBUG: "true"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ZENDESK_WEBHOOK_SECRET: test-secret
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops
+          POSTGRES_USER: cxops
+          POSTGRES_PASSWORD: cxops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops -d cxops"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Seed knowledge base
+        if: ${{ env.OPENAI_API_KEY != '' }}
+        run: python -m scripts.seed_knowledge_base
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Run agent evaluation
+        if: ${{ env.OPENAI_API_KEY != '' }}
+        run: python -m scripts.evaluate_agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Agent evaluation skipped
+        if: ${{ env.OPENAI_API_KEY == '' }}
+        run: echo "Live Agent evaluation skipped: OPENAI_API_KEY is not configured."
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: "detect --source . --redact --verbose"
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t cxops-api:test .
+
+      - name: Build frontend image
+        run: docker build -t cxops-frontend:test ./frontend

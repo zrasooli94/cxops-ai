@@ -19,6 +19,9 @@ from app.services.citation_service import (
 from app.services.knowledge_search_service import (
     KnowledgeSearchService,
 )
+from app.services.rag_helpers import (
+    filter_and_format_sources,
+)
 
 
 class RAGService:
@@ -104,28 +107,21 @@ class RAGService:
             }
 
         # -------------------------------------------------
-        # 3. Adaptive retrieval filtering
+        # 3. Adaptive retrieval filtering + format sources
         # -------------------------------------------------
 
-        best_similarity = float(matches[0]["similarity"])
-
-        adaptive_threshold = max(
-            settings.rag_min_similarity,
-            best_similarity - settings.rag_similarity_margin,
-        )
-
-        relevant_matches = [
-            match for match in matches if (match["similarity"] >= adaptive_threshold)
-        ][: settings.rag_max_sources]
+        sources = filter_and_format_sources(matches)
 
         # -------------------------------------------------
         # 4. Retrieval confidence too low
         # -------------------------------------------------
 
-        if not relevant_matches:
+        if not sources:
             answer_text = self._insufficient_answer()
 
             latency_ms = (perf_counter() - started_at) * 1000
+
+            best_similarity = float(matches[0]["similarity"]) if matches else None
 
             await AIObservabilityService.record(
                 db=db,
@@ -153,41 +149,19 @@ class RAGService:
         # 5. Build grounded context + API sources
         # -------------------------------------------------
 
+        best_similarity = float(matches[0]["similarity"])
+
         context_sections: list[str] = []
-        sources: list[dict] = []
 
-        for index, match in enumerate(
-            relevant_matches,
-            start=1,
-        ):
-            source_id = f"S{index}"
-
-            metadata = match["metadata"] or {}
-
-            title = metadata.get(
-                "title",
-                "Unknown document",
-            )
-
+        for source in sources:
             context_sections.append(
                 "\n".join(
                     [
-                        f"[{source_id}]",
-                        f"Title: {title}",
-                        (f"Content: {match['content']}"),
+                        f"[{source['source_id']}]",
+                        f"Title: {source['title']}",
+                        f"Content: {source['content']}",
                     ]
                 )
-            )
-
-            sources.append(
-                {
-                    "source_id": source_id,
-                    "chunk_id": match["chunk_id"],
-                    "document_id": match["document_id"],
-                    "title": title,
-                    "content": match["content"],
-                    "similarity": float(match["similarity"]),
-                }
             )
 
         context = "\n\n".join(context_sections)

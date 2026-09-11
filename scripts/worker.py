@@ -7,6 +7,12 @@ from prometheus_client import (
 from app.core.database import (
     AsyncSessionLocal,
 )
+from app.core.logging import (
+    bind_context,
+    configure_logging,
+    get_logger,
+    unbind_context,
+)
 from app.core.metrics import (
     record_integration_job_completed,
     record_integration_job_failure,
@@ -21,12 +27,14 @@ from app.services.integration_job_service import (
 
 WORKER_METRICS_PORT = 9101
 
+configure_logging()
+
+log = get_logger("worker")
+
 
 async def run_worker() -> None:
 
-    print("CXOps worker started")
-
-    print(f"CXOps worker metrics: http://127.0.0.1:{WORKER_METRICS_PORT}/")
+    log.info("worker_started", metrics_port=WORKER_METRICS_PORT)
 
     while True:
         async with AsyncSessionLocal() as db:
@@ -40,7 +48,11 @@ async def run_worker() -> None:
             job_type = job.job_type
             attempt = job.attempts
 
-            print(f"[worker] processing job={job_id} type={job_type} attempt={attempt}")
+            # Extract and bind request correlation ID from job payload
+            request_id = job.payload.get("request_id") if job.payload else None
+            bind_context(job_id=str(job_id), action=job_type, request_id=request_id)
+
+            log.info("processing_job", job_id=job_id, job_type=job_type, attempt=attempt)
 
             try:
                 await IntegrationJobService.execute(
@@ -57,7 +69,7 @@ async def run_worker() -> None:
                     job_type=job_type,
                 )
 
-                print(f"[worker] completed job={job_id}")
+                log.info("job_completed", job_id=job_id, job_type=job_type)
 
             except Exception as exc:  # noqa: BLE001
                 await db.rollback()
@@ -73,13 +85,22 @@ async def run_worker() -> None:
                         record_integration_job_retry(
                             job_type=job_type,
                         )
+                        bind_context(outcome="retry")
+                        log.warning("job_scheduled_retry", job_id=job_id, job_type=job_type, error=str(exc))
 
                     elif updated_job.status == "failed":
                         record_integration_job_failure(
                             job_type=job_type,
                         )
+                        bind_context(outcome="failed", error_category=type(exc).__name__)
+                        log.error("job_failed", job_id=job_id, job_type=job_type, error=str(exc))
 
-                print(f"[worker] failed job={job_id}: {exc}")
+                else:
+                    bind_context(outcome="failed", error_category=type(exc).__name__)
+                    log.error("job_failed_no_update", job_id=job_id, job_type=job_type, error=str(exc))
+
+            finally:
+                unbind_context()
 
 
 if __name__ == "__main__":

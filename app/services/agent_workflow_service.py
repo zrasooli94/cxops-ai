@@ -30,6 +30,7 @@ from app.services.integration_job_service import (
     IntegrationJobService,
 )
 from app.services.knowledge_search_service import KnowledgeSearchService
+from app.services.rag_helpers import filter_and_format_sources
 from app.services.tool_authorization_service import ToolAuthorizationService
 
 
@@ -317,47 +318,7 @@ class AgentWorkflowService:
             [],
         )
 
-        if not matches:
-            return {
-                "sources": [],
-                "workflow_path": [
-                    *path,
-                    "retrieve_knowledge",
-                ],
-            }
-
-        best_similarity = float(matches[0]["similarity"])
-
-        threshold = max(
-            settings.rag_min_similarity,
-            (best_similarity - settings.rag_similarity_margin),
-        )
-
-        relevant_matches = [
-            match for match in matches if (float(match["similarity"]) >= threshold)
-        ][: settings.rag_max_sources]
-
-        sources: list[dict] = []
-
-        for index, match in enumerate(
-            relevant_matches,
-            start=1,
-        ):
-            metadata = match.get("metadata") or {}
-
-            sources.append(
-                {
-                    "source_id": (f"S{index}"),
-                    "chunk_id": (match["chunk_id"]),
-                    "document_id": (match["document_id"]),
-                    "title": metadata.get(
-                        "title",
-                        "Unknown document",
-                    ),
-                    "content": (match["content"]),
-                    "similarity": float(match["similarity"]),
-                }
-            )
+        sources = filter_and_format_sources(matches)
 
         return {
             "sources": sources,

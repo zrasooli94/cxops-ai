@@ -182,16 +182,16 @@ class AgentRunRepository:
             .returning(AgentRun.id)
         )
 
-        claimed_id = result.scalar_one_or_none()
+        claimed_id: int | None = result.scalar_one_or_none()
 
         await db.commit()
 
         if claimed_id is None:
             return None
 
-        result = await db.execute(select(AgentRun).where(AgentRun.id == claimed_id))
+        run_result = await db.execute(select(AgentRun).where(AgentRun.id == claimed_id))
 
-        return result.scalar_one()
+        return run_result.scalar_one_or_none()
 
     @staticmethod
     async def mark_executed(

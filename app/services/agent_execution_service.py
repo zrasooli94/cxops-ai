@@ -202,7 +202,7 @@ class AgentExecutionService:
         # -----------------------------------------
 
         if tool_name == "zendesk.send_reply":
-            body = arguments.get("body")
+            body = arguments.get("body", "")
 
             if not body:
                 raise AgentExecutionError(

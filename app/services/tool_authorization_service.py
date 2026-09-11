@@ -46,7 +46,7 @@ class ToolAuthorizationService:
         for raw_tool in tool_plan:
             tool_call = deepcopy(raw_tool)
 
-            tool_name = tool_call.get("tool")
+            tool_name = tool_call.get("tool", "")
 
             policy = cls.POLICIES.get(tool_name)
 

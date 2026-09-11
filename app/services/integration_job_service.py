@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.request_context import get_request_id
 from app.models.integration_job import IntegrationJob
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import (
@@ -194,6 +195,9 @@ class IntegrationJobService:
                 "duplicate": True,
             }
 
+        # Propagate request correlation ID if available
+        request_id = get_request_id()
+
         try:
             job = await IntegrationJobRepository.create(
                 db,
@@ -202,6 +206,7 @@ class IntegrationJobService:
                     job_type=(IntegrationJobService.AGENT_EXECUTION),
                     payload={
                         "run_id": run_id,
+                        "request_id": request_id,
                     },
                 ),
             )

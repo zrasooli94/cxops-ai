@@ -9,12 +9,20 @@ from sqlalchemy import text
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.logging import configure_logging
+from app.core.request_context import (
+    RequestCorrelationMiddleware,
+)
+
+configure_logging()
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     debug=settings.debug,
 )
+
+app.add_middleware(RequestCorrelationMiddleware)
 
 app.include_router(api_router)
 

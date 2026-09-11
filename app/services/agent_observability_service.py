@@ -1,4 +1,5 @@
 from collections import Counter
+from collections import Counter as CounterType
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -82,6 +83,7 @@ class AgentObservabilityService:
 
         return int(result.scalar_one())
 
+
     @staticmethod
     async def tool_metrics(
         db: AsyncSession,
@@ -91,8 +93,8 @@ class AgentObservabilityService:
 
         plans = result.scalars().all()
 
-        tool_usage = Counter()
-        risk_levels = Counter()
+        tool_usage: CounterType[str] = Counter()
+        risk_levels: CounterType[str] = Counter()
 
         approval_gated_tools = 0
         authorized_tools = 0

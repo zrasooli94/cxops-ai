@@ -64,13 +64,15 @@ class ZendeskWebhookService:
             event=event,
         )
 
-        local_ticket = await TicketRepository.get_by_id(
+        refreshed_ticket = await TicketRepository.get_by_id(
             db=db,
             ticket_id=local_ticket.id,
         )
 
-        if local_ticket is None:
+        if refreshed_ticket is None:
             raise RuntimeError("Local ticket not found after automation")
+
+        local_ticket = refreshed_ticket
 
         note = (
             "CXOps AI automation result\n"

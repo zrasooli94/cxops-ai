@@ -9,7 +9,6 @@ pgvector
 langchain-postgres
 
 httpx
-tenacity
 structlog
 
 openai
@@ -21,8 +20,3 @@ tiktoken
 pypdf
 
 prometheus-client
-apscheduler
-
-numpy
-pandas
-scikit-learn
