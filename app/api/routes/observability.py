@@ -6,6 +6,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.schemas.observability import (
     AgentObservabilitySummary,
@@ -39,6 +40,7 @@ DatabaseSession = Annotated[
 )
 async def ai_summary(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AIObservabilityService.summary(db)
 
@@ -49,6 +51,7 @@ async def ai_summary(
 )
 async def agent_summary(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AgentObservabilityService.summary(db)
 
@@ -59,6 +62,7 @@ async def agent_summary(
 )
 async def ai_by_feature(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AIObservabilityService.breakdown(db)
 
@@ -69,6 +73,7 @@ async def ai_by_feature(
 )
 async def agent_operational_kpis(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AgentObservabilityService.operational_kpis(db)
 
@@ -79,5 +84,6 @@ async def agent_operational_kpis(
 )
 async def agent_roi(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AgentObservabilityService.roi_summary(db)

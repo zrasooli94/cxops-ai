@@ -8,6 +8,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
@@ -71,6 +72,7 @@ def serialize_run(
 async def analyze_ticket(
     ticket_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
 
     try:
@@ -94,6 +96,7 @@ async def approve_agent_run(
     run_id: str,
     data: AgentReviewRequest,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
 
     try:
@@ -124,6 +127,7 @@ async def approve_agent_run(
 )
 async def list_agent_runs(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
     run_status: str | None = None,
     limit: int = 100,
 ):
@@ -149,6 +153,7 @@ async def reject_agent_run(
     run_id: str,
     data: AgentReviewRequest,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
 
     try:
@@ -181,6 +186,7 @@ async def reject_agent_run(
 async def execute_agent_run(
     run_id: str,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
 
     run = await AgentRunRepository.get_by_run_id(
@@ -237,6 +243,7 @@ async def execute_agent_run(
 async def list_agent_run_events(
     run_id: str,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     run = await AgentRunRepository.get_by_run_id(
         db,

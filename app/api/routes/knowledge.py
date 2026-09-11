@@ -11,6 +11,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.schemas.knowledge import (
     KnowledgeDocumentCreate,
@@ -55,6 +56,7 @@ DatabaseSession = Annotated[
 async def ingest_document(
     data: KnowledgeDocumentCreate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await KnowledgeIngestionService.ingest(
         db=db,
@@ -73,6 +75,7 @@ async def ingest_document(
 async def search_knowledge(
     data: KnowledgeSearchRequest,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await KnowledgeSearchService.search(
         db=db,
@@ -88,6 +91,7 @@ async def search_knowledge(
 )
 async def upload_document(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
     file: Annotated[UploadFile, File()],
     title: str | None = Form(default=None),
     source: str = Form(default="uploaded-file"),
@@ -141,6 +145,7 @@ async def upload_document(
 async def answer_from_knowledge(
     data: RAGAnswerRequest,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await rag_service.answer(
         db=db,

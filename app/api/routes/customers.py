@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.repositories.customer_repository import CustomerRepository
 from app.schemas.customer import CustomerCreate, CustomerRead
@@ -27,6 +28,7 @@ DatabaseSession = Annotated[
 async def create_customer(
     data: CustomerCreate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await CustomerService.create(db, data)
 
@@ -37,6 +39,7 @@ async def create_customer(
 )
 async def list_customers(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await CustomerRepository.list(db)
 
@@ -48,6 +51,7 @@ async def list_customers(
 async def get_customer(
     customer_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     customer = await CustomerRepository.get_by_id(
         db,

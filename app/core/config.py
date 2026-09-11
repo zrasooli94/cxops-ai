@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +19,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Authentication / Identity
+    auth_jwt_secret: str = ""
+    auth_jwt_algorithm: str = "HS256"
+    auth_jwt_issuer: str = ""
+    auth_jwt_audience: str = ""
+    auth_dev_mode: bool = False
+
     zendesk_webhook_secret: str = ""
+    ticket_event_webhook_secret: str = ""
     zendesk_oauth_token: str = ""
     zendesk_subdomain: str = ""
     zendesk_client_id: str = ""
@@ -33,6 +41,14 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
 
     chat_model: str = "gpt-4o-mini"
+
+    @model_validator(mode="after")
+    def _reject_dev_auth_in_production(self) -> "Settings":
+        if self.environment == "production" and self.auth_dev_mode:
+            raise ValueError(
+                "AUTH_DEV_MODE cannot be enabled when ENVIRONMENT=production"
+            )
+        return self
 
     rag_top_k: int = 5
     rag_min_similarity: float = 0.35
@@ -105,3 +121,13 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def reset_settings_cache() -> None:
+    """Clear the settings cache and re-create the settings object.
+
+    This is primarily useful for testing when settings need to be re-configured.
+    """
+    global settings
+    get_settings.cache_clear()
+    settings = get_settings()

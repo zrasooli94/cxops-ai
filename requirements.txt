@@ -20,3 +20,5 @@ tiktoken
 pypdf
 
 prometheus-client
+
+python-jose[cryptography]

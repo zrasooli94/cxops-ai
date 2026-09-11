@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.repositories.automation_rule_repository import (
     AutomationRuleRepository,
@@ -36,6 +37,7 @@ DatabaseSession = Annotated[
 async def create_rule(
     data: AutomationRuleCreate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AutomationRuleService.create(
         db=db,
@@ -49,6 +51,7 @@ async def create_rule(
 )
 async def list_rules(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await AutomationRuleRepository.list_all(
         db=db,
@@ -62,6 +65,7 @@ async def list_rules(
 async def get_rule(
     rule_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     rule = await AutomationRuleRepository.get_by_id(
         db=db,
@@ -85,6 +89,7 @@ async def update_rule(
     rule_id: int,
     data: AutomationRuleUpdate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     rule = await AutomationRuleService.update(
         db=db,

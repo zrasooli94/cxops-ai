@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.schemas.ticket import (
     TicketCreate,
@@ -31,6 +32,7 @@ DatabaseSession = Annotated[
 async def create_ticket(
     data: TicketCreate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await TicketService.create_ticket(
         db=db,
@@ -44,6 +46,7 @@ async def create_ticket(
 )
 async def list_tickets(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
     offset: int = Query(
         default=0,
         ge=0,
@@ -68,6 +71,7 @@ async def list_tickets(
 async def get_ticket(
     ticket_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     ticket = await TicketService.get_ticket(
         db=db,
@@ -91,6 +95,7 @@ async def update_ticket(
     ticket_id: int,
     data: TicketUpdate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     ticket = await TicketService.update_ticket(
         db=db,

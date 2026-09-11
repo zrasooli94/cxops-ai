@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.repositories.organization_repository import OrganizationRepository
 from app.schemas.organization import OrganizationCreate, OrganizationRead
@@ -27,6 +28,7 @@ DatabaseSession = Annotated[
 async def create_organization(
     data: OrganizationCreate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await OrganizationService.create(db, data)
 
@@ -37,6 +39,7 @@ async def create_organization(
 )
 async def list_organizations(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     return await OrganizationRepository.list(db)
 
@@ -48,6 +51,7 @@ async def list_organizations(
 async def get_organization(
     organization_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     organization = await OrganizationRepository.get_by_id(
         db,

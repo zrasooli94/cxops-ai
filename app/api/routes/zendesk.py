@@ -8,6 +8,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentPrincipal
 from app.core.database import get_db
 from app.integrations.zendesk.client import (
     ZendeskAPIError,
@@ -60,6 +61,7 @@ def handle_zendesk_error(
 @router.get("/me")
 async def get_zendesk_current_user(
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     try:
         return await zendesk_client.get_current_user(db)
@@ -75,6 +77,7 @@ async def get_zendesk_current_user(
 async def get_zendesk_ticket(
     ticket_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     try:
         return await zendesk_client.get_ticket(
@@ -93,6 +96,7 @@ async def get_zendesk_ticket(
 async def create_zendesk_ticket(
     data: ZendeskTicketCreate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     try:
         return await zendesk_client.create_ticket(
@@ -118,6 +122,7 @@ async def update_zendesk_ticket(
     ticket_id: int,
     data: ZendeskTicketUpdate,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     changes = data.model_dump(
         exclude_none=True,
@@ -146,6 +151,7 @@ async def update_zendesk_ticket(
 async def get_zendesk_user(
     user_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     try:
         return await zendesk_client.get_user(
@@ -167,6 +173,7 @@ async def get_zendesk_user(
 async def sync_zendesk_ticket(
     ticket_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     try:
         return await ZendeskSyncService.sync_ticket(
@@ -185,6 +192,7 @@ async def sync_zendesk_ticket(
 async def get_zendesk_ticket_comments(
     ticket_id: int,
     db: DatabaseSession,
+    principal: CurrentPrincipal,
 ):
     try:
         return await zendesk_client.get_ticket_comments(
