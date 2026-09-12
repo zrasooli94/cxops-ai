@@ -172,16 +172,53 @@ Authorization decisions are deliberately deferred:
 | Production OIDC/JWKS provider | Future |
 | Frontend login UI             | Future |
 
-### Production OIDC / JWKS (Future)
+### Production OIDC / JWKS (Phase 1B.2)
 
-For production deployment the symmetric HS256 secret must be replaced with
-asymmetric key verification via an OIDC provider (e.g. Auth0, Nhost, or a
-self-hosted IdP). This requires:
+For production deployment the symmetric HS256 secret is replaced with
+asymmetric key verification against a JWKS endpoint. The implemented
+`app/core/jwks.py` is a generic, provider-neutral adapter compatible with
+any OIDC provider publishing a standard JWKS document (Nhost with
+asymmetric signing, Auth0, Keycloak, etc.).
 
-- A JWKS endpoint (`jwks_uri`) for public key discovery
-- RS256 or ES256 algorithm support in `AUTH_JWT_ALGORITHM`
-- Key rotation awareness (python-jose supports `jwks` key set decoding)
-- Trusted issuer configuration via `AUTH_JWT_ISSUER`
+Configuration (see `.env.example`, values below are required and must come
+from the deployed provider's real configuration — no project-specific
+values are asserted in this repository):
+```
+AUTH_MODE=jwks
+AUTH_JWKS_URL=<deployed project's documented JWKS endpoint>
+AUTH_JWKS_ALGORITHMS=RS256
+AUTH_JWT_ISSUER=<actual iss claim of the deployed project, if enforced>
+AUTH_JWT_AUDIENCE=<actual aud claim of the deployed project, if enforced>
+AUTH_JWKS_CACHE_TTL_SECONDS=600
+```
 
-The current `app/core/auth.py` architecture is provider-neutral and supports
-this transition by changing only the secret-source and algorithm configuration.
+Nhost deployment notes — how to configure the verifier without guessing:
+- Nhost currently defaults to **symmetric** (HS256) JWT signing.
+  Asymmetric (RS256) signing **must be explicitly enabled** in the Nhost
+  project settings before a JWKS endpoint is available.
+- `AUTH_JWKS_URL` must point at the deployed Nhost project's documented
+  JWKS endpoint. Do not hardcode a guessed subdomain/region: confirm it
+  against the deployed Nhost Auth configuration.
+- `AUTH_JWT_ISSUER`, when enforced, must match the actual `iss` claim in
+  tokens the deployed project issues. Read the claim from a safely decoded
+  development token and confirm it against the deployed Nhost issuer value
+  before pinning it — do not assume it equals the base URL.
+- `AUTH_JWT_AUDIENCE`, when enforced, must match the actual `aud` claim in
+  the issued tokens / the project's configured client identifier. Inspect
+  the tokens the project actually issues rather than assuming the client ID
+  is the audience.
+- The CXOps verifier validates issuer and audience only when configured
+  (empty = optional).
+- JWKS keys are cached per `kid` for the configured TTL. Rotation is
+  discovered on the next fetch after a cache miss. A key removed from the
+  JWKS stops being honored once its cached entry falls out of TTL. There is
+  **no** stale-key grace period beyond the normal TTL: if the JWKS endpoint
+  is unreachable and no fresh cached key exists for the presented `kid`,
+  the request fails closed with `503` instead of trusting possibly-revoked
+  keys. This fail-closed trade-off is deliberate — availability is
+  sacrificed to guarantee a rotated-out key is never accepted.
+
+Do not hardcode a real project subdomain, region, signing key, or secret
+in this repository. When the live project is wired in a later phase,
+inspect a safely decoded development token and the deployed Nhost
+configuration before pinning issuer/audience values.

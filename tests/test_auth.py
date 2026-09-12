@@ -22,7 +22,7 @@ from app.core.auth import (
     InvalidClaimsError,
     InvalidTokenError,
     _decode_and_validate_token,
-    _validate_dev_mode,
+    _validate_auth_mode,
     create_principal_from_payload,
 )
 from app.core.config import reset_settings_cache
@@ -449,16 +449,16 @@ class TestDevModeSecurity:
             )
 
     def test_dev_mode_allowed_in_development(self, monkeypatch):
-        _configure(monkeypatch, AUTH_DEV_MODE="True")
-        _validate_dev_mode()
+        _configure(monkeypatch, AUTH_DEV_MODE="True", AUTH_MODE="hs256")
+        _validate_auth_mode()
 
     def test_dev_secret_used_only_in_dev_mode(self, monkeypatch):
         from app.core.auth import _get_jwt_secret
 
-        _configure(monkeypatch, AUTH_DEV_MODE="True")
+        _configure(monkeypatch, AUTH_DEV_MODE="True", AUTH_MODE="hs256")
         assert _get_jwt_secret() == DEV_MODE_SECRET
 
-        _configure(monkeypatch, AUTH_DEV_MODE="False")
+        _configure(monkeypatch, AUTH_DEV_MODE="False", AUTH_MODE="hs256")
         assert _get_jwt_secret() == TEST_SECRET
 
 

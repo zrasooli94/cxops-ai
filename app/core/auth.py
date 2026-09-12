@@ -3,6 +3,15 @@ from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 
 from app.core.config import get_settings
+from app.core.jwks import (
+    JWKSAlgorithmError,
+    JWKSFetchError,
+    JWKSKeyNotFoundError,
+    JWKSParseError,
+    JWKSVerificationError,
+    verify_hs256_token,
+    verify_jwks_token,
+)
 from app.core.logging import get_logger
 from app.core.principal import AuthenticatedPrincipal
 
@@ -29,14 +38,25 @@ class DevModeAuthenticationError(AuthenticationError):
     """Development authentication error."""
 
 
-def _validate_dev_mode() -> None:
-    """Ensure dev mode is not silently enabled in production."""
+def _validate_auth_mode() -> None:
+    """Ensure auth mode is properly configured for the environment."""
     s = get_settings()
-    if s.auth_dev_mode and s.environment == "production":
-        log.error("dev_mode_enabled_in_production")
-        raise DevModeAuthenticationError(
-            "AUTH_DEV_MODE cannot be enabled in production"
-        )
+    if s.environment == "production":
+        if s.auth_dev_mode:
+            log.error("dev_mode_enabled_in_production")
+            raise DevModeAuthenticationError(
+                "AUTH_DEV_MODE cannot be enabled in production"
+            )
+        if s.auth_mode == "hs256":
+            log.error("hs256_mode_in_production")
+            raise DevModeAuthenticationError(
+                "AUTH_MODE=hs256 is not allowed in production"
+            )
+        if s.auth_mode == "jwks" and not s.auth_jwks_url:
+            log.error("jwks_url_missing_in_production")
+            raise DevModeAuthenticationError(
+                "AUTH_JWKS_URL is required when AUTH_MODE=jwks"
+            )
 
 
 def _get_jwt_secret() -> str:
@@ -90,7 +110,7 @@ def _decode_and_validate_token(token: str) -> dict:
     return payload
 
 
-def create_principal_from_payload(payload: dict) -> AuthenticatedPrincipal:
+def create_principal_from_payload(payload: dict, auth_method: str = "jwt") -> AuthenticatedPrincipal:
     """Create AuthenticatedPrincipal from validated JWT payload."""
     subject = payload.get("sub")
     if not subject:
@@ -100,7 +120,7 @@ def create_principal_from_payload(payload: dict) -> AuthenticatedPrincipal:
         subject=str(subject),
         email=payload.get("email"),
         issuer=payload.get("iss"),
-        auth_method="jwt",
+        auth_method=auth_method,
         token_claims=payload,
     )
 
@@ -129,8 +149,14 @@ async def get_current_principal(authorization: str | None = None) -> Authenticat
         )
 
     try:
-        _validate_dev_mode()
-        payload = _decode_and_validate_token(token)
+        _validate_auth_mode()
+        s = get_settings()
+        if s.auth_mode == "jwks":
+            payload = await verify_jwks_token(token)
+            auth_method = "jwks"
+        else:
+            payload = await verify_hs256_token(token)
+            auth_method = "jwt"
     except ExpiredTokenError as e:
         log.warning("auth_expired_token", error=str(e))
         raise HTTPException(
@@ -152,6 +178,39 @@ async def get_current_principal(authorization: str | None = None) -> Authenticat
             detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except JWKSAlgorithmError as e:
+        log.warning("auth_jwks_algorithm", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token algorithm",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWKSKeyNotFoundError as e:
+        log.warning("auth_jwks_key_not_found", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token: key not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWKSVerificationError as e:
+        log.warning("auth_jwks_verification", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWKSFetchError as e:
+        log.error("auth_jwks_fetch_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        )
+    except JWKSParseError as e:
+        log.error("auth_jwks_parse_failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        )
     except DevModeAuthenticationError as e:
         log.error("auth_dev_mode_production", error=str(e))
         raise HTTPException(
@@ -159,13 +218,14 @@ async def get_current_principal(authorization: str | None = None) -> Authenticat
             detail="Authentication misconfiguration",
         )
 
-    principal = create_principal_from_payload(payload)
+    principal = create_principal_from_payload(payload, auth_method=auth_method)
 
     log.info(
         "auth_success",
         subject=principal.subject,
         email=principal.email,
         issuer=principal.issuer,
+        auth_method=principal.auth_method,
     )
 
     return principal

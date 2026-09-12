@@ -213,6 +213,8 @@ class TestWebhookEndpoint:
             monkeypatch,
             TICKET_EVENT_WEBHOOK_SECRET="",
             ENVIRONMENT="production",
+            AUTH_MODE="jwks",
+            AUTH_JWKS_URL="https://example.com/.well-known/jwks.json",
         )
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()

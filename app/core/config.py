@@ -20,11 +20,17 @@ class Settings(BaseSettings):
     )
 
     # Authentication / Identity
+    auth_mode: str = "hs256"
     auth_jwt_secret: str = ""
     auth_jwt_algorithm: str = "HS256"
     auth_jwt_issuer: str = ""
     auth_jwt_audience: str = ""
     auth_dev_mode: bool = False
+
+    # JWKS / OIDC
+    auth_jwks_url: str = ""
+    auth_jwks_algorithms: str = "RS256"
+    auth_jwks_cache_ttl_seconds: int = 600
 
     zendesk_webhook_secret: str = ""
     ticket_event_webhook_secret: str = ""
@@ -48,6 +54,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "AUTH_DEV_MODE cannot be enabled when ENVIRONMENT=production"
             )
+        if self.environment == "production" and self.auth_mode == "hs256":
+            raise ValueError(
+                "AUTH_MODE=hs256 is not allowed in production; use AUTH_MODE=jwks"
+            )
+        if self.auth_mode == "jwks" and not self.auth_jwks_url:
+            raise ValueError("AUTH_JWKS_URL is required when AUTH_MODE=jwks")
         return self
 
     rag_top_k: int = 5
