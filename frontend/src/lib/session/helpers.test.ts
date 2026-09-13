@@ -9,7 +9,7 @@ import {
 import type { StoredSession } from "@nhost/nhost-js/session";
 
 const validSession: StoredSession = {
-  accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  accessToken: "test-access-token",
   accessTokenExpiresIn: 900,
   refreshToken: "refresh-token-uuid",
   refreshTokenId: "refresh-token-id-uuid",
