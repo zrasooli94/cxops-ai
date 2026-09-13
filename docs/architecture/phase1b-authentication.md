@@ -126,8 +126,172 @@ header from the browser to the backend when present. No server-side secrets
 are exposed to JavaScript. The browser-supplied Bearer token is the only
 credential forwarded.
 
-A complete frontend login flow (identity provider, token storage, session
-management) is not yet implemented and is deferred.
+---
+
+## Frontend Server-Side Session Foundation (Phase 1B.2b1)
+
+This phase establishes the reusable session infrastructure. Login UI, sign-in
+actions, and logout are deferred to Phase 1B.2b2.
+
+### Nhost Provider Configuration (verified real values)
+
+| Key | Value |
+|-----|-------|
+| Subdomain | `qghtvniyltmrsaoxruwa` |
+| Region | `ap-southeast-1` |
+| Issuer | `https://qghtvniyltmrsaoxruwa.auth.ap-southeast-1.nhost.run/v1` |
+| Audience | Not present in current real access tokens |
+| JWKS | `https://qghtvniyltmrsaoxruwa.auth.ap-southeast-1.nhost.run/v1/.well-known/jwks.json` |
+
+Frontend environment variables (`.env.example`):
+
+```
+NEXT_PUBLIC_NHOST_SUBDOMAIN=qghtvniyltmrsaoxruwa
+NEXT_PUBLIC_NHOST_REGION=ap-southeast-1
+NHOST_SESSION_COOKIE=nhostSession
+NODE_ENV=development
+```
+
+### Session Architecture
+
+**Intended flow (to be completed in 1B.2b2/3):**
+
+```
+Browser
+  │  (credentials → Nhost Auth)
+  ▼
+Next.js server (server actions / route handlers)
+  │  createServerClient() with cookie SessionStorageBackend
+  │  signInEmailPassword() → session stored in Secure, httpOnly cookie
+  ▼
+server-managed session (cookie: nhostSession)
+  │  cookie auto-sent on same-site requests
+  ▼
+Next.js backend proxy route
+  │  reads session cookie → accessToken
+  │  forwards Authorization: Bearer <accessToken>
+  ▼
+FastAPI JWKS verification → AuthenticatedPrincipal
+```
+
+### Server Client Helper
+
+`frontend/src/lib/nhost/server.ts` exports `createNhostServerClient()`:
+
+- Creates a Nhost server client via `createServerClient()` from `@nhost/nhost-js`
+- Uses configured `NEXT_PUBLIC_NHOST_SUBDOMAIN` / `NEXT_PUBLIC_NHOST_REGION`
+- Implements `SessionStorageBackend` backed by Next.js `cookies()`:
+  - `get()` → reads `nhostSession` cookie, safe JSON parse, returns `StoredSession | null`
+  - `set()` → writes cookie with `Secure` (production), `httpOnly: true`, `sameSite: "lax"`, `path: "/"`, 30-day `maxAge`
+  - `remove()` → deletes cookie
+- Never uses Admin Secret
+- No global mutable session state (new client per call)
+
+### Session Serialization Safety
+
+`frontend/src/lib/session/helpers.ts` provides pure, testable helpers:
+
+- `serializeSession(session)` → JSON string
+- `deserializeSession(raw)` → `StoredSession | null` (validates required fields, fails safely on malformed JSON)
+- `getAccessToken(session)` → `string | null`
+- `hasValidSession(session)` → `boolean`
+
+Unit tests (`helpers.test.ts`) cover valid/invalid deserialization, missing fields, null handling, access-token extraction, and session validity checks. Run with `node --experimental-strip-types --test src/lib/session/helpers.test.ts`.
+
+### Cookie Security Design
+
+| Property | Value | Rationale |
+|----------|-------|-----------|
+| Name | `nhostSession` (configurable via `NHOST_SESSION_COOKIE`) | Predictable |
+| Secure | `true` in production (`NODE_ENV=production`) | HTTPS only |
+| httpOnly | `true` | Browser JS cannot read refresh token |
+| sameSite | `lax` | Allows same-site navigation; CSRF-safe for GET |
+| path | `/` | Available on all routes |
+| maxAge | 30 days (2,592,000s) | Matches Nhost default refresh token TTL |
+| Domain | Not set (defaults to current host) | Works on subdomains |
+
+**Trade-off note:** The Nhost SDK's own `CookieStorage` class defaults to `httpOnly: false` to allow client-side access. Our custom backend deliberately uses `httpOnly: true` because the session cookie is managed server-side and the CXOps application JavaScript does not need direct access to the refresh token. The access token is only used server-side when forwarding to the backend proxy.
+
+### Backend Proxy Plan (Phase 1B.2b3)
+
+Current `frontend/src/app/api/backend/[...path]/route.ts` forwards an incoming `Authorization` header if present. The Phase 1B.2b3 change will:
+
+1. In the proxy route, call `createNhostServerClient()` to get the server client
+2. Call `nhost.getUserSession()` to read the session from the cookie
+3. Extract `accessToken` via `getAccessToken()`
+4. Set `Authorization: Bearer <accessToken>` on the outgoing request to FastAPI
+5. Preserve existing behavior: if an incoming `Authorization` header exists (dev/test), it is still forwarded
+
+This keeps the backend proxy stateless and the FastAPI JWKS verification unchanged.
+
+### Session Logout Helper
+
+`frontend/src/lib/session/logout.ts` exports a server action `logout()` that returns a `LogoutResult`:
+
+```ts
+interface LogoutResult {
+  localCleared: boolean;
+  remoteRevoked: boolean;
+  error?: string;
+}
+```
+
+Behavior:
+
+1. Creates a server client via `createNhostServerClient()`
+2. Reads the current session via `nhost.getUserSession()`
+3. If a session with `refreshToken` exists, calls `nhost.auth.signOut({ refreshToken: session.refreshToken })` to revoke the server-side refresh token
+4. Calls `nhost.clearSession()` to remove the local session state
+5. Deletes the `nhostSession` cookie from the response
+6. Returns `{ localCleared: true, remoteRevoked: true }` on full success
+
+Failure semantics (security-first local logout):
+
+- **Local logout is guaranteed**: the session cookie is always deleted before returning to the browser, even if remote revocation fails
+- **Remote revocation is best-effort**: Nhost `signOut` is attempted first; if it fails (network error, non-2xx, non-"OK" body), the local cookie is still cleared
+- **Result indicates partial success**: `{ localCleared: true, remoteRevoked: false, error: "Remote session revocation could not be confirmed" }`
+- **No automatic retry**: because the stateless local session is erased, the refresh token is no longer available to retry remote revocation
+- **No token exposure**: errors never contain the refresh token, access token, or provider response body
+- **No Admin Secret used**
+
+Idempotency:
+
+- If no session exists, `logout()` is a no-op that still ensures the cookie is deleted
+- If a session exists but lacks a `refreshToken`, local state is cleared and the error indicates remote revocation was not performed (not that it failed)
+
+The pure logic is in `frontend/src/lib/session/logout-helpers.ts` (`performLogout`) and is covered by 8 deterministic unit tests in `logout.test.ts`.
+
+### Server-Side Session Refresh Requirement
+
+`createServerClient()` intentionally **disables automatic session refresh** in server contexts (per Nhost SDK design) to prevent race conditions in concurrent server requests.
+
+Phase 1B.2b2/1B.2b3 **must** deliberately perform proactive session refresh near token expiry. The intended flow at the Next.js request/proxy boundary:
+
+```
+incoming request
+  │  read session cookie via createNhostServerClient()
+  ▼
+if access token expires soon (e.g., < 60s)
+  │  nhost.refreshSession(60)
+  │  → updated session written to response cookies via SessionStorageBackend.set()
+  ▼
+use current (possibly refreshed) accessToken
+  │  set Authorization: Bearer <accessToken>
+  ▼
+forward to FastAPI backend
+```
+
+This ensures the cookie carries a valid access token for the proxied request, and the refreshed session is available for subsequent requests.
+
+### What This Phase Does NOT Implement
+
+- Login page / UI
+- Sign-in server action (`signInEmailPassword()`)
+- Logout UI/button
+- Protected navigation / Control Center gating
+- Organization tenancy or RBAC
+
+These are Phase 1B.2b2 (login/logout UI and protected routes) and Phase 1B.2b3 (proxy token injection).
 
 ---
 

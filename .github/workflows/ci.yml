@@ -60,6 +60,10 @@ jobs:
         working-directory: frontend
         run: npx tsc --noEmit
 
+      - name: Frontend session tests
+        working-directory: frontend
+        run: npm run test:session
+
   backend-tests:
     name: Backend Tests (Unit)
     runs-on: ubuntu-latest
