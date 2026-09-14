@@ -36,6 +36,7 @@ TEST_AUDIENCE = "test-audience"
 DEV_MODE_SECRET = "dev-secret-not-for-production-use"
 
 
+os.environ["AUTH_MODE"] = "hs256"
 os.environ["AUTH_JWT_SECRET"] = TEST_SECRET
 os.environ["AUTH_JWT_ALGORITHM"] = "HS256"
 os.environ["AUTH_JWT_ISSUER"] = TEST_ISSUER
@@ -127,6 +128,7 @@ def _build_none_algorithm_token() -> str:
 def _configure(monkeypatch, **overrides) -> None:
     """Pin auth env vars and rebuild the cached settings deterministically."""
     values = {
+        "AUTH_MODE": "hs256",
         "AUTH_JWT_SECRET": TEST_SECRET,
         "AUTH_JWT_ALGORITHM": "HS256",
         "AUTH_JWT_ISSUER": TEST_ISSUER,

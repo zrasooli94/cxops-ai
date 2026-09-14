@@ -22,7 +22,6 @@ import {
   useState,
 } from "react";
 
-import AppSidebar from "@/components/app-sidebar";
 
 type RAGSource = {
   source_id: string;
@@ -534,7 +533,7 @@ export default function KnowledgePage() {
 
   return (
     <div className="min-h-screen">
-      <AppSidebar active="/knowledge" />
+      
 
       <div className="xl:pl-[230px]">
         <header className="fixed left-0 right-0 top-0 z-40 border-b border-slate-200/60 bg-white/70 backdrop-blur-xl xl:left-[230px]">

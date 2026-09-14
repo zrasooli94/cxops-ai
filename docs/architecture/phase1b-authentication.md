@@ -283,7 +283,7 @@ forward to FastAPI backend
 
 This ensures the cookie carries a valid access token for the proxied request, and the refreshed session is available for subsequent requests.
 
-### What This Phase Does NOT Implement
+### What Phase 1B.2b1 Does NOT Implement
 
 - Login page / UI
 - Sign-in server action (`signInEmailPassword()`)
@@ -292,6 +292,319 @@ This ensures the cookie carries a valid access token for the proxied request, an
 - Organization tenancy or RBAC
 
 These are Phase 1B.2b2 (login/logout UI and protected routes) and Phase 1B.2b3 (proxy token injection).
+
+---
+
+## Phase 1B.2b2 — Login, Logout UI, and Protected Control Center
+
+This phase implements the complete authentication UI and route protection built on the 1B.2b1 foundation.
+
+### PUBLIC ROUTES (no authentication required)
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Marketing home page |
+| `/login` | Sign-in page (redirects authenticated users to `/tickets`) |
+| `/platform` | Public platform overview and capabilities |
+| `/platform/evaluating-ai-support-platforms` | Evaluation guide |
+
+Static assets (`/favicon.ico`, `/icon.svg`, `/robots.ts`, `/sitemap.ts`) and API routes (`/api/backend/...`) remain publicly accessible as before.
+
+### PROTECTED ROUTES (require valid session)
+
+All Control Center operational routes are grouped under the `(control-center)` route group:
+
+| Route | Purpose |
+|-------|---------|
+| `/tickets` | Customer support ticket workspace |
+| `/tickets/*` | Ticket details, creation, agent analysis |
+| `/agent` | AI Agent execution console |
+| `/approvals` | Human-in-the-loop approval queue |
+| `/knowledge` | RAG playground, semantic search, ingestion |
+| `/observability` | Production telemetry dashboards |
+| `/runs` | Persistent agent audit trail |
+
+### Route Protection Architecture
+
+```
+src/app/
+├── layout.tsx                    # Global public layout (marketing, SEO)
+├── page.tsx                      # Public marketing home
+├── login/
+│   └── page.tsx                  # Public sign-in page (server-side auth check)
+├── platform/                     # Public platform pages
+├── api/                          # Public API routes
+└── (control-center)/             # Route group — NO URL prefix
+    ├── layout.tsx                # Server-side authentication boundary
+    ├── shell.tsx                 # Shared authenticated shell + navigation
+    ├── tickets/                  # Protected
+    ├── agent/                    # Protected
+    ├── approvals/                # Protected
+    ├── knowledge/                # Protected
+    ├── observability/            # Protected
+    └── runs/                     # Protected
+```
+
+- `src/app/(control-center)/layout.tsx` is a **server component** that calls `requireControlCenterAuth()` before rendering children
+- `requireControlCenterAuth()` creates a server Nhost client, reads the session cookie, validates presence of `StoredSession.user`, and redirects to `/login` if absent
+- No client-side React state flag is trusted — protection is purely server-side
+- Route groups do not affect URLs: `/tickets` stays `/tickets`
+
+### Login Page (`/login`)
+
+**Behavior:**
+- Server-side check: if authenticated session exists → redirect to `/tickets`
+- Professional enterprise design with CXOps AI branding
+- Email + password fields with accessible labels, autocomplete hints
+- Form submits to `signIn` server action
+- Loading/pending state, safe error message area
+- Responsive: desktop split view with feature showcase, mobile stacked
+
+**Security:**
+- Credentials submitted via `POST` server action (never in URL)
+- Email normalized to lowercase, validated before Nhost call
+- Generic error messages: "Invalid email or password." / "Sign-in service is temporarily unavailable."
+- No provider internals, stack traces, or tokens exposed
+
+**UI:**
+- Split view on desktop: branded feature showcase + form
+- Mobile: stacked form with compact branding
+- `autocomplete="email"` / `autocomplete="current-password"`
+- Visible focus states, accessible contrast
+
+### Sign-In Server Action
+
+```ts
+// src/lib/auth/sign-in.ts
+export async function signIn(formData: FormData): Promise<SignInResult> {
+  const email = formData.get("email")?.toString().trim().toLowerCase() ?? "";
+  const password = formData.get("password")?.toString() ?? "";
+
+  if (!email || !password) {
+    return { ok: false, error: "Email and password are required." };
+  }
+  if (!email.includes("@")) {
+    return { ok: false, error: "Invalid email or password." };
+  }
+
+  const nhost = await createNhostServerClient();
+  const result = await nhost.auth.signInEmailPassword({ email, password });
+
+  if (!result.ok || result.body?.mfa || !result.body?.session) {
+    return { ok: false, error: "Invalid email or password." };
+  }
+  // Nhost SDK + SessionStorageBackend auto-persists session cookie
+  return { ok: true };
+}
+```
+
+- Uses verified `@nhost/nhost-js` 4.8.0 method: `nhost.auth.signInEmailPassword({ email, password })`
+- On success, the SDK + custom `SessionStorageBackend` persist the `nhostSession` cookie (httpOnly, Secure in production, SameSite=Lax)
+- No access/refresh tokens returned to browser
+- Generic error mapping — never exposes provider internals
+
+### Already-Authenticated `/login`
+
+Server-side check in `LoginPage`:
+```ts
+const existingSession = await getControlCenterSession();
+if (existingSession) redirect("/tickets");
+```
+Authenticated users never see the login form.
+
+### Open Redirect Safety
+
+This phase redirects successful login **directly to `/tickets`**. No `?next=` parameter is supported to eliminate open-redirect risk entirely.
+
+### Logout UI
+
+- Reuses `src/lib/session/logout.ts` (Phase 1B.2b1) server action
+- Logout button in authenticated shell sidebar (POST form action)
+- On click: calls `logout()` → clears local cookie, attempts remote Nhost `signOut` (best-effort) → redirects to `/login`
+- Remote revocation failure does not strand user — local logout guaranteed
+
+### Authenticated Control Center Shell
+
+`src/app/(control-center)/shell.tsx` (client component):
+- Shared sidebar navigation for all protected routes
+- User/session area showing:
+  - Email if present in `session.user` (from server-side session)
+  - "Signed in" fallback if no safe display value
+  - **Never** infers email from JWT
+  - No accessToken/refreshToken/decodedToken passed to client
+- Logout button (POST server action form)
+- Responsive: fixed sidebar on desktop, hidden on mobile
+
+### Client/Server Token Boundary
+
+- **Server-side only**: accessToken, refreshToken, decodedToken, full StoredSession
+- **Client receives**: only `displayName` and `email` from `session.user`
+- Login form and logout button use server actions — no client credential handling
+
+### SEO / Sitemap Changes
+
+- `sitemap.ts`: `/login` and all `(control-center)/*` routes **excluded** from sitemap
+- `robots.ts`: `Disallow: /login`
+- `LoginPage` metadata: `robots: { index: false, follow: false }`
+- Protected routes remain unindexed (server-side redirect prevents crawler access)
+
+### Phase 1B.2b3 — Authenticated Backend Proxy, Session Refresh, and final Control Center shell corrections
+
+This phase completes the authentication pipeline by implementing the BFF proxy boundary, proactive session refresh, and final Control Center shell corrections.
+
+### Backend Proxy Auth Design
+
+The Next.js backend proxy (`/api/backend/[...path]`) is the single BFF authentication boundary. All Control Center API requests flow through it.
+
+**Request flow:**
+
+```
+Browser
+  │  (same-site request with nhostSession cookie)
+  ▼
+Next.js protected Control Center
+  │  /api/backend/* request arrives
+  ▼
+Next.js server proxy route
+  │  createNhostServerClient() → reads nhostSession cookie
+  │  nhost.getUserSession() → StoredSession
+  │  if accessToken near expiry (within 60s):
+  │     nhost.refreshSession(60) → refreshed StoredSession
+  │     SessionStorageBackend.set() → updated nhostSession cookie
+  ▼
+Authorization: Bearer <accessToken>
+  ▼
+FastAPI backend
+  │  JWKS RS256 verification
+  ▼
+AuthenticatedPrincipal
+```
+
+### Proxy Behavior
+
+1. **Session-first authorization**: Every proxied request calls `nhost.refreshSession(60)`. The SDK checks the actual JWT `exp` claim internally and:
+   - Returns the current session if it does not need refreshing
+   - Refreshes and returns a new session if within 60 seconds of expiry
+   - Returns `null` if no valid session exists or refresh fails
+
+   The returned session's `accessToken` is used for the outgoing `Authorization: Bearer` header.
+
+2. **Dev/test fallback**: In non-production (`NODE_ENV !== "production"`), if no Nhost session exists or refresh fails, an incoming `Authorization` header from the browser is forwarded. This preserves local development workflows without Nhost.
+
+3. **Production safety**: In production, if `refreshSession(60)` returns `null` (no valid session), the proxy returns **401 immediately** without forwarding to FastAPI. Browser-supplied headers are never used.
+
+4. **No cookie forwarding**: The `nhostSession` cookie is never forwarded to FastAPI. Only the Bearer access token is sent.
+
+### Proactive Session Refresh
+
+Before each proxied request, the proxy calls `nhost.refreshSession(60)`. The SDK internally:
+- Checks the actual JWT `exp` claim
+- Returns the current session if it does not need refreshing
+- Refreshes and returns a new session if within 60 seconds of expiry
+- Returns `null` if no valid session exists or refresh fails
+
+The returned session's `accessToken` is used for the outgoing FastAPI request.
+Refresh tokens are never exposed to browser JavaScript.
+No refresh loops: the SDK handles token state; proxy only calls `refreshSession(60)` on every request.
+
+### 401 / Expired Session Handling
+
+The proxy handles authentication failures deliberately:
+
+**A. Missing Nhost session**
+- In development: falls back to incoming `Authorization` header if present
+- In production: returns HTTP 401 immediately, no backend call
+
+**B. Refresh fails** (`refreshSession(60)` returns `null` or throws)
+- Clears local session safely via `nhost.clearSession()`
+- Returns 401
+- Never exposes Nhost provider internals
+
+**C. FastAPI returns 401 with existing session**
+- Performs **exactly one** forced refresh via `nhost.refreshSession(0)`
+- If forced refresh succeeds and retry status ≠ 401, returns successful response
+- If forced refresh fails or retry still 401: clears local session, returns 401
+- **Never loops**; exactly one retry attempt
+
+Authentication failures never become misleading HTTP 500 responses.
+
+### FastAPI JWKS Configuration
+
+The backend verifies Nhost RS256 tokens via JWKS. Required configuration (see `.env.example`):
+
+```
+AUTH_MODE=jwks
+AUTH_DEV_MODE=false
+AUTH_JWKS_URL=https://qghtvniyltmrsaoxruwa.auth.ap-southeast-1.nhost.run/v1/.well-known/jwks.json
+AUTH_JWKS_ALGORITHMS=RS256
+AUTH_JWT_ISSUER=https://qghtvniyltmrsaoxruwa.auth.ap-southeast-1.nhost.run/v1
+AUTH_JWT_AUDIENCE=
+AUTH_JWKS_CACHE_TTL_SECONDS=600
+```
+
+The backend requires only public JWKS trust configuration. No Nhost private keys, JWT signing secrets, or Admin Secrets are needed.
+
+### Dashboard Implementation
+
+A new protected route `/dashboard` inside the `(control-center)` route group serves as the authenticated operational landing page:
+
+- "Control Center" / "Operations overview" branding
+- Quick-link cards for: Tickets, AI Agent, Approvals, Knowledge, Runs, Observability
+- Current signed-in identity display (email from server-side session)
+- No tokens/session object in client code
+- Inherits `robots: { index: false, follow: false }` from protected layout
+
+### Authenticated Home Navigation Fix
+
+The authenticated sidebar "Home" link now routes to `/dashboard` (not the public `/`). All authenticated navigation remains inside the Control Center.
+
+### Post-Login Destination
+
+Successful sign-in and authenticated `/login` visits now redirect to `/dashboard` (not `/tickets`).
+
+### Logout UI Fix
+
+The authenticated shell sidebar now includes a persistent account/session section:
+
+- User email/display name (from server-side session)
+- "Sign out" button (POST server action)
+- Uses existing `logout()` server action (1B.2b1)
+- Remote Nhost revocation best-effort; local logout guaranteed
+- Redirects to `/login` after logout
+
+### Mobile Navigation
+
+Protected users have usable navigation and logout on mobile:
+- Mobile drawer menu (hamburger) with all Control Center links
+- Logout accessible in mobile drawer
+- Responsive: fixed sidebar on desktop, drawer on mobile
+
+### Token / Cookie Boundary
+
+**Server-side only**: accessToken, refreshToken, decodedToken, full StoredSession
+**Client receives**: only `displayName` and `email` from `session.user`
+**No browser storage**: No tokens in localStorage/sessionStorage (verified by grep)
+**No cookie forwarding**: `nhostSession` never forwarded to FastAPI
+
+### Proxy Header Safety
+
+When forwarding to FastAPI:
+- Preserved: `Content-Type`, `Accept`, `X-Request-ID`
+- Not forwarded: `Host`, `Cookie`, connection-specific headers
+- `nhostSession` cookie never forwarded
+- Only Bearer access token sent to FastAPI
+
+### No Token Logging
+
+Code searches confirm no accessToken, refreshToken, nhostSession, or JWT is logged. Safe event logging only (e.g., `proxy_auth_session_missing`, `proxy_auth_refresh_failed`).
+
+---
+
+### What Phase 1B.2b3 Does NOT Implement
+
+- Organization tenancy (Phase 1C)
+- RBAC / permissions (Phase 1D)
+- Password reset / registration / MFA UI
 
 ---
 

@@ -64,6 +64,10 @@ jobs:
         working-directory: frontend
         run: npm run test:session
 
+      - name: Frontend auth tests
+        working-directory: frontend
+        run: npm run test:auth
+
   backend-tests:
     name: Backend Tests (Unit)
     runs-on: ubuntu-latest

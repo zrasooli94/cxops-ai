@@ -28,8 +28,6 @@ import {
   useState,
 } from "react";
 
-import AppSidebar from "@/components/app-sidebar";
-
 type Ticket = {
   id: number;
   external_id: string | null;
@@ -476,8 +474,6 @@ export default function TicketsPage() {
 
   return (
     <div className="min-h-screen">
-      <AppSidebar active="/tickets" />
-
       <div className="xl:pl-[230px]">
         <header className="fixed left-0 right-0 top-0 z-40 border-b border-slate-200/60 bg-white/70 backdrop-blur-xl xl:left-[230px]">
           <div className="mx-auto flex h-[74px] max-w-[1450px] items-center justify-between px-6 lg:px-10">

@@ -20,36 +20,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly",
       priority: 0.9,
     },
-
-    {
-      url: `${baseUrl}/tickets`,
-      changeFrequency: "weekly",
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/agent`,
-      changeFrequency: "weekly",
-      priority: 0.9,
-    },
-    {
-      url: `${baseUrl}/approvals`,
-      changeFrequency: "weekly",
-      priority: 0.8,
-    },
-    {
-      url: `${baseUrl}/knowledge`,
-      changeFrequency: "weekly",
-      priority: 0.9,
-    },
-    {
-      url: `${baseUrl}/runs`,
-      changeFrequency: "weekly",
-      priority: 0.7,
-    },
-    {
-      url: `${baseUrl}/observability`,
-      changeFrequency: "weekly",
-      priority: 0.8,
-    },
+    // /login and all (control-center) routes are intentionally excluded from sitemap
+    // They are protected/auth pages that should not be indexed
   ];
 }
