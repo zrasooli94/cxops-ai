@@ -41,3 +41,8 @@ class Organization(Base):
         "Customer",
         back_populates="organization",
     )
+
+    memberships = relationship(
+        "OrganizationMembership",
+        back_populates="organization",
+    )

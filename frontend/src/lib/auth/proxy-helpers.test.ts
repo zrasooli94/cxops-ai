@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import {
+  FORWARDED_HEADERS,
+  TENANT_SELECTOR_HEADER,
+  selectForwardHeaders,
+} from "./proxy-headers.ts";
+
 describe("backend proxy auth behavior", () => {
   it("A: refreshSession called on every authenticated request", async () => {
     let refreshCallCount = 0;
@@ -325,5 +331,109 @@ describe("backend proxy auth behavior", () => {
 
     assert.equal(authHeader, "Bearer server-session-token");
     assert.notEqual(authHeader, incomingAuth);
+  });
+});
+
+describe("BFF tenant selector forwarding", () => {
+  it("A: X-CXOps-Organization-ID is forwarded when present", () => {
+    const source = new Headers({
+      [TENANT_SELECTOR_HEADER]: "42",
+    });
+
+    const forwarded = selectForwardHeaders(source);
+
+    assert.equal(forwarded.get(TENANT_SELECTOR_HEADER), "42");
+  });
+
+  it("A2: selector value is forwarded unchanged (data only)", () => {
+    const source = new Headers({
+      [TENANT_SELECTOR_HEADER]: "1",
+    });
+
+    const forwarded = selectForwardHeaders(source);
+
+    assert.equal(forwarded.get(TENANT_SELECTOR_HEADER), "1");
+  });
+
+  it("B: header is not synthesized when absent", () => {
+    const source = new Headers({
+      "content-type": "application/json",
+    });
+
+    const forwarded = selectForwardHeaders(source);
+
+    assert.equal(forwarded.has(TENANT_SELECTOR_HEADER), false);
+    assert.equal(forwarded.get("content-type"), "application/json");
+  });
+
+  it("C: Nhost Authorization is injected by the server client, never via header forwarding", () => {
+    const source = new Headers({
+      authorization: "Bearer browser-token",
+    });
+
+    const forwarded = selectForwardHeaders(source);
+
+    // The BFF's forwarding layer must never carry an Authorization header;
+    // it is always sourced from the server-side Nhost session instead.
+    assert.equal(forwarded.has("authorization"), false);
+    assert.equal(FORWARDED_HEADERS.includes("authorization"), false);
+  });
+
+  it("D: cookie/Host remain blocked by the allowlist", () => {
+    const source = new Headers({
+      cookie: "nhostSession=secret",
+      host: "evil.example.com",
+      "x-request-id": "req-1",
+    });
+
+    const forwarded = selectForwardHeaders(source);
+
+    assert.equal(forwarded.has("cookie"), false);
+    assert.equal(forwarded.has("host"), false);
+    assert.equal(forwarded.get("x-request-id"), "req-1");
+  });
+
+  it("E: tenant selector is transported only; frontend auth decisions ignore it", async () => {
+    const mockNhost = {
+      getUserSession: () => ({
+        accessToken: "access-token",
+        accessTokenExpiresIn: 900,
+        refreshToken: "refresh-token",
+        refreshTokenId: "refresh-id",
+        user: { id: "user-1", email: "test@example.com" },
+        decodedToken: { exp: Date.now() / 1000 + 900, sub: "user-1" },
+      }),
+      refreshSession: async (marginSeconds: number) => {
+        assert.equal(marginSeconds, 60);
+        return {
+          accessToken: "new-access-token",
+          accessTokenExpiresIn: 900,
+          refreshToken: "new-refresh-token",
+          refreshTokenId: "new-refresh-id",
+          user: { id: "user-1", email: "test@example.com" },
+          decodedToken: { exp: Date.now() / 1000 + 900, sub: "user-1" },
+        };
+      },
+      clearSession: () => {},
+    };
+
+    async function getAuthHeaderMock(nhost: typeof mockNhost): Promise<string | null> {
+      const session = nhost.getUserSession();
+      if (!session?.accessToken) return null;
+      const refreshed = await nhost.refreshSession(60);
+      if (!refreshed?.accessToken) return null;
+      return `Bearer ${refreshed.accessToken}`;
+    }
+
+    // A browser-supplied selector travels as data only. It must never
+    // influence the Authorization value produced for the backend.
+    const source = new Headers({ [TENANT_SELECTOR_HEADER]: "42" });
+    const forwarded = selectForwardHeaders(source);
+
+    const authHeader = await getAuthHeaderMock(mockNhost);
+
+    assert.equal(forwarded.get(TENANT_SELECTOR_HEADER), "42");
+    assert.equal(authHeader, "Bearer new-access-token");
+    assert.match(authHeader, /^Bearer new-access-token$/);
   });
 });

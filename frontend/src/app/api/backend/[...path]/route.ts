@@ -3,6 +3,7 @@ import {
   NextResponse,
 } from "next/server";
 
+import { selectForwardHeaders } from "@/lib/auth/proxy-headers";
 import { createNhostServerClient } from "@/lib/nhost/server";
 
 const BACKEND_API_URL =
@@ -10,8 +11,6 @@ const BACKEND_API_URL =
   "http://127.0.0.1:8000";
 
 const isDevelopment = process.env.NODE_ENV !== "production";
-
-const FORWARDED_HEADERS = ["content-type", "accept", "x-request-id"] as const;
 
 async function getAuthHeader(): Promise<string | null> {
   try {
@@ -64,15 +63,8 @@ async function proxy(
     },
   );
 
-  const headers = new Headers();
-
-  // Forward only explicitly approved headers
-  for (const headerName of FORWARDED_HEADERS) {
-    const value = request.headers.get(headerName);
-    if (value) {
-      headers.set(headerName, value);
-    }
-  }
+  // Forward only explicitly approved headers (never cookies/Host).
+  const headers = selectForwardHeaders(request.headers);
 
   const authHeader = await getAuthHeader();
 

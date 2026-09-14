@@ -8,6 +8,7 @@ from app.models.integration_job import IntegrationJob
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
+from app.models.organization_membership import OrganizationMembership
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
@@ -23,6 +24,7 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "Organization",
+    "OrganizationMembership",
     "Ticket",
     "TicketEvent",
     "ZendeskOAuthToken",
