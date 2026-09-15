@@ -87,6 +87,7 @@ class AgentReviewRequest(BaseModel):
 class AgentRunResponse(BaseModel):
     run_id: str
     ticket_id: int
+    organization_id: int | None = None
     action: str
     status: str
     reason: str

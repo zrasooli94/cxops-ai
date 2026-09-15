@@ -8,7 +8,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal
+from app.api.deps import CurrentTenant
 from app.core.database import get_db
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
@@ -52,6 +52,7 @@ def serialize_run(
     return {
         "run_id": run.run_id,
         "ticket_id": run.ticket_id,
+        "organization_id": run.organization_id,
         "action": run.action,
         "status": run.status,
         "reason": run.reason,
@@ -71,14 +72,15 @@ def serialize_run(
 )
 async def analyze_ticket(
     ticket_id: int,
+    tenant: CurrentTenant,
     db: DatabaseSession,
-    principal: CurrentPrincipal,
 ):
 
     try:
         return await agent_workflow_service.analyze(
             db=db,
             ticket_id=ticket_id,
+            organization_id=tenant.organization_id,
         )
 
     except TicketNotFoundError as exc:
@@ -95,14 +97,15 @@ async def analyze_ticket(
 async def approve_agent_run(
     run_id: str,
     data: AgentReviewRequest,
+    tenant: CurrentTenant,
     db: DatabaseSession,
-    principal: CurrentPrincipal,
 ):
 
     try:
         run = await AgentApprovalService.approve(
             db=db,
             run_id=run_id,
+            organization_id=tenant.organization_id,
             note=data.note,
         )
 
@@ -126,8 +129,8 @@ async def approve_agent_run(
     response_model=list[AgentRunResponse],
 )
 async def list_agent_runs(
+    tenant: CurrentTenant,
     db: DatabaseSession,
-    principal: CurrentPrincipal,
     run_status: str | None = None,
     limit: int = 100,
 ):
@@ -136,8 +139,9 @@ async def list_agent_runs(
         min(limit, 200),
     )
 
-    runs = await AgentRunRepository.list_runs(
+    runs = await AgentRunRepository.list_runs_for_tenant(
         db,
+        organization_id=tenant.organization_id,
         run_status=run_status,
         limit=safe_limit,
     )
@@ -152,14 +156,15 @@ async def list_agent_runs(
 async def reject_agent_run(
     run_id: str,
     data: AgentReviewRequest,
+    tenant: CurrentTenant,
     db: DatabaseSession,
-    principal: CurrentPrincipal,
 ):
 
     try:
         run = await AgentApprovalService.reject(
             db=db,
             run_id=run_id,
+            organization_id=tenant.organization_id,
             note=data.note,
         )
 
@@ -185,13 +190,14 @@ async def reject_agent_run(
 )
 async def execute_agent_run(
     run_id: str,
+    tenant: CurrentTenant,
     db: DatabaseSession,
-    principal: CurrentPrincipal,
 ):
 
-    run = await AgentRunRepository.get_by_run_id(
+    run = await AgentRunRepository.get_by_run_id_for_tenant(
         db=db,
         run_id=run_id,
+        organization_id=tenant.organization_id,
     )
 
     if run is None:
@@ -228,6 +234,7 @@ async def execute_agent_run(
         return await IntegrationJobService.enqueue_agent_execution(
             db=db,
             run_id=run_id,
+            organization_id=tenant.organization_id,
         )
 
     except AgentExecutionQueueBlockedError as exc:
@@ -242,12 +249,13 @@ async def execute_agent_run(
 )
 async def list_agent_run_events(
     run_id: str,
+    tenant: CurrentTenant,
     db: DatabaseSession,
-    principal: CurrentPrincipal,
 ):
-    run = await AgentRunRepository.get_by_run_id(
+    run = await AgentRunRepository.get_by_run_id_for_tenant(
         db,
         run_id,
+        tenant.organization_id,
     )
 
     if run is None:

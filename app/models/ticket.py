@@ -23,6 +23,11 @@ class Ticket(Base):
             "external_id",
             name="ux_tickets_organization_id_external_id",
         ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="ux_tickets_id_organization_id",
+        ),
         Index(
             "ix_tickets_organization_id",
             "organization_id",

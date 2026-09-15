@@ -19,7 +19,7 @@ def percentage(value: int, total: int) -> float:
     return (value / total) * 100
 
 
-async def main() -> None:
+async def main(organization_id: int) -> None:
     all_results: list[dict] = []
 
     print("\n================================")
@@ -45,6 +45,7 @@ async def main() -> None:
                 result = await AgentEvaluationService.evaluate_case(
                     db=db,
                     ticket_id=(case["ticket_id"]),
+                    organization_id=organization_id,
                     expected_action=(case["expected_action"]),
                     expected_retrieval=(case["expected_retrieval"]),
                     expected_tool=(case["expected_tool"]),
@@ -344,4 +345,17 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Repeatability-check one organization's agent decisions."
+    )
+    parser.add_argument(
+        "--organization-id",
+        type=int,
+        required=True,
+        help="Organization id whose tickets will be analyzed. "
+        "No unresolved/NULL-org ticket is ever analyzed.",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(organization_id=args.organization_id))

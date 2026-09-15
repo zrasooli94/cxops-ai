@@ -33,16 +33,25 @@ class IntegrationJobService:
         db: AsyncSession,
         *,
         run_id: str,
+        organization_id: int,
     ) -> None:
-        run = await AgentRunRepository.get_by_run_id(
+        run = await AgentRunRepository.get_by_run_id_for_tenant(
             db=db,
             run_id=run_id,
+            organization_id=organization_id,
         )
 
         if run is None:
-            raise AgentExecutionQueueBlockedError(f"Agent run {run_id} was not found.")
+            raise AgentExecutionQueueBlockedError(
+                f"Agent run {run_id} was not found."
+            )
 
-        result = await db.execute(select(Ticket).where(Ticket.id == run.ticket_id))
+        result = await db.execute(
+            select(Ticket).where(
+                Ticket.id == run.ticket_id,
+                Ticket.organization_id == organization_id,
+            )
+        )
 
         ticket = result.scalar_one_or_none()
 
@@ -161,9 +170,21 @@ class IntegrationJobService:
         if job.job_type == IntegrationJobService.AGENT_EXECUTION:
             payload = job.payload
 
+            # Agent-execution jobs bind the run's organization at enqueue time
+            # (see ``enqueue_agent_execution``). Re-deriving it here — rather
+            # than trusting the payload — keeps the execution tenant-bound even
+            # under a crafted or stale payload.
+            organization_id = job.organization_id
+
+            if organization_id is None:
+                raise ValueError(
+                    "Agent execution job is missing an organization binding"
+                )
+
             await agent_execution_service.execute(
                 db=db,
                 run_id=str(payload["run_id"]),
+                organization_id=organization_id,
             )
 
             return
@@ -175,6 +196,7 @@ class IntegrationJobService:
         db: AsyncSession,
         *,
         run_id: str,
+        organization_id: int,
     ) -> dict:
         # Validate the external execution target
         # before creating a durable queue job.
@@ -186,6 +208,7 @@ class IntegrationJobService:
         await IntegrationJobService._assert_agent_execution_target(
             db=db,
             run_id=run_id,
+            organization_id=organization_id,
         )
 
         dedupe_key = f"agent-execution:{run_id}"
@@ -212,6 +235,7 @@ class IntegrationJobService:
                 job=IntegrationJob(
                     dedupe_key=dedupe_key,
                     job_type=(IntegrationJobService.AGENT_EXECUTION),
+                    organization_id=organization_id,
                     payload={
                         "run_id": run_id,
                         "request_id": request_id,

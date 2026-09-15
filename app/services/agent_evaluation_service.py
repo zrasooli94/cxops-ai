@@ -13,6 +13,7 @@ class AgentEvaluationService:
         db: AsyncSession,
         *,
         ticket_id: int,
+        organization_id: int,
         expected_action: str,
         expected_retrieval: bool,
         expected_tool: str,
@@ -24,6 +25,7 @@ class AgentEvaluationService:
         result = await agent_workflow_service.analyze(
             db=db,
             ticket_id=ticket_id,
+            organization_id=organization_id,
             allow_auto_queue=False,
             persist_run=False,
         )

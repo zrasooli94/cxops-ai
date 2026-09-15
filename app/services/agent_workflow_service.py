@@ -40,6 +40,7 @@ class TicketNotFoundError(Exception):
 
 class AgentState(TypedDict, total=False):
     ticket_id: int
+    organization_id: int
     ticket: dict[str, Any]
 
     needs_knowledge: bool
@@ -101,7 +102,21 @@ class AgentWorkflowService:
         if ticket_id is None:
             raise TicketNotFoundError("Ticket ID was not provided.")
 
-        result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
+        organization_id = state.get("organization_id")
+
+        # Fail closed: the ticket must be owned by the organization already
+        # resolved from the authenticated tenant. A foreign ticket id returns
+        # the same not-found result as a missing one (non-enumerating 404), and
+        # a NULL-org legacy ticket can never be processed by a tenant flow.
+        if organization_id is None:
+            raise TicketNotFoundError("Organization was not provided.")
+
+        result = await db.execute(
+            select(Ticket).where(
+                Ticket.id == ticket_id,
+                Ticket.organization_id == organization_id,
+            )
+        )
 
         ticket = result.scalar_one_or_none()
 
@@ -708,6 +723,7 @@ Choose the safest next action.
         db: AsyncSession,
         *,
         ticket_id: int,
+        organization_id: int,
         allow_auto_queue: bool = True,
         persist_run: bool = True,
     ) -> dict:
@@ -798,6 +814,7 @@ Choose the safest next action.
         result = await workflow.ainvoke(
             {
                 "ticket_id": ticket_id,
+                "organization_id": organization_id,
                 "workflow_path": [],
                 "sources": [],
                 "tool_plan": [],
@@ -829,10 +846,28 @@ Choose the safest next action.
         run = None
 
         if persist_run:
+            ticket_data = result.get(
+                "ticket",
+                {},
+            )
+
+            # The run inherits its tenant from the trusted persisted ticket.
+            # ``_load_ticket`` already proved the ticket belongs to
+            # ``organization_id``, so this is a cross-check, never the source
+            # of authority: the client cannot choose the ownership.
+            persisted_ticket_org = ticket_data.get("organization_id")
+
+            if persisted_ticket_org != organization_id:
+                raise ValueError(
+                    "Refusing to create an agent run: the ticket does not "
+                    "belong to the resolved organization."
+                )
+
             run = await AgentRunRepository.create(
                 db=db,
                 run_id=run_id,
                 ticket_id=ticket_id,
+                organization_id=organization_id,
                 decision=decision,
                 sources=sources,
                 workflow_path=workflow_path,
@@ -927,6 +962,7 @@ Choose the safest next action.
                 job = await IntegrationJobService.enqueue_agent_execution(
                     db=db,
                     run_id=run_id,
+                    organization_id=organization_id,
                 )
 
             except AgentExecutionQueueBlockedError:
@@ -950,11 +986,6 @@ Choose the safest next action.
                 auto_queued = True
 
         if persist_run:
-            ticket_data = result.get(
-                "ticket",
-                {},
-            )
-
             question = (
                 f"{ticket_data.get('subject', '')}\n"
                 f"{ticket_data.get('description', '')}"

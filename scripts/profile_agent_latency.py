@@ -29,10 +29,12 @@ async def measure(
 async def profile_case(
     db,
     case: dict,
+    organization_id: int,
 ) -> dict:
 
     state = {
         "ticket_id": case["ticket_id"],
+        "organization_id": organization_id,
         "workflow_path": [],
         "sources": [],
         "tool_plan": [],
@@ -128,7 +130,7 @@ async def profile_case(
     }
 
 
-async def main() -> None:
+async def main(organization_id: int) -> None:
 
     results = []
 
@@ -146,6 +148,7 @@ async def main() -> None:
             result = await profile_case(
                 db,
                 case,
+                organization_id,
             )
 
             results.append(result)
@@ -284,4 +287,17 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Profile agent latency for one organization's tickets."
+    )
+    parser.add_argument(
+        "--organization-id",
+        type=int,
+        required=True,
+        help="Organization id whose tickets will be profiled. "
+        "No unresolved/NULL-org ticket is ever profiled.",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(organization_id=args.organization_id))

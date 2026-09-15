@@ -42,6 +42,7 @@ class TestAsyncRequestIdPropagation:
                 await IntegrationJobService.enqueue_agent_execution(
                     db=db,
                     run_id="run-abc",
+                    organization_id=1,
                 )
 
                 # Verify the job was created with request_id in payload
@@ -92,6 +93,7 @@ class TestAsyncRequestIdPropagation:
                 await IntegrationJobService.enqueue_agent_execution(
                     db=db,
                     run_id="run-xyz",
+                    organization_id=1,
                 )
 
                 mock_create.assert_called_once()

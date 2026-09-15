@@ -36,12 +36,19 @@ class AgentExecutionService:
         self.zendesk = ZendeskClient()
 
     @staticmethod
-    async def _get_run(
+    async def _get_run_unscoped(
         db: AsyncSession,
         run_id: str,
     ) -> AgentRun | None:
+        """INTERNAL-ONLY unscoped run lookup for the durable job worker.
 
-        return await AgentRunRepository.get_by_run_id(
+        The worker resolves a run from an agent-execution queue job outside any
+        request tenant context. ``execute`` immediately re-validates the
+        resolved organization against the job's bound organization before any
+        side effect, so this lookup alone never authorizes a write.
+        """
+
+        return await AgentRunRepository.get_by_run_id_unscoped(
             db=db,
             run_id=run_id,
         )
@@ -50,9 +57,15 @@ class AgentExecutionService:
     async def _get_ticket(
         db: AsyncSession,
         ticket_id: int,
+        organization_id: int,
     ) -> Ticket | None:
 
-        result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
+        result = await db.execute(
+            select(Ticket).where(
+                Ticket.id == ticket_id,
+                Ticket.organization_id == organization_id,
+            )
+        )
 
         return result.scalar_one_or_none()
 
@@ -259,15 +272,25 @@ class AgentExecutionService:
         db: AsyncSession,
         *,
         run_id: str,
+        organization_id: int,
     ) -> dict:
 
-        existing_run = await self._get_run(
+        existing_run = await self._get_run_unscoped(
             db,
             run_id,
         )
 
         if existing_run is None:
             raise AgentExecutionError(f"Agent run {run_id} was not found.")
+
+        # Fail closed on tenant mismatch: the job's bound organization must be
+        # the run's persisted organization. The unscoped worker lookup above is
+        # the only global hop, and this check is its mandatory mitigation —
+        # a queue job must never execute a run outside its own tenant.
+        if existing_run.organization_id != organization_id:
+            raise AgentExecutionError(
+                "Agent run is not owned by the executing organization."
+            )
 
         # -----------------------------------------
         # Already completed
@@ -277,6 +300,7 @@ class AgentExecutionService:
             ticket = await self._get_ticket(
                 db,
                 existing_run.ticket_id,
+                organization_id,
             )
 
             return {
@@ -293,6 +317,11 @@ class AgentExecutionService:
         # -----------------------------------------
         # Non-executable agent decisions
         # -----------------------------------------
+
+        if existing_run.organization_id is None:
+            raise AgentExecutionStateError(
+                "Agent run is not owned by an organization and cannot execute."
+            )
 
         if existing_run.action in {
             "human_review",
@@ -323,9 +352,10 @@ class AgentExecutionService:
 
             await db.commit()
 
-        run = await AgentRunRepository.claim_for_execution(
+        run = await AgentRunRepository.claim_for_execution_unscoped(
             db=db,
             run_id=run_id,
+            organization_id=organization_id,
         )
 
         if run is None:
@@ -340,6 +370,7 @@ class AgentExecutionService:
         ticket = await self._get_ticket(
             db,
             run.ticket_id,
+            organization_id,
         )
 
         if ticket is None:
@@ -393,21 +424,38 @@ class AgentExecutionService:
             )
             raise AgentExecutionError("Agent run contains no executable tool plan.")
 
-        # External writes are scoped to the ticket's owning organization. The
-        # ticket is the authoritative tenant source for agent executions;
-        # unowned tickets can never reach a Zendesk credential.
-        organization_id = ticket.organization_id
+        # External writes are scoped to the tenant already persisted on the
+        # run, which the database guarantees equals the ticket's organization
+        # (composite FK ``fk_agent_runs_ticket_organization``). The run is the
+        # direct tenant source for agent executions because it is the object
+        # the job claims; the cross-checks below fail closed even if an
+        # internal caller ever attempts a mismatch. Unowned runs can never
+        # reach a Zendesk credential.
+        resolved_organization_id = run.organization_id
 
-        if organization_id is None:
+        if resolved_organization_id is None:
             await AgentRunRepository.mark_execution_failed(
                 db,
                 run,
-                ("Local ticket is not owned by an organization."),
+                ("Agent run is not owned by an organization."),
             )
             record_agent_execution_failure(
                 action=str(run.action),
             )
-            raise AgentExecutionError("Local ticket is not owned by an organization.")
+            raise AgentExecutionError("Agent run is not owned by an organization.")
+
+        if ticket.organization_id != resolved_organization_id:
+            await AgentRunRepository.mark_execution_failed(
+                db,
+                run,
+                ("Agent run and ticket tenant ownership mismatch."),
+            )
+            record_agent_execution_failure(
+                action=str(run.action),
+            )
+            raise AgentExecutionError(
+                "Agent run and ticket tenant ownership mismatch."
+            )
 
         try:
             # -------------------------------------
@@ -521,12 +569,16 @@ class AgentExecutionService:
         except Exception as exc:
             await db.rollback()
 
-            fresh_run = await self._get_run(
+            fresh_run = await self._get_run_unscoped(
                 db,
                 run_id,
             )
 
-            if fresh_run is not None and fresh_run.status != "executed":
+            if (
+                fresh_run is not None
+                and fresh_run.organization_id == organization_id
+                and fresh_run.status != "executed"
+            ):
                 await AgentRunRepository.mark_execution_failed(
                     db,
                     fresh_run,

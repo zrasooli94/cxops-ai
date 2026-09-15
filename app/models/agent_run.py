@@ -4,6 +4,9 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
     String,
     Text,
     func,
@@ -15,7 +18,34 @@ from app.models.base import Base
 
 
 class AgentRun(Base):
+    """A tenant-owned agent run.
+
+    ``organization_id`` is the tenant boundary. Every tenant-facing read starts
+    from a resolved organization_id and enforces the predicate in SQL; NULL-org
+    rows are legacy, unmapped runs that remain **inert** — never listed,
+    fetched, approved, rejected, executed, or streamed.
+
+    Because the owner is duplicated on the run, drift between run and ticket
+    ownership is prevented at the database: the composite foreign key
+    ``(ticket_id, organization_id) → tickets(id, organization_id)`` makes it
+    impossible to attach a run to a ticket owned by a different tenant. The
+    direct ``organization_id`` column is preserved for tenant lookups.
+    """
+
     __tablename__ = "agent_runs"
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["ticket_id", "organization_id"],
+            ["tickets.id", "tickets.organization_id"],
+            ondelete="CASCADE",
+            name="fk_agent_runs_ticket_organization",
+        ),
+        Index(
+            "ix_agent_runs_organization_id",
+            "organization_id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,
@@ -29,13 +59,15 @@ class AgentRun(Base):
         nullable=False,
     )
 
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id"),
+        nullable=True,
+    )
+
     ticket_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "tickets.id",
-            ondelete="CASCADE",
-        ),
-        index=True,
+        Integer,
         nullable=False,
+        index=True,
     )
 
     action: Mapped[str] = mapped_column(

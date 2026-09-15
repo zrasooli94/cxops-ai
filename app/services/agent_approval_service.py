@@ -22,11 +22,15 @@ class AgentApprovalService:
     async def _get_pending_run(
         db: AsyncSession,
         run_id: str,
+        organization_id: int,
     ) -> AgentRun:
 
-        run = await AgentRunRepository.get_by_run_id(
+        # Tenant-scoped first: a guessed run_id from another organization is
+        # indistinguishable from a missing one (non-enumerating 404).
+        run = await AgentRunRepository.get_by_run_id_for_tenant(
             db,
             run_id,
+            organization_id,
         )
 
         if run is None:
@@ -42,6 +46,7 @@ class AgentApprovalService:
         db: AsyncSession,
         *,
         run_id: str,
+        organization_id: int,
         note: str | None,
         actor: str = "human-reviewer",
     ) -> AgentRun:
@@ -49,6 +54,7 @@ class AgentApprovalService:
         run = await AgentApprovalService._get_pending_run(
             db,
             run_id,
+            organization_id,
         )
 
         if run.action == "human_review":
@@ -127,6 +133,7 @@ class AgentApprovalService:
         db: AsyncSession,
         *,
         run_id: str,
+        organization_id: int,
         note: str | None,
         actor: str = "human-reviewer",
     ) -> AgentRun:
@@ -134,6 +141,7 @@ class AgentApprovalService:
         run = await AgentApprovalService._get_pending_run(
             db,
             run_id,
+            organization_id,
         )
 
         run = await AgentRunRepository.reject(

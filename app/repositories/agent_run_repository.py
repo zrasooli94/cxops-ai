@@ -12,11 +12,23 @@ from app.models.ticket import Ticket
 
 class AgentRunRepository:
     @staticmethod
+    def _assert_tenant_owned(run: AgentRun) -> None:
+        """Refuse state transitions on an unowned (NULL-org) run.
+
+        A NULL-org legacy run is inert: no tenant-facing path may ever approve,
+        reject, or execute it, even if it is already loaded by some internal
+        caller. Fail closed rather than transition a run without ownership.
+        """
+        if run.organization_id is None:
+            raise ValueError("Cannot mutate an unowned (NULL-org) agent run.")
+
+    @staticmethod
     async def create(
         db: AsyncSession,
         *,
         run_id: str,
         ticket_id: int,
+        organization_id: int,
         decision: dict,
         sources: list[dict],
         workflow_path: list[str],
@@ -34,6 +46,7 @@ class AgentRunRepository:
             select(AgentRun)
             .where(
                 AgentRun.ticket_id == ticket_id,
+                AgentRun.organization_id == organization_id,
                 AgentRun.status == "pending_approval",
             )
             .with_for_update()
@@ -60,6 +73,7 @@ class AgentRunRepository:
         run = AgentRun(
             run_id=run_id,
             ticket_id=ticket_id,
+            organization_id=organization_id,
             action=decision["action"],
             reason=decision["reason"],
             recommended_team=decision.get("recommended_team"),
@@ -83,23 +97,74 @@ class AgentRunRepository:
         return run
 
     @staticmethod
-    async def get_by_run_id(
+    async def get_by_run_id_for_tenant(
+        db: AsyncSession,
+        run_id: str,
+        organization_id: int,
+    ) -> AgentRun | None:
+        """Tenant-scoped run lookup: a guessed run_id from another
+        organization never resolves, so foreign runs are indistinguishable
+        from missing runs (non-enumerating 404)."""
+
+        result = await db.execute(
+            select(AgentRun).where(
+                AgentRun.run_id == run_id,
+                AgentRun.organization_id == organization_id,
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_pending_run_for_tenant(
+        db: AsyncSession,
+        run_id: str,
+        organization_id: int,
+    ) -> AgentRun | None:
+        """Tenant-scoped pending-approval lookup."""
+
+        result = await db.execute(
+            select(AgentRun).where(
+                AgentRun.run_id == run_id,
+                AgentRun.organization_id == organization_id,
+                AgentRun.status == "pending_approval",
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_by_run_id_unscoped(
         db: AsyncSession,
         run_id: str,
     ) -> AgentRun | None:
+        """INTERNAL-ONLY unscoped run lookup.
+
+        This binds run_id without an organization and MUST NOT be used by any
+        human / JWT-authenticated / public route. It exists solely for the
+        durable job worker, which resolves a run from the agent-execution queue
+        outside any request tenant context and then re-validates the resolved
+        organization on the run itself.
+        """
 
         result = await db.execute(select(AgentRun).where(AgentRun.run_id == run_id))
 
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def list_runs(
+    async def list_runs_for_tenant(
         db: AsyncSession,
         *,
+        organization_id: int,
         run_status: str | None = None,
         limit: int = 100,
     ) -> list[AgentRun]:
-        statement = select(AgentRun).order_by(AgentRun.created_at.desc()).limit(limit)
+        statement = (
+            select(AgentRun)
+            .where(AgentRun.organization_id == organization_id)
+            .order_by(AgentRun.created_at.desc())
+            .limit(limit)
+        )
 
         if run_status is not None:
             statement = statement.where(AgentRun.status == run_status)
@@ -114,6 +179,8 @@ class AgentRunRepository:
         run: AgentRun,
         note: str | None,
     ) -> AgentRun:
+
+        AgentRunRepository._assert_tenant_owned(run)
 
         run.status = "approved"
         run.reviewer_note = note
@@ -130,6 +197,8 @@ class AgentRunRepository:
         run: AgentRun,
         note: str | None,
     ) -> AgentRun:
+
+        AgentRunRepository._assert_tenant_owned(run)
 
         run.status = "rejected"
         run.reviewer_note = note
@@ -167,15 +236,24 @@ class AgentRunRepository:
         return event
 
     @staticmethod
-    async def claim_for_execution(
+    async def claim_for_execution_unscoped(
         db: AsyncSession,
         run_id: str,
+        organization_id: int,
     ) -> AgentRun | None:
+        """INTERNAL-ONLY execution claim, bound to the resolved organization.
+
+        Idempotently transitions an approved run to ``executing``. Unlike the
+        lookup, the claim is co-bound with ``organization_id`` so a queue job
+        can never claim a run outside the organization the job was created for.
+        Called exclusively by the durable job worker; no route caller exists.
+        """
 
         result = await db.execute(
             update(AgentRun)
             .where(
                 AgentRun.run_id == run_id,
+                AgentRun.organization_id == organization_id,
                 AgentRun.status == "approved",
             )
             .values(status="executing")
@@ -199,6 +277,8 @@ class AgentRunRepository:
         run: AgentRun,
     ) -> AgentRun:
 
+        AgentRunRepository._assert_tenant_owned(run)
+
         run.status = "executed"
 
         run.executed_at = datetime.now(timezone.utc)
@@ -217,6 +297,8 @@ class AgentRunRepository:
         error_message: str,
     ) -> AgentRun:
 
+        AgentRunRepository._assert_tenant_owned(run)
+
         run.status = "execution_failed"
 
         run.error_message = error_message[:4000]
@@ -232,6 +314,8 @@ class AgentRunRepository:
         run: AgentRun,
         note: str | None,
     ) -> AgentRun:
+
+        AgentRunRepository._assert_tenant_owned(run)
 
         run.status = "review_required"
         run.reviewer_note = note
@@ -250,6 +334,8 @@ class AgentRunRepository:
         note: str | None,
     ) -> AgentRun:
 
+        AgentRunRepository._assert_tenant_owned(run)
+
         run.status = "no_action"
         run.reviewer_note = note
 
@@ -265,6 +351,8 @@ class AgentRunRepository:
         db: AsyncSession,
         run: AgentRun,
     ) -> AgentRun:
+
+        AgentRunRepository._assert_tenant_owned(run)
 
         run.status = "approved"
 
@@ -283,6 +371,14 @@ class AgentRunRepository:
         *,
         agent_run_id: int,
     ) -> list[AgentActionEvent]:
+        """List the event stream for an already-resolved run id.
+
+        Identity alone carries no tenant signal, so callers MUST resolve the
+        run object through a tenant-scoped lookup first (see the routes). The
+        run's own ``organization_id`` is the guard that foreign ids never
+        reach this method.
+        """
+
         result = await db.execute(
             select(AgentActionEvent)
             .where(AgentActionEvent.agent_run_id == agent_run_id)
