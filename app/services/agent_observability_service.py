@@ -35,15 +35,21 @@ class AgentObservabilityService:
     @staticmethod
     async def total_runs(
         db: AsyncSession,
+        organization_id: int,
     ) -> int:
 
-        result = await db.execute(select(func.count(AgentRun.id)))
+        result = await db.execute(
+            select(func.count(AgentRun.id)).where(
+                AgentRun.organization_id == organization_id
+            )
+        )
 
         return int(result.scalar_one())
 
     @staticmethod
     async def action_distribution(
         db: AsyncSession,
+        organization_id: int,
     ) -> dict[str, int]:
 
         result = await db.execute(
@@ -51,6 +57,7 @@ class AgentObservabilityService:
                 AgentRun.action,
                 func.count(AgentRun.id),
             )
+            .where(AgentRun.organization_id == organization_id)
             .group_by(AgentRun.action)
             .order_by(AgentRun.action)
         )
@@ -60,6 +67,7 @@ class AgentObservabilityService:
     @staticmethod
     async def status_distribution(
         db: AsyncSession,
+        organization_id: int,
     ) -> dict[str, int]:
 
         result = await db.execute(
@@ -67,6 +75,7 @@ class AgentObservabilityService:
                 AgentRun.status,
                 func.count(AgentRun.id),
             )
+            .where(AgentRun.organization_id == organization_id)
             .group_by(AgentRun.status)
             .order_by(AgentRun.status)
         )
@@ -76,19 +85,29 @@ class AgentObservabilityService:
     @staticmethod
     async def count_runs(
         db: AsyncSession,
+        organization_id: int,
         *conditions,
     ) -> int:
 
-        result = await db.execute(select(func.count(AgentRun.id)).where(*conditions))
+        result = await db.execute(
+            select(func.count(AgentRun.id))
+            .where(AgentRun.organization_id == organization_id)
+            .where(*conditions)
+        )
 
         return int(result.scalar_one())
 
     @staticmethod
     async def tool_metrics(
         db: AsyncSession,
+        organization_id: int,
     ) -> dict:
 
-        result = await db.execute(select(AgentRun.tool_plan))
+        result = await db.execute(
+            select(AgentRun.tool_plan).where(
+                AgentRun.organization_id == organization_id
+            )
+        )
 
         plans = result.scalars().all()
 
@@ -163,9 +182,14 @@ class AgentObservabilityService:
     async def integration_job_metrics(
         cls,
         db: AsyncSession,
+        organization_id: int,
     ) -> IntegrationJobObservabilitySummary:
 
-        total_result = await db.execute(select(func.count(IntegrationJob.id)))
+        total_result = await db.execute(
+            select(func.count(IntegrationJob.id)).where(
+                IntegrationJob.organization_id == organization_id
+            )
+        )
 
         total = int(total_result.scalar_one())
 
@@ -174,6 +198,7 @@ class AgentObservabilityService:
                 IntegrationJob.status,
                 func.count(IntegrationJob.id),
             )
+            .where(IntegrationJob.organization_id == organization_id)
             .group_by(IntegrationJob.status)
             .order_by(IntegrationJob.status)
         )
@@ -185,6 +210,7 @@ class AgentObservabilityService:
                 IntegrationJob.job_type,
                 func.count(IntegrationJob.id),
             )
+            .where(IntegrationJob.organization_id == organization_id)
             .group_by(IntegrationJob.job_type)
             .order_by(IntegrationJob.job_type)
         )
@@ -197,19 +223,24 @@ class AgentObservabilityService:
                     func.sum(IntegrationJob.attempts),
                     0,
                 )
-            )
+            ).where(IntegrationJob.organization_id == organization_id)
         )
 
         total_attempts = int(attempts_result.scalar_one())
 
         retried_result = await db.execute(
-            select(func.count(IntegrationJob.id)).where(IntegrationJob.attempts > 1)
+            select(func.count(IntegrationJob.id))
+            .where(
+                IntegrationJob.organization_id == organization_id,
+                IntegrationJob.attempts > 1,
+            )
         )
 
         retried_jobs = int(retried_result.scalar_one())
 
         exhausted_result = await db.execute(
             select(func.count(IntegrationJob.id))
+            .where(IntegrationJob.organization_id == organization_id)
             .where(IntegrationJob.status == "failed")
             .where(IntegrationJob.attempts >= IntegrationJob.max_attempts)
         )
@@ -247,39 +278,44 @@ class AgentObservabilityService:
     async def summary(
         cls,
         db: AsyncSession,
+        organization_id: int,
     ) -> AgentObservabilitySummary:
 
-        total_runs = await cls.total_runs(db)
+        total_runs = await cls.total_runs(db, organization_id)
 
-        actions = await cls.action_distribution(db)
+        actions = await cls.action_distribution(db, organization_id)
 
-        statuses = await cls.status_distribution(db)
+        statuses = await cls.status_distribution(db, organization_id)
 
         human_approval_required = await cls.count_runs(
             db,
+            organization_id,
             AgentRun.requires_human_approval.is_(True),
         )
 
         reviewed_runs = await cls.count_runs(
             db,
+            organization_id,
             AgentRun.reviewed_at.is_not(None),
         )
 
         executed_runs = await cls.count_runs(
             db,
+            organization_id,
             AgentRun.status == "executed",
         )
 
         execution_failed_runs = await cls.count_runs(
             db,
+            organization_id,
             AgentRun.status == "execution_failed",
         )
 
         attempted_executions = executed_runs + execution_failed_runs
 
-        tool_metrics = await cls.tool_metrics(db)
+        tool_metrics = await cls.tool_metrics(db, organization_id)
 
-        integration_jobs = await cls.integration_job_metrics(db)
+        integration_jobs = await cls.integration_job_metrics(db, organization_id)
 
         auto_execution_eligible_runs = tool_metrics["auto_execution_eligible_runs"]
 
@@ -328,23 +364,26 @@ class AgentObservabilityService:
     async def operational_kpis(
         cls,
         db: AsyncSession,
+        organization_id: int,
     ) -> dict:
 
-        total_runs = await cls.total_runs(db)
+        total_runs = await cls.total_runs(db, organization_id)
 
-        actions = await cls.action_distribution(db)
+        actions = await cls.action_distribution(db, organization_id)
 
-        statuses = await cls.status_distribution(db)
+        statuses = await cls.status_distribution(db, organization_id)
 
         approval_required = await cls.count_runs(
             db,
+            organization_id,
             AgentRun.requires_human_approval.is_(True),
         )
 
         auto_approved_result = await db.execute(
             select(func.count(AgentRun.id)).where(
+                AgentRun.organization_id == organization_id,
                 AgentRun.reviewer_note
-                == ("Automatically approved by low-risk tool policy")
+                == ("Automatically approved by low-risk tool policy"),
             )
         )
 
@@ -353,8 +392,9 @@ class AgentObservabilityService:
         autonomous_executed_result = await db.execute(
             select(func.count(AgentRun.id))
             .where(
+                AgentRun.organization_id == organization_id,
                 AgentRun.reviewer_note
-                == ("Automatically approved by low-risk tool policy")
+                == ("Automatically approved by low-risk tool policy"),
             )
             .where(AgentRun.status == "executed")
         )
@@ -373,7 +413,7 @@ class AgentObservabilityService:
 
         attempted_executions = executed_runs + failed_execution_runs
 
-        jobs = await cls.integration_job_metrics(db)
+        jobs = await cls.integration_job_metrics(db, organization_id)
 
         average_job_attempts = jobs.total_attempts / jobs.total if jobs.total else 0.0
 
@@ -458,9 +498,10 @@ class AgentObservabilityService:
     async def roi_summary(
         cls,
         db: AsyncSession,
+        organization_id: int,
     ) -> dict:
 
-        total_runs = await cls.total_runs(db)
+        total_runs = await cls.total_runs(db, organization_id)
 
         # Match a production AgentRun to its
         # corresponding AI telemetry row.
@@ -469,12 +510,20 @@ class AgentObservabilityService:
             AgentRun.run_id,
         )
 
+        # Both the agent run and its telemetry row are bound to the tenant in
+        # SQL; a legacy NULL-org telemetry row can never enter an aggregate.
+        tenant_condition = (
+            AgentRun.organization_id == organization_id,
+            AIRequestLog.organization_id == organization_id,
+        )
+
         instrumented_result = await db.execute(
             select(func.count(AgentRun.id))
             .join(
                 AIRequestLog,
                 match_condition,
             )
+            .where(*tenant_condition)
             .where(AIRequestLog.feature == "agent_decision")
         )
 
@@ -486,6 +535,7 @@ class AgentObservabilityService:
                 AIRequestLog,
                 match_condition,
             )
+            .where(*tenant_condition)
             .where(AIRequestLog.feature == "agent_decision")
             .where(
                 AgentRun.reviewer_note
@@ -507,6 +557,7 @@ class AgentObservabilityService:
                 AgentRun,
                 match_condition,
             )
+            .where(*tenant_condition)
             .where(AIRequestLog.feature == "agent_decision")
         )
 

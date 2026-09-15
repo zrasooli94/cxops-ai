@@ -996,6 +996,7 @@ Choose the safest next action.
 
             await AIObservabilityService.record(
                 db,
+                organization_id=organization_id,
                 request_id=(f"agent-{run_id}"),
                 feature="agent_decision",
                 model=(

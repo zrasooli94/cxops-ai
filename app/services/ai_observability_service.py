@@ -64,6 +64,7 @@ class AIObservabilityService:
     async def record(
         db: AsyncSession,
         *,
+        organization_id: int,
         request_id: str,
         question: str,
         answer: str | None,
@@ -88,6 +89,7 @@ class AIObservabilityService:
         )
 
         log = AIRequestLog(
+            organization_id=organization_id,
             request_id=request_id,
             feature=feature,
             model=(model or settings.chat_model),
@@ -117,6 +119,7 @@ class AIObservabilityService:
     @staticmethod
     async def summary(
         db: AsyncSession,
+        organization_id: int,
     ) -> dict:
 
         result = await db.execute(
@@ -143,7 +146,7 @@ class AIObservabilityService:
                 func.avg(AIRequestLog.latency_ms).label("avg_latency_ms"),
                 func.sum(AIRequestLog.total_tokens).label("total_tokens"),
                 func.sum(AIRequestLog.estimated_cost_usd).label("estimated_cost_usd"),
-            )
+            ).where(AIRequestLog.organization_id == organization_id)
         )
 
         row = result.one()
@@ -166,9 +169,10 @@ class AIObservabilityService:
     @staticmethod
     async def breakdown(
         db: AsyncSession,
+        organization_id: int,
     ) -> dict:
 
-        overall = await AIObservabilityService.summary(db)
+        overall = await AIObservabilityService.summary(db, organization_id)
 
         result = await db.execute(
             select(
@@ -207,6 +211,7 @@ class AIObservabilityService:
                 func.sum(AIRequestLog.total_tokens).label("total_tokens"),
                 func.sum(AIRequestLog.estimated_cost_usd).label("estimated_cost_usd"),
             )
+            .where(AIRequestLog.organization_id == organization_id)
             .group_by(AIRequestLog.feature)
             .order_by(AIRequestLog.feature)
         )
@@ -219,6 +224,7 @@ class AIObservabilityService:
                 AIRequestLog.model,
                 func.count(AIRequestLog.id),
             )
+            .where(AIRequestLog.organization_id == organization_id)
             .group_by(
                 AIRequestLog.feature,
                 AIRequestLog.model,

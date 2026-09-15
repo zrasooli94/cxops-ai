@@ -20,10 +20,14 @@ class RAGEvaluationService:
     async def _get_request_log(
         db: AsyncSession,
         request_id: str,
+        organization_id: int,
     ) -> AIRequestLog | None:
 
         result = await db.execute(
-            select(AIRequestLog).where(AIRequestLog.request_id == request_id)
+            select(AIRequestLog).where(
+                AIRequestLog.request_id == request_id,
+                AIRequestLog.organization_id == organization_id,
+            )
         )
 
         return result.scalar_one_or_none()
@@ -135,6 +139,7 @@ class RAGEvaluationService:
         log = await RAGEvaluationService._get_request_log(
             db,
             response["request_id"],
+            organization_id,
         )
 
         return {

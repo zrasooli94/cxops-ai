@@ -1137,7 +1137,11 @@ async def test_automation_rule_cannot_mutate_foreign_ticket(
     event_id = event.id
 
     try:
-        await AutomationService.process_ticket_event(db, event)
+        await AutomationService.process_ticket_event(
+            db,
+            event=event,
+            organization_id=tenant_data["org_a"].id,
+        )
 
         b_ticket = await TicketRepository.get_by_id_for_tenant(
             db, tenant_data["ticket_b"].id, tenant_data["org_b"].id
@@ -1182,7 +1186,11 @@ async def test_legacy_null_org_rule_is_inert(db, tenant_data):
     event_id = event.id
 
     try:
-        await AutomationService.process_ticket_event(db, event)
+        await AutomationService.process_ticket_event(
+            db,
+            event=event,
+            organization_id=tenant_data["org_a"].id,
+        )
 
         a_ticket = await TicketRepository.get_by_id_for_tenant(
             db, tenant_data["ticket_a"].id, tenant_data["org_a"].id

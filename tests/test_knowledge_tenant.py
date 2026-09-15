@@ -216,7 +216,7 @@ async def two_orgs(db):
         "track_log": track_log,
     }
 
-    # Broadcast teardown: knowledge rows first, then memberships, logs, orgs.
+    # Broadcast teardown: knowledge rows first, then logs, memberships, orgs.
     if org_ids:
         await db.execute(
             delete(KnowledgeChunk).where(
@@ -228,6 +228,20 @@ async def two_orgs(db):
                 KnowledgeDocument.organization_id.in_(org_ids)
             )
         )
+    if log_ids:
+        # AIRequestLog rows reference organizations; delete before org teardown.
+        await db.execute(
+            delete(AIRequestLog).where(
+                AIRequestLog.request_id.in_(log_ids),
+                AIRequestLog.organization_id.in_(org_ids),
+            )
+        )
+        await db.execute(
+            delete(AIRequestLog).where(
+                AIRequestLog.organization_id.in_(org_ids)
+            )
+        )
+    if org_ids:
         await db.execute(
             delete(OrganizationMembership).where(
                 OrganizationMembership.organization_id.in_(org_ids)
@@ -236,8 +250,6 @@ async def two_orgs(db):
         await db.execute(
             delete(Organization).where(Organization.id.in_(org_ids))
         )
-    if log_ids:
-        await db.execute(delete(AIRequestLog).where(AIRequestLog.request_id.in_(log_ids)))
     await db.commit()
 
 

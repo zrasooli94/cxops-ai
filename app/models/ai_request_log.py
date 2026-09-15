@@ -4,6 +4,8 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -16,11 +18,40 @@ from app.models.base import Base
 
 
 class AIRequestLog(Base):
+    """A tenant-owned AI request / usage / telemetry row.
+
+    ``organization_id`` is the tenant boundary. Every observability aggregate
+    starts from a resolved organization_id and enforces the predicate in SQL;
+    NULL-org rows are legacy, unmapped telemetry that remain **inert** — never
+    counted in a tenant's summary, cost, ROI, latency, or drilldown.
+
+    Indexes mirror the observability query shape: ``organization_id`` for the
+    group-by / distribution aggregations and ``(organization_id, created_at)``
+    for time-window dashboards ordered by ``created_at``.
+    """
+
     __tablename__ = "ai_request_logs"
+
+    __table_args__ = (
+        Index(
+            "ix_ai_request_logs_organization_id",
+            "organization_id",
+        ),
+        Index(
+            "ix_ai_request_logs_organization_id_created_at",
+            "organization_id",
+            "created_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
+    )
+
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id"),
+        nullable=True,
     )
 
     request_id: Mapped[str] = mapped_column(

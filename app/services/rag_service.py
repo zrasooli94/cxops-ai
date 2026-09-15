@@ -99,6 +99,7 @@ class RAGService:
 
             await AIObservabilityService.record(
                 db=db,
+                organization_id=organization_id,
                 request_id=request_id,
                 question=question,
                 answer=answer_text,
@@ -138,6 +139,7 @@ class RAGService:
 
             await AIObservabilityService.record(
                 db=db,
+                organization_id=organization_id,
                 request_id=request_id,
                 question=question,
                 answer=answer_text,
@@ -270,6 +272,7 @@ Answer the question and cite the supporting sources.
 
             await AIObservabilityService.record(
                 db=db,
+                organization_id=organization_id,
                 request_id=request_id,
                 question=question,
                 answer=fallback_answer,
@@ -301,6 +304,7 @@ Answer the question and cite the supporting sources.
 
         await AIObservabilityService.record(
             db=db,
+            organization_id=organization_id,
             request_id=request_id,
             question=question,
             answer=answer_text,

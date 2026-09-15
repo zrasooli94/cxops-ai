@@ -38,7 +38,7 @@ async def run_worker() -> None:
 
     while True:
         async with AsyncSessionLocal() as db:
-            job = await IntegrationJobRepository.claim_next(db)
+            job = await IntegrationJobRepository.claim_next_unscoped(db)
 
             if job is None:
                 await asyncio.sleep(1)

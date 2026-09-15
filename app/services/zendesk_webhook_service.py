@@ -71,6 +71,7 @@ class ZendeskWebhookService:
         await AutomationService.process_ticket_event(
             db=db,
             event=event,
+            organization_id=organization_id,
         )
 
         refreshed_ticket = await TicketRepository.get_by_id_for_tenant(

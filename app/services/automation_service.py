@@ -75,7 +75,9 @@ class AutomationService:
     @staticmethod
     async def process_ticket_event(
         db: AsyncSession,
+        *,
         event: TicketEvent,
+        organization_id: int | None,
     ) -> TicketEvent:
 
         if event.processed:
@@ -87,24 +89,14 @@ class AutomationService:
                 event=event,
             )
 
-        ticket = await TicketRepository.get_by_id_unscoped(
-            db=db,
-            ticket_id=event.ticket_id,
-        )
-
-        if ticket is None:
-            return await TicketEventRepository.mark_processed(
-                db=db,
-                event=event,
-            )
-
-        # Tenant ownership is derived from the trusted persisted ticket, never
-        # from rule or webhook request data. Unowned tickets fail closed: no
-        # global rule list may run against a tenant-owned ticket, and a
-        # NULL-org ticket is never assigned an organization silently.
-        if ticket.organization_id is None:
+        # Tenant ownership is never guessed here: callers resolve a trusted
+        # organization (e.g. the verified Zendesk webhook boundary) and the
+        # ticket read is tenant-scoped. A missing/failed resolution fails
+        # closed — the event is marked processed and no rule runs, mirroring
+        # the prior NULL-org fail-closed behavior without the unscoped read.
+        if organization_id is None:
             log.warning(
-                "automation_skip_unowned_ticket",
+                "automation_skip_no_tenant_context",
                 event_id=event.id,
                 ticket_id=event.ticket_id,
             )
@@ -113,9 +105,21 @@ class AutomationService:
                 event=event,
             )
 
+        ticket = await TicketRepository.get_by_id_for_tenant(
+            db=db,
+            ticket_id=event.ticket_id,
+            organization_id=organization_id,
+        )
+
+        if ticket is None:
+            return await TicketEventRepository.mark_processed(
+                db=db,
+                event=event,
+            )
+
         rules = await AutomationRuleRepository.get_active_for_event_for_tenant(
             db=db,
-            organization_id=ticket.organization_id,
+            organization_id=organization_id,
             event_type=event.event_type,
         )
 
@@ -135,7 +139,7 @@ class AutomationService:
                     db=db,
                     ticket=ticket,
                     changes=changes,
-                    organization_id=ticket.organization_id,
+                    organization_id=organization_id,
                 )
 
             break

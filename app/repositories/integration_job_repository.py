@@ -8,10 +8,17 @@ from app.models.integration_job import IntegrationJob
 
 class IntegrationJobRepository:
     @staticmethod
-    async def get_by_id(
+    async def get_by_id_unscoped(
         db: AsyncSession,
         job_id: int,
     ) -> IntegrationJob | None:
+        """INTERNAL-ONLY unscoped job lookup.
+
+        Binds no tenant and MUST NOT be used by any human / JWT-authenticated
+        / public route. Exists solely for the durable job worker: the worker
+        claims a job and ``IntegrationJobService.execute`` re-validates the
+        job's persisted ``organization_id`` chain before any side effect.
+        """
 
         result = await db.execute(
             select(IntegrationJob).where(IntegrationJob.id == job_id)
@@ -45,9 +52,19 @@ class IntegrationJobRepository:
         return job
 
     @staticmethod
-    async def claim_next(
+    async def claim_next_unscoped(
         db: AsyncSession,
     ) -> IntegrationJob | None:
+        """INTERNAL-ONLY unscoped worker claim.
+
+        The durable job worker must be able to pick the next pending job across
+        every tenant, so this claim carries no organization bound — this is the
+        one legitimate global read in the subsystem. ``IntegrationJobService``
+        then executes each claimed job strictly within its persisted
+        ``organization_id`` (agent-execution and Zendesk jobs both verify the
+        org chain before any side effect), so a cross-tenant claim cannot
+        cause a cross-tenant write. Has no public/tenant route caller.
+        """
 
         now = datetime.now(timezone.utc)
 
@@ -109,7 +126,7 @@ class IntegrationJobRepository:
         job_id: int,
     ) -> IntegrationJob | None:
 
-        job = await IntegrationJobRepository.get_by_id(
+        job = await IntegrationJobRepository.get_by_id_unscoped(
             db,
             job_id,
         )
@@ -139,7 +156,7 @@ class IntegrationJobRepository:
 
         now = datetime.now(timezone.utc)
 
-        job = await IntegrationJobRepository.get_by_id(
+        job = await IntegrationJobRepository.get_by_id_unscoped(
             db,
             job_id,
         )

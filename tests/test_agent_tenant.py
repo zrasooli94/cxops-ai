@@ -287,14 +287,14 @@ async def two_orgs(db):
     if captured_ticket_ids:
         await db.execute(delete(Ticket).where(Ticket.id.in_(captured_ticket_ids)))
     if org_ids:
+        # Telemetry/log rows reference organizations; delete before org teardown.
+        await db.execute(delete(AIRequestLog).where(AIRequestLog.organization_id.in_(org_ids)))
         await db.execute(
             delete(OrganizationMembership).where(
                 OrganizationMembership.organization_id.in_(org_ids)
             )
         )
         await db.execute(delete(Organization).where(Organization.id.in_(org_ids)))
-    if log_ids:
-        await db.execute(delete(AIRequestLog).where(AIRequestLog.request_id.in_(log_ids)))
     await db.commit()
 
 
