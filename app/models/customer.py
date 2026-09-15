@@ -1,6 +1,12 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -9,6 +15,14 @@ from app.models.base import Base
 class Customer(Base):
     __tablename__ = "customers"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "external_id",
+            name="ux_customers_organization_id_external_id",
+        ),
+    )
+
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
@@ -16,7 +30,6 @@ class Customer(Base):
 
     external_id: Mapped[str | None] = mapped_column(
         String(100),
-        unique=True,
         nullable=True,
     )
 
@@ -50,4 +63,9 @@ class Customer(Base):
     organization = relationship(
         "Organization",
         back_populates="customers",
+    )
+
+    tickets = relationship(
+        "Ticket",
+        back_populates="customer",
     )

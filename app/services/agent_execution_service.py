@@ -450,7 +450,7 @@ class AgentExecutionService:
             # Synchronize external state
             # -------------------------------------
 
-            await ZendeskSyncService.sync_ticket(
+            await ZendeskSyncService.sync_ticket_unscoped_internal(
                 db,
                 zendesk_ticket_id,
             )

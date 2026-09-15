@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal
+from app.api.deps import CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
 from app.schemas.ticket import (
     TicketCreate,
@@ -33,11 +33,16 @@ async def create_ticket(
     data: TicketCreate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    return await TicketService.create_ticket(
-        db=db,
-        data=data,
-    )
+    # organization_id comes from CurrentTenant, never from client payload
+    try:
+        return await TicketService.create_ticket_for_tenant(db, data, tenant.organization_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found in this organization",
+        )
 
 
 @router.get(
@@ -47,6 +52,7 @@ async def create_ticket(
 async def list_tickets(
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
     offset: int = Query(
         default=0,
         ge=0,
@@ -57,8 +63,9 @@ async def list_tickets(
         le=100,
     ),
 ):
-    return await TicketService.list_tickets(
+    return await TicketService.list_tickets_for_tenant(
         db=db,
+        organization_id=tenant.organization_id,
         offset=offset,
         limit=limit,
     )
@@ -72,10 +79,12 @@ async def get_ticket(
     ticket_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    ticket = await TicketService.get_ticket(
+    ticket = await TicketService.get_ticket_for_tenant(
         db=db,
         ticket_id=ticket_id,
+        organization_id=tenant.organization_id,
     )
 
     if ticket is None:
@@ -96,11 +105,13 @@ async def update_ticket(
     data: TicketUpdate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    ticket = await TicketService.update_ticket(
+    ticket = await TicketService.update_ticket_for_tenant(
         db=db,
         ticket_id=ticket_id,
         data=data,
+        organization_id=tenant.organization_id,
     )
 
     if ticket is None:

@@ -3,10 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal
+from app.api.deps import CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
-from app.repositories.customer_repository import CustomerRepository
-from app.schemas.customer import CustomerCreate, CustomerRead
+from app.schemas.customer import CustomerCreate, CustomerRead, CustomerUpdate
 from app.services.customer_service import CustomerService
 
 router = APIRouter(
@@ -29,8 +28,10 @@ async def create_customer(
     data: CustomerCreate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    return await CustomerService.create(db, data)
+    # organization_id comes from CurrentTenant, never from client payload
+    return await CustomerService.create_for_tenant(db, data, tenant.organization_id)
 
 
 @router.get(
@@ -40,8 +41,9 @@ async def create_customer(
 async def list_customers(
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    return await CustomerRepository.list(db)
+    return await CustomerService.list_for_tenant(db, tenant.organization_id)
 
 
 @router.get(
@@ -52,10 +54,10 @@ async def get_customer(
     customer_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    customer = await CustomerRepository.get_by_id(
-        db,
-        customer_id,
+    customer = await CustomerService.get_for_tenant(
+        db, customer_id, tenant.organization_id
     )
 
     if customer is None:
@@ -63,5 +65,40 @@ async def get_customer(
             status_code=404,
             detail="Customer not found",
         )
+
+    return customer
+
+
+@router.patch(
+    "/{customer_id}",
+    response_model=CustomerRead,
+)
+async def update_customer(
+    customer_id: int,
+    data: CustomerUpdate,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+):
+    customer = await CustomerService.get_for_tenant(
+        db, customer_id, tenant.organization_id
+    )
+
+    if customer is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found",
+        )
+
+    changes = data.model_dump(exclude_unset=True)
+
+    if "email" in changes and changes["email"] is not None:
+        changes["email"] = str(changes["email"])
+
+    for field, value in changes.items():
+        setattr(customer, field, value)
+
+    await db.commit()
+    await db.refresh(customer)
 
     return customer

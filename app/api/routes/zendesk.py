@@ -8,7 +8,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal
+from app.api.deps import CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
 from app.integrations.zendesk.client import (
     ZendeskAPIError,
@@ -22,7 +22,10 @@ from app.schemas.zendesk import (
 from app.services.zendesk_oauth_service import (
     ZendeskReauthorizationRequired,
 )
-from app.services.zendesk_sync_service import ZendeskSyncService
+from app.services.zendesk_sync_service import (
+    ZendeskSyncConflictError,
+    ZendeskSyncService,
+)
 
 router = APIRouter(
     prefix="/zendesk",
@@ -174,11 +177,19 @@ async def sync_zendesk_ticket(
     ticket_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     try:
-        return await ZendeskSyncService.sync_ticket(
+        return await ZendeskSyncService.sync_ticket_for_tenant(
             db=db,
             zendesk_ticket_id=ticket_id,
+            organization_id=tenant.organization_id,
+        )
+
+    except ZendeskSyncConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Zendesk ticket is already linked to an existing record",
         )
 
     except (

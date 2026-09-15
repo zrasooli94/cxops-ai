@@ -32,6 +32,26 @@ class TicketEventRepository:
 
         return event
 
+    # Tenant-safe method for listing events of tickets in a tenant organization
+    @staticmethod
+    async def list_for_tenant(
+        db: AsyncSession,
+        organization_id: int,
+        limit: int = 100,
+    ) -> list[TicketEvent]:
+
+        from app.models.ticket import Ticket
+
+        result = await db.execute(
+            select(TicketEvent)
+            .join(Ticket, TicketEvent.ticket_id == Ticket.id)
+            .where(Ticket.organization_id == organization_id)
+            .order_by(TicketEvent.created_at.desc())
+            .limit(limit)
+        )
+
+        return list(result.scalars().all())
+
     @staticmethod
     async def list(
         db: AsyncSession,

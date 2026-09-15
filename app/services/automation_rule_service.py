@@ -12,9 +12,10 @@ from app.schemas.automation_rule import (
 
 class AutomationRuleService:
     @staticmethod
-    async def create(
+    async def create_for_tenant(
         db: AsyncSession,
         data: AutomationRuleCreate,
+        organization_id: int,
     ) -> AutomationRule:
 
         rule = AutomationRule(
@@ -26,21 +27,24 @@ class AutomationRuleService:
             actions=data.actions,
         )
 
-        return await AutomationRuleRepository.create(
+        return await AutomationRuleRepository.create_for_tenant(
             db=db,
             rule=rule,
+            organization_id=organization_id,
         )
 
     @staticmethod
-    async def update(
+    async def update_for_tenant(
         db: AsyncSession,
         rule_id: int,
         data: AutomationRuleUpdate,
+        organization_id: int,
     ) -> AutomationRule | None:
 
-        rule = await AutomationRuleRepository.get_by_id(
+        rule = await AutomationRuleRepository.get_by_id_for_tenant(
             db=db,
             rule_id=rule_id,
+            organization_id=organization_id,
         )
 
         if rule is None:
@@ -50,8 +54,9 @@ class AutomationRuleService:
             exclude_unset=True,
         )
 
-        return await AutomationRuleRepository.update(
+        return await AutomationRuleRepository.update_for_tenant(
             db=db,
             rule=rule,
             changes=changes,
+            organization_id=organization_id,
         )

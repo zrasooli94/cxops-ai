@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AutomationRuleCreate(BaseModel):
@@ -38,6 +38,13 @@ class AutomationRuleUpdate(BaseModel):
     conditions: dict | None = None
     actions: dict | None = None
 
+    @field_validator("name", "event_type", "priority", "enabled", "conditions", "actions")
+    @classmethod
+    def _not_null(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
+
 
 class AutomationRuleRead(BaseModel):
     id: int
@@ -47,6 +54,7 @@ class AutomationRuleRead(BaseModel):
     enabled: bool
     conditions: dict
     actions: dict
+    organization_id: int | None
     created_at: datetime
     updated_at: datetime
 

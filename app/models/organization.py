@@ -46,3 +46,8 @@ class Organization(Base):
         "OrganizationMembership",
         back_populates="organization",
     )
+
+    tickets = relationship(
+        "Ticket",
+        back_populates="organization",
+    )

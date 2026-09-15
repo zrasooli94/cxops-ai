@@ -3,8 +3,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal
+from app.api.deps import CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
+from app.repositories.organization_membership_repository import (
+    OrganizationMembershipRepository,
+)
 from app.repositories.organization_repository import OrganizationRepository
 from app.schemas.organization import OrganizationCreate, OrganizationRead
 from app.services.organization_service import OrganizationService
@@ -30,7 +33,9 @@ async def create_organization(
     db: DatabaseSession,
     principal: CurrentPrincipal,
 ):
-    return await OrganizationService.create(db, data)
+    # Atomic creation: organization + creator membership in one transaction.
+    # This is tenant bootstrap, NOT RBAC (no roles assigned).
+    return await OrganizationService.create_with_membership(db, data, principal.subject)
 
 
 @router.get(
@@ -40,8 +45,23 @@ async def create_organization(
 async def list_organizations(
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    return await OrganizationRepository.list(db)
+    # Return only organizations the authenticated subject has memberships for
+    memberships = await OrganizationMembershipRepository.list_for_subject(
+        db, principal.subject
+    )
+    organization_ids = [m.organization_id for m in memberships]
+    if not organization_ids:
+        return []
+
+    # Fetch details for each
+    organizations = []
+    for org_id in organization_ids:
+        org = await OrganizationRepository.get_by_id(db, org_id)
+        if org:
+            organizations.append(org)
+    return organizations
 
 
 @router.get(
@@ -52,7 +72,18 @@ async def get_organization(
     organization_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
+    # Validate membership before returning
+    membership = await OrganizationMembershipRepository.get_for_subject_and_organization(
+        db, principal.subject, organization_id
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Organization not found",
+        )
+
     organization = await OrganizationRepository.get_by_id(
         db,
         organization_id,

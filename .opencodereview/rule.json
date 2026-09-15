@@ -1,0 +1,56 @@
+{
+  "include": [
+    "tests/**/*.py",
+    "frontend/src/**/*.test.ts",
+    "frontend/src/**/*.test.tsx",
+    "alembic/versions/**/*.py"
+  ],
+  "exclude": [
+    "**/node_modules/**",
+    "frontend/.next/**",
+    ".venv/**",
+    "**/__pycache__/**"
+  ],
+  "rules": [
+    {
+      "path": "app/repositories/**/*.py",
+      "merge_system_rule": true,
+      "rule": "CXOps is a multi-tenant enterprise customer-service platform. Treat tenant isolation as a security boundary. Verify every tenant-owned read, list, update, delete, existence check, and lookup binds organization_id or proves ownership through a tenant-scoped parent. Flag IDOR risks, cross-tenant enumeration, accidental use of unscoped repository methods from tenant-facing code, and any query where an ID alone grants access. Client-provided organization identifiers must never provide authorization. Tenant-facing repository APIs should be tenant-safe by construction."
+    },
+    {
+      "path": "app/services/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Review CXOps service code for tenant-boundary violations. Tenant ownership must originate from trusted TenantContext, not request payload authority. Verify customer-ticket organization consistency, prevent cross-tenant assignment, preserve transaction atomicity, and ensure explicitly unscoped repository methods are used only by justified internal ingestion/integration flows. Identify any path that can create an unowned tenant resource."
+    },
+    {
+      "path": "app/api/routes/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Review FastAPI routes as security boundaries. Tenant-owned endpoints must depend on CurrentTenant and must not authorize based only on request IDs, organization_id fields, query parameters, or headers. X-CXOps-Organization-ID is an untrusted selector validated through organization membership. Foreign-tenant resource IDs should not reveal resource existence. Authentication, tenancy, and future RBAC must remain separate concerns."
+    },
+    {
+      "path": "app/core/{auth,jwks,tenant}.py",
+      "merge_system_rule": true,
+      "rule": "Security-critical identity and tenancy code. Fail closed. Never weaken RS256/JWKS algorithm restrictions, issuer validation, membership validation, tenant ambiguity handling, or subject binding. Never log JWTs, Authorization headers, session cookies, access tokens, refresh tokens, signing keys, or other credentials."
+    },
+    {
+      "path": "frontend/src/app/api/backend/**/*.ts",
+      "merge_system_rule": true,
+      "rule": "Review this as the CXOps authenticated BFF security boundary. Server Nhost session credentials must take precedence over browser input. Authorization and Cookie headers must not be forwarded from the browser. X-CXOps-Organization-ID is transport-only and never authorization. Session refresh retries must be bounded. Tokens must remain server-side."
+    },
+    {
+      "path": "alembic/versions/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Review database migrations for production-safe upgrade and downgrade behavior, deterministic backfills, tenant ownership preservation, foreign-key safety, appropriate indexes, nullable-to-NOT-NULL transitions, and compatibility with existing rows. Never silently assign historical tenant data to an arbitrary organization. Ensure migration order and rollback behavior are sound."
+    },
+    {
+      "path": "tests/**/*.py",
+      "merge_system_rule": true,
+      "rule": "Review tests as security regression controls. Require negative tenant tests in addition to happy paths: cross-tenant guessed IDs, forged tenant selectors, no membership, ambiguous memberships, mismatched customer ownership, unowned resources, unauthenticated access, repository bypasses, transaction rollback behavior, and cleanup isolation. Tests must fail when tenant scoping is removed."
+    },
+    {
+      "path": "frontend/src/**/*.test.{ts,tsx}",
+      "merge_system_rule": true,
+      "rule": "Review frontend authentication and BFF tests for negative-path coverage including credential non-exposure, blocked Cookie/Host/Authorization forwarding, server-session precedence, bounded refresh behavior, and tenant-selector transport without frontend authorization decisions."
+    }
+  ]
+}

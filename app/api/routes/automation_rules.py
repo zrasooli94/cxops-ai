@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal
+from app.api.deps import CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
 from app.repositories.automation_rule_repository import (
     AutomationRuleRepository,
@@ -38,10 +38,13 @@ async def create_rule(
     data: AutomationRuleCreate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    return await AutomationRuleService.create(
+    # organization_id comes from CurrentTenant, never from client payload
+    return await AutomationRuleService.create_for_tenant(
         db=db,
         data=data,
+        organization_id=tenant.organization_id,
     )
 
 
@@ -52,9 +55,11 @@ async def create_rule(
 async def list_rules(
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    return await AutomationRuleRepository.list_all(
+    return await AutomationRuleRepository.list_for_tenant(
         db=db,
+        organization_id=tenant.organization_id,
     )
 
 
@@ -66,10 +71,12 @@ async def get_rule(
     rule_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    rule = await AutomationRuleRepository.get_by_id(
+    rule = await AutomationRuleRepository.get_by_id_for_tenant(
         db=db,
         rule_id=rule_id,
+        organization_id=tenant.organization_id,
     )
 
     if rule is None:
@@ -90,11 +97,13 @@ async def update_rule(
     data: AutomationRuleUpdate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
-    rule = await AutomationRuleService.update(
+    rule = await AutomationRuleService.update_for_tenant(
         db=db,
         rule_id=rule_id,
         data=data,
+        organization_id=tenant.organization_id,
     )
 
     if rule is None:

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class TicketCreate(BaseModel):
@@ -58,6 +58,13 @@ class TicketUpdate(BaseModel):
 
     customer_id: int | None = None
 
+    @field_validator("subject", "description")
+    @classmethod
+    def _not_null(cls, value: str | None) -> str | None:
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
+
 
 class TicketRead(BaseModel):
     id: int
@@ -82,3 +89,4 @@ class TicketRead(BaseModel):
     assigned_team: str | None
 
     customer_id: int | None
+    organization_id: int

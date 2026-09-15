@@ -71,7 +71,14 @@ class Ticket(Base):
         nullable=True,
     )
 
-    customer = relationship("Customer")
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id"),
+        nullable=True,
+    )
+
+    customer = relationship("Customer", back_populates="tickets")
+
+    organization = relationship("Organization", back_populates="tickets")
 
     category: Mapped[str | None] = mapped_column(
         String(100),

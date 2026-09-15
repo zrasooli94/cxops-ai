@@ -37,7 +37,7 @@ class ZendeskWebhookService:
                 status="already_processed",
             )
 
-        local_ticket = await ZendeskSyncService.sync_ticket(
+        local_ticket = await ZendeskSyncService.sync_ticket_unscoped_internal(
             db=db,
             zendesk_ticket_id=zendesk_ticket_id,
         )
@@ -64,7 +64,7 @@ class ZendeskWebhookService:
             event=event,
         )
 
-        refreshed_ticket = await TicketRepository.get_by_id(
+        refreshed_ticket = await TicketRepository.get_by_id_unscoped(
             db=db,
             ticket_id=local_ticket.id,
         )
