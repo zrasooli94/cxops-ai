@@ -52,13 +52,25 @@ class RAGService:
             for item in content
         ).strip()
 
+    @staticmethod
+    def _require_organization_id(
+        organization_id: int | None,
+    ) -> int:
+        if organization_id is None:
+            raise ValueError("organization_id is required for RAG answers")
+
+        return organization_id
+
     async def answer(
         self,
         db: AsyncSession,
         *,
+        organization_id: int,
         question: str,
         top_k: int | None = None,
     ) -> dict:
+
+        organization_id = RAGService._require_organization_id(organization_id)
 
         request_id = uuid4().hex
         started_at = perf_counter()
@@ -66,11 +78,12 @@ class RAGService:
         limit = top_k or settings.rag_top_k
 
         # -------------------------------------------------
-        # 1. Retrieve relevant knowledge
+        # 1. Retrieve relevant knowledge (tenant-scoped)
         # -------------------------------------------------
 
         matches = await KnowledgeSearchService.search(
             db=db,
+            organization_id=organization_id,
             query=question,
             limit=limit,
         )

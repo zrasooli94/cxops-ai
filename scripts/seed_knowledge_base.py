@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 
 from app.core.database import AsyncSessionLocal
@@ -82,11 +83,15 @@ should not be asked to repeatedly retry failed transactions.
 ]
 
 
-async def main():
+async def main(
+    *,
+    organization_id: int,
+):
     async with AsyncSessionLocal() as db:
         for document in DOCUMENTS:
             result = await KnowledgeIngestionService.ingest(
                 db=db,
+                organization_id=organization_id,
                 title=document["title"],
                 content=document["content"],
                 source="cxops-policy",
@@ -105,4 +110,15 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(
+        description="Seed the knowledge base for a specific organization."
+    )
+    parser.add_argument(
+        "--organization-id",
+        type=int,
+        required=True,
+        help="Organization id that will own the seeded documents. "
+        "No unresolved/NULL-org knowledge is ever created.",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(organization_id=args.organization_id))

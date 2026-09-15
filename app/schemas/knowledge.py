@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -47,6 +49,16 @@ class KnowledgeFileIngestionResult(BaseModel):
     title: str
     chunks_created: int
     duplicate: bool
+
+
+class KnowledgeDocumentSummary(BaseModel):
+    document_id: int
+    title: str
+    source: str
+    source_uri: str | None
+    checksum: str
+    metadata: dict
+    created_at: datetime
 
 
 class RAGAnswerRequest(BaseModel):

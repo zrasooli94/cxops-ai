@@ -4,6 +4,8 @@ from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
@@ -16,13 +18,39 @@ from app.models.base import Base
 
 
 class KnowledgeChunk(Base):
+    """A tenant-owned searchable chunk.
+
+    ``organization_id`` duplicates the owner column on the chunk (rather than
+    resolving through the document) so the vector-retrieval query can enforce
+    ``WHERE organization_id = :org`` directly on the table being ranked by
+    embedding distance. Tenant filtering is fused into the SQL query before
+    nearest-neighbor selection — never applied as a Python post-filter.
+
+    Because the owner is duplicated, drift between chunk and document ownership
+    is prevented at the database: the composite foreign key
+    ``(document_id, organization_id) → knowledge_documents(id, organization_id)``
+    makes it impossible to attach a chunk to a document owned by a different
+    tenant. The direct ``organization_id`` column is preserved for vector
+    filtering.
+    """
+
     __tablename__ = "knowledge_chunks"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "organization_id"],
+            ["knowledge_documents.id", "knowledge_documents.organization_id"],
+            ondelete="CASCADE",
+            name="fk_knowledge_chunks_document_organization",
+        ),
         UniqueConstraint(
             "document_id",
             "chunk_index",
             name="uq_knowledge_chunk_document_index",
+        ),
+        Index(
+            "ix_knowledge_chunks_organization_id",
+            "organization_id",
         ),
     )
 
@@ -31,11 +59,13 @@ class KnowledgeChunk(Base):
         autoincrement=True,
     )
 
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id"),
+        nullable=True,
+    )
+
     document_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "knowledge_documents.id",
-            ondelete="CASCADE",
-        ),
+        Integer,
         nullable=False,
         index=True,
     )

@@ -19,6 +19,21 @@ class KnowledgeIngestionService:
     CHUNK_OVERLAP = 75
 
     @staticmethod
+    def _require_organization_id(
+        organization_id: int | None,
+    ) -> int:
+        """Refuse to create an unowned document.
+
+        Roaming/free-floating (NULL-org) knowledge is a tenant-isolation
+        defect, so ingestion fails closed when no trusted organization is
+        supplied instead of silently writing an unowned row.
+        """
+        if organization_id is None:
+            raise ValueError("organization_id is required for knowledge ingestion")
+
+        return organization_id
+
+    @staticmethod
     def clean_text(
         text: str,
     ) -> str:
@@ -88,6 +103,7 @@ class KnowledgeIngestionService:
     async def ingest(
         db: AsyncSession,
         *,
+        organization_id: int,
         title: str,
         content: str,
         source: str,
@@ -95,13 +111,18 @@ class KnowledgeIngestionService:
         metadata: dict,
     ):
 
+        organization_id = KnowledgeIngestionService._require_organization_id(
+            organization_id
+        )
+
         cleaned_content = KnowledgeIngestionService.clean_text(content)
 
         checksum = KnowledgeIngestionService.checksum(cleaned_content)
 
-        existing = await KnowledgeRepository.get_document_by_checksum(
+        existing = await KnowledgeRepository.get_document_by_checksum_for_tenant(
             db=db,
             checksum=checksum,
+            organization_id=organization_id,
         )
 
         if existing:
@@ -119,6 +140,7 @@ class KnowledgeIngestionService:
         embeddings = await embedding_service.embed_documents(chunk_contents)
 
         document = KnowledgeDocument(
+            organization_id=organization_id,
             title=title,
             source=source,
             source_uri=source_uri,
@@ -143,6 +165,7 @@ class KnowledgeIngestionService:
         ):
             chunks.append(
                 KnowledgeChunk(
+                    organization_id=organization_id,
                     document_id=document.id,
                     chunk_index=index,
                     content=chunk_content,

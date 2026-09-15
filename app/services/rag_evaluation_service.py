@@ -8,6 +8,15 @@ from app.services.rag_service import rag_service
 
 class RAGEvaluationService:
     @staticmethod
+    def _require_organization_id(
+        organization_id: int | None,
+    ) -> int:
+        if organization_id is None:
+            raise ValueError("organization_id is required for RAG evaluation")
+
+        return organization_id
+
+    @staticmethod
     async def _get_request_log(
         db: AsyncSession,
         request_id: str,
@@ -22,11 +31,18 @@ class RAGEvaluationService:
     @staticmethod
     async def evaluate_case(
         db: AsyncSession,
+        *,
         case: dict,
+        organization_id: int,
     ) -> dict:
+
+        organization_id = RAGEvaluationService._require_organization_id(
+            organization_id
+        )
 
         response = await rag_service.answer(
             db=db,
+            organization_id=organization_id,
             question=case["question"],
         )
 
@@ -150,7 +166,9 @@ class RAGEvaluationService:
     @staticmethod
     async def evaluate(
         db: AsyncSession,
+        *,
         cases: list[dict],
+        organization_id: int,
     ) -> dict:
 
         results: list[dict] = []
@@ -159,6 +177,7 @@ class RAGEvaluationService:
             result = await RAGEvaluationService.evaluate_case(
                 db=db,
                 case=case,
+                organization_id=organization_id,
             )
 
             results.append(result)

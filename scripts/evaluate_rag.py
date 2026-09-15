@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -12,7 +13,10 @@ from app.services.rag_evaluation_service import (
 EVAL_FILE = Path("evals/rag_cases.json")
 
 
-async def main():
+async def main(
+    *,
+    organization_id: int,
+):
 
     cases = json.loads(EVAL_FILE.read_text(encoding="utf-8"))
 
@@ -20,6 +24,7 @@ async def main():
         report = await RAGEvaluationService.evaluate(
             db=db,
             cases=cases,
+            organization_id=organization_id,
         )
 
     summary = report["summary"]
@@ -101,4 +106,16 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(
+        description="Evaluate the RAG pipeline against one organization's "
+        "knowledge base."
+    )
+    parser.add_argument(
+        "--organization-id",
+        type=int,
+        required=True,
+        help="Organization id whose knowledge base should be evaluated. "
+        "RAG evaluation never reads global/unowned knowledge.",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(organization_id=args.organization_id))

@@ -116,6 +116,7 @@ class AgentWorkflowService:
         return {
             "ticket": {
                 "id": ticket.id,
+                "organization_id": ticket.organization_id,
                 "subject": ticket.subject,
                 "description": (ticket.description or ""),
                 "status": ticket.status,
@@ -307,11 +308,20 @@ class AgentWorkflowService:
 
         query = f"{ticket['subject']}\n\n{ticket['description']}"
 
-        matches = await KnowledgeSearchService.search(
-            db=db,
-            query=query,
-            limit=settings.rag_top_k,
-        )
+        organization_id = ticket.get("organization_id")
+
+        # Fail closed: a ticket without an organization has no trusted tenant
+        # knowledge base. We never fall back to a global search, so a legacy
+        # NULL-org ticket receives no knowledge grounding at all.
+        matches: list[dict] = []
+
+        if organization_id is not None:
+            matches = await KnowledgeSearchService.search(
+                db=db,
+                organization_id=organization_id,
+                query=query,
+                limit=settings.rag_top_k,
+            )
 
         path = state.get(
             "workflow_path",
