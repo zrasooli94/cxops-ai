@@ -47,9 +47,7 @@ async def resolve_tenant_context(
     """
     subject = principal.subject
 
-    memberships = await OrganizationMembershipRepository.list_for_subject(
-        db, subject
-    )
+    memberships = await OrganizationMembershipRepository.list_for_subject(db, subject)
 
     if not memberships:
         log.warning(
@@ -79,8 +77,10 @@ async def resolve_tenant_context(
             subject=subject,
         )
 
-    membership = await OrganizationMembershipRepository.get_for_subject_and_organization(
-        db, subject, requested_organization_id
+    membership = (
+        await OrganizationMembershipRepository.get_for_subject_and_organization(
+            db, subject, requested_organization_id
+        )
     )
     if membership is None:
         log.warning(

@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentPrincipal, CurrentTenant
@@ -37,11 +38,19 @@ async def create_ticket(
 ):
     # organization_id comes from CurrentTenant, never from client payload
     try:
-        return await TicketService.create_ticket_for_tenant(db, data, tenant.organization_id)
+        return await TicketService.create_ticket_for_tenant(
+            db, data, tenant.organization_id
+        )
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Customer not found in this organization",
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ticket resource conflict.",
         )
 
 

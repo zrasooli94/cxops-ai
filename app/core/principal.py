@@ -8,6 +8,7 @@ class AuthenticatedPrincipal:
     This is the application's internal identity abstraction.
     Business services should depend on this rather than raw JWT claims.
     """
+
     subject: str  # stable user identifier (sub claim)
     email: str | None = None
     issuer: str | None = None

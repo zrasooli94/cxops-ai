@@ -69,11 +69,13 @@ class AgentExecutionService:
         *,
         zendesk_ticket_id: int,
         run_id: str,
+        organization_id: int,
     ) -> bool:
 
         response = await self.zendesk.get_ticket_comments(
             db,
             zendesk_ticket_id,
+            organization_id=organization_id,
         )
 
         comments = response.get(
@@ -104,6 +106,7 @@ class AgentExecutionService:
         ticket: Ticket,
         zendesk_ticket_id: int,
         tool_call: dict,
+        organization_id: int,
     ) -> None:
 
         tool_name = tool_call.get("tool")
@@ -127,11 +130,13 @@ class AgentExecutionService:
                 group_id = await self.zendesk.find_group_id(
                     db,
                     str(team),
+                    organization_id=organization_id,
                 )
 
             await self.zendesk.apply_agent_action(
                 db,
                 zendesk_ticket_id,
+                organization_id=organization_id,
                 priority=priority,
                 group_id=group_id,
             )
@@ -177,6 +182,7 @@ class AgentExecutionService:
             await self.zendesk.apply_agent_action(
                 db,
                 zendesk_ticket_id,
+                organization_id=organization_id,
                 comment=body,
                 public=False,
             )
@@ -214,6 +220,7 @@ class AgentExecutionService:
             await self.zendesk.apply_agent_action(
                 db,
                 zendesk_ticket_id,
+                organization_id=organization_id,
                 comment=reply,
                 public=True,
             )
@@ -386,6 +393,22 @@ class AgentExecutionService:
             )
             raise AgentExecutionError("Agent run contains no executable tool plan.")
 
+        # External writes are scoped to the ticket's owning organization. The
+        # ticket is the authoritative tenant source for agent executions;
+        # unowned tickets can never reach a Zendesk credential.
+        organization_id = ticket.organization_id
+
+        if organization_id is None:
+            await AgentRunRepository.mark_execution_failed(
+                db,
+                run,
+                ("Local ticket is not owned by an organization."),
+            )
+            record_agent_execution_failure(
+                action=str(run.action),
+            )
+            raise AgentExecutionError("Local ticket is not owned by an organization.")
+
         try:
             # -------------------------------------
             # Idempotency / crash recovery
@@ -395,6 +418,7 @@ class AgentExecutionService:
                 db,
                 zendesk_ticket_id=(zendesk_ticket_id),
                 run_id=run_id,
+                organization_id=organization_id,
             )
 
             if already_written:
@@ -444,15 +468,17 @@ class AgentExecutionService:
                     ticket=ticket,
                     zendesk_ticket_id=(zendesk_ticket_id),
                     tool_call=tool_call,
+                    organization_id=organization_id,
                 )
 
             # -------------------------------------
             # Synchronize external state
             # -------------------------------------
 
-            await ZendeskSyncService.sync_ticket_unscoped_internal(
+            await ZendeskSyncService.sync_ticket_for_tenant(
                 db,
                 zendesk_ticket_id,
+                organization_id=organization_id,
             )
 
             # -------------------------------------

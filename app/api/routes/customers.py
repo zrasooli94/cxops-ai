@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentPrincipal, CurrentTenant
@@ -31,7 +32,14 @@ async def create_customer(
     tenant: CurrentTenant,
 ):
     # organization_id comes from CurrentTenant, never from client payload
-    return await CustomerService.create_for_tenant(db, data, tenant.organization_id)
+    try:
+        return await CustomerService.create_for_tenant(db, data, tenant.organization_id)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Customer resource conflict.",
+        )
 
 
 @router.get(

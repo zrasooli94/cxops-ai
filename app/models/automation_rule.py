@@ -1,6 +1,14 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,6 +18,19 @@ from app.models.base import Base
 class AutomationRule(Base):
     __tablename__ = "automation_rules"
 
+    __table_args__ = (
+        Index(
+            "ux_automation_rules_organization_id_name",
+            "organization_id",
+            "name",
+            unique=True,
+        ),
+        Index(
+            "ix_automation_rules_organization_id",
+            "organization_id",
+        ),
+    )
+
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
@@ -18,7 +39,6 @@ class AutomationRule(Base):
     name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
-        unique=True,
     )
 
     event_type: Mapped[str] = mapped_column(

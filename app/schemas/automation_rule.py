@@ -38,7 +38,9 @@ class AutomationRuleUpdate(BaseModel):
     conditions: dict | None = None
     actions: dict | None = None
 
-    @field_validator("name", "event_type", "priority", "enabled", "conditions", "actions")
+    @field_validator(
+        "name", "event_type", "priority", "enabled", "conditions", "actions"
+    )
     @classmethod
     def _not_null(cls, value: object) -> object:
         if value is None:

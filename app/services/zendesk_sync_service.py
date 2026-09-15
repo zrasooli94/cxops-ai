@@ -21,18 +21,29 @@ class ZendeskSyncConflictError(RuntimeError):
 
 
 class ZendeskSyncService:
-    # Tenant-facing path (use this in human/JWT-authenticated routes)
-
     @staticmethod
     async def sync_ticket_for_tenant(
         db: AsyncSession,
         zendesk_ticket_id: int,
         organization_id: int,
     ) -> Ticket:
+        """Sync a Zendesk ticket into CXOps rows owned by ``organization_id``.
+
+        This is the ONLY Zendesk ingestion path. The credential resolution and
+        every CXOps read/write are scoped to ``organization_id``:
+        - customer lookup/creation is tenant-scoped (org + email)
+        - ticket lookup by external_id is tenant-scoped (org + external_id)
+        - the ticket row is always created with ``organization_id``
+
+        There is intentionally NO unscoped/global sync variant: "internal" webhook
+        ingestion resolves its organization from the trusted connection before
+        calling this method.
+        """
 
         response = await zendesk_client.get_ticket(
             db=db,
             ticket_id=zendesk_ticket_id,
+            organization_id=organization_id,
         )
 
         zendesk_ticket = response["ticket"]
@@ -47,6 +58,7 @@ class ZendeskSyncService:
             user_response = await zendesk_client.get_user(
                 db=db,
                 user_id=requester_id,
+                organization_id=organization_id,
             )
 
             zendesk_user = user_response["user"]
@@ -151,113 +163,3 @@ class ZendeskSyncService:
             raise ZendeskSyncConflictError(
                 "Zendesk ticket is already linked to an existing record"
             ) from None
-
-    # Internal/global path (temporary machine/webhook integration behavior).
-    #
-    # PENDING PHASE 1C.3: trusted integration -> organization ownership mapping.
-    # Until then, webhook ingestion still resolves customers/tickets globally,
-    # which is required for cross-tenant webhook matching. This method MUST NOT
-    # be called from tenant-facing (human/JWT) routes.
-
-    @staticmethod
-    async def sync_ticket_unscoped_internal(
-        db: AsyncSession,
-        zendesk_ticket_id: int,
-    ) -> Ticket:
-
-        response = await zendesk_client.get_ticket(
-            db=db,
-            ticket_id=zendesk_ticket_id,
-        )
-
-        zendesk_ticket = response["ticket"]
-
-        requester_email = None
-        requester_name = None
-        customer_id = None
-
-        requester_id = zendesk_ticket.get("requester_id")
-
-        if requester_id:
-            user_response = await zendesk_client.get_user(
-                db=db,
-                user_id=requester_id,
-            )
-
-            zendesk_user = user_response["user"]
-
-            requester_email = zendesk_user.get("email")
-
-            requester_name = (
-                zendesk_user.get("name") or requester_email or "Zendesk Customer"
-            )
-
-            if requester_email:
-                customer = await CustomerRepository.get_by_email_unscoped(
-                    db=db,
-                    email=requester_email,
-                )
-
-                if customer is None:
-                    customer = Customer(
-                        external_id=str(requester_id),
-                        name=requester_name,
-                        email=requester_email,
-                    )
-
-                    customer = await CustomerRepository.create(
-                        db=db,
-                        customer=customer,
-                    )
-
-                customer_id = customer.id
-
-        external_id = str(zendesk_ticket["id"])
-
-        existing = await TicketRepository.get_by_external_id_unscoped(
-            db=db,
-            external_id=external_id,
-        )
-
-        description = (
-            zendesk_ticket.get("description")
-            or zendesk_ticket.get("subject")
-            or "No description"
-        )
-
-        priority = zendesk_ticket.get("priority") or "normal"
-
-        status = zendesk_ticket.get("status") or "new"
-
-        if existing:
-            changes = {
-                "subject": zendesk_ticket["subject"],
-                "description": description,
-                "status": status,
-                "priority": priority,
-                "requester_email": requester_email,
-                "customer_id": customer_id,
-                "source": "zendesk",
-            }
-
-            return await TicketRepository.update_unscoped(
-                db=db,
-                ticket=existing,
-                changes=changes,
-            )
-
-        ticket = Ticket(
-            external_id=external_id,
-            subject=zendesk_ticket["subject"],
-            description=description,
-            status=status,
-            priority=priority,
-            requester_email=requester_email,
-            customer_id=customer_id,
-            source="zendesk",
-        )
-
-        return await TicketRepository.create(
-            db=db,
-            ticket=ticket,
-        )

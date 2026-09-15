@@ -11,6 +11,7 @@ from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
+from app.models.zendesk_oauth_state import ZendeskOAuthState
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "OrganizationMembership",
     "Ticket",
     "TicketEvent",
+    "ZendeskOAuthState",
     "ZendeskOAuthToken",
 ]

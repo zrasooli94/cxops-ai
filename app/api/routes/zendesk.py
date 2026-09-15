@@ -20,6 +20,7 @@ from app.schemas.zendesk import (
     ZendeskTicketUpdate,
 )
 from app.services.zendesk_oauth_service import (
+    ZendeskNotConfiguredError,
     ZendeskReauthorizationRequired,
 )
 from app.services.zendesk_sync_service import (
@@ -42,6 +43,20 @@ DatabaseSession = Annotated[
 def handle_zendesk_error(
     exc: Exception,
 ) -> HTTPException:
+    """Map Zendesk errors to controlled HTTP responses.
+
+    ``ZendeskNotConfiguredError`` intentionally does not reveal whether *other*
+    organizations have a connection; it only reports this organization's own
+    integration status.
+    """
+    if isinstance(
+        exc,
+        ZendeskNotConfiguredError,
+    ):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Zendesk integration is not configured.",
+        )
 
     if isinstance(
         exc,
@@ -50,14 +65,14 @@ def handle_zendesk_error(
         return HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
-                "message": str(exc),
-                "reauthorize": ("/auth/zendesk/login"),
+                "message": "Zendesk integration reauthorization required.",
+                "reauthorize": "/auth/zendesk/login",
             },
         )
 
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
-        detail=str(exc),
+        detail="Zendesk request failed.",
     )
 
 
@@ -65,12 +80,17 @@ def handle_zendesk_error(
 async def get_zendesk_current_user(
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     try:
-        return await zendesk_client.get_current_user(db)
+        return await zendesk_client.get_current_user(
+            db=db,
+            organization_id=tenant.organization_id,
+        )
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
@@ -81,15 +101,18 @@ async def get_zendesk_ticket(
     ticket_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     try:
         return await zendesk_client.get_ticket(
             db=db,
             ticket_id=ticket_id,
+            organization_id=tenant.organization_id,
         )
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
@@ -100,10 +123,12 @@ async def create_zendesk_ticket(
     data: ZendeskTicketCreate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     try:
         return await zendesk_client.create_ticket(
             db=db,
+            organization_id=tenant.organization_id,
             subject=data.subject,
             comment=data.comment,
             requester_name=data.requester_name,
@@ -115,6 +140,7 @@ async def create_zendesk_ticket(
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
@@ -126,6 +152,7 @@ async def update_zendesk_ticket(
     data: ZendeskTicketUpdate,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     changes = data.model_dump(
         exclude_none=True,
@@ -141,10 +168,12 @@ async def update_zendesk_ticket(
             db=db,
             ticket_id=ticket_id,
             changes=changes,
+            organization_id=tenant.organization_id,
         )
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
@@ -155,15 +184,18 @@ async def get_zendesk_user(
     user_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     try:
         return await zendesk_client.get_user(
             db=db,
             user_id=user_id,
+            organization_id=tenant.organization_id,
         )
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
@@ -189,11 +221,12 @@ async def sync_zendesk_ticket(
     except ZendeskSyncConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Zendesk ticket is already linked to an existing record",
+            detail="Zendesk ticket is already linked to an existing record.",
         )
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)
@@ -204,15 +237,18 @@ async def get_zendesk_ticket_comments(
     ticket_id: int,
     db: DatabaseSession,
     principal: CurrentPrincipal,
+    tenant: CurrentTenant,
 ):
     try:
         return await zendesk_client.get_ticket_comments(
             db=db,
             ticket_id=ticket_id,
+            organization_id=tenant.organization_id,
         )
 
     except (
         ZendeskAPIError,
+        ZendeskNotConfiguredError,
         ZendeskReauthorizationRequired,
     ) as exc:
         raise handle_zendesk_error(exc)

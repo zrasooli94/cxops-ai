@@ -74,11 +74,3 @@ class CustomerRepository:
     ) -> list[Customer]:
         result = await db.execute(select(Customer).order_by(Customer.created_at.desc()))
         return list(result.scalars().all())
-
-    @staticmethod
-    async def get_by_email_unscoped(
-        db: AsyncSession,
-        email: str,
-    ) -> Customer | None:
-        result = await db.execute(select(Customer).where(Customer.email == email))
-        return result.scalar_one_or_none()

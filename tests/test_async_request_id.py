@@ -29,7 +29,9 @@ class TestAsyncRequestIdPropagation:
                     "app.services.integration_job_service.IntegrationJobRepository.create"
                 ) as mock_create,
                 patch.object(
-                    IntegrationJobService, "_assert_agent_execution_target", new=AsyncMock()
+                    IntegrationJobService,
+                    "_assert_agent_execution_target",
+                    new=AsyncMock(),
                 ),
             ):
                 mock_job = MagicMock()
@@ -46,8 +48,14 @@ class TestAsyncRequestIdPropagation:
                 mock_create.assert_called_once()
                 call_args = mock_create.call_args
                 # create(db, job) -> args[1] is the job
-                created_job = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("job")
-                assert created_job is not None, f"Could not extract job from call_args: {call_args}"
+                created_job = (
+                    call_args[0][1]
+                    if len(call_args[0]) > 1
+                    else call_args[1].get("job")
+                )
+                assert created_job is not None, (
+                    f"Could not extract job from call_args: {call_args}"
+                )
                 assert created_job.payload["request_id"] == test_request_id
                 assert created_job.payload["run_id"] == "run-abc"
         finally:
@@ -71,7 +79,9 @@ class TestAsyncRequestIdPropagation:
                     "app.services.integration_job_service.IntegrationJobRepository.create"
                 ) as mock_create,
                 patch.object(
-                    IntegrationJobService, "_assert_agent_execution_target", new=AsyncMock()
+                    IntegrationJobService,
+                    "_assert_agent_execution_target",
+                    new=AsyncMock(),
                 ),
             ):
                 mock_job = MagicMock()
@@ -86,8 +96,14 @@ class TestAsyncRequestIdPropagation:
 
                 mock_create.assert_called_once()
                 call_args = mock_create.call_args
-                created_job = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("job")
-                assert created_job is not None, f"Could not extract job from call_args: {call_args}"
+                created_job = (
+                    call_args[0][1]
+                    if len(call_args[0]) > 1
+                    else call_args[1].get("job")
+                )
+                assert created_job is not None, (
+                    f"Could not extract job from call_args: {call_args}"
+                )
                 # When no request context, get_request_id() returns None
                 assert created_job.payload["request_id"] is None
                 assert created_job.payload["run_id"] == "run-xyz"
@@ -125,7 +141,10 @@ class TestRequestIdValidation:
 
     def test_valid_uuid(self):
         """Valid UUID should be accepted."""
-        assert sanitize_request_id("550e8400-e29b-41d4-a716-446655440000") == "550e8400-e29b-41d4-a716-446655440000"
+        assert (
+            sanitize_request_id("550e8400-e29b-41d4-a716-446655440000")
+            == "550e8400-e29b-41d4-a716-446655440000"
+        )
         assert sanitize_request_id("abcdef123456") == "abcdef123456"  # short UUID-like
 
     def test_safe_hyphenated_id(self):

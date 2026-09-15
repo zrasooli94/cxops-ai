@@ -39,4 +39,6 @@ class CustomerService:
         customer_id: int,
         organization_id: int,
     ) -> Customer | None:
-        return await CustomerRepository.get_by_id_for_tenant(db, customer_id, organization_id)
+        return await CustomerRepository.get_by_id_for_tenant(
+            db, customer_id, organization_id
+        )

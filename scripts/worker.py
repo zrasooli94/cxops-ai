@@ -52,7 +52,9 @@ async def run_worker() -> None:
             request_id = job.payload.get("request_id") if job.payload else None
             bind_context(job_id=str(job_id), action=job_type, request_id=request_id)
 
-            log.info("processing_job", job_id=job_id, job_type=job_type, attempt=attempt)
+            log.info(
+                "processing_job", job_id=job_id, job_type=job_type, attempt=attempt
+            )
 
             try:
                 await IntegrationJobService.execute(
@@ -86,18 +88,35 @@ async def run_worker() -> None:
                             job_type=job_type,
                         )
                         bind_context(outcome="retry")
-                        log.warning("job_scheduled_retry", job_id=job_id, job_type=job_type, error=str(exc))
+                        log.warning(
+                            "job_scheduled_retry",
+                            job_id=job_id,
+                            job_type=job_type,
+                            error=str(exc),
+                        )
 
                     elif updated_job.status == "failed":
                         record_integration_job_failure(
                             job_type=job_type,
                         )
-                        bind_context(outcome="failed", error_category=type(exc).__name__)
-                        log.error("job_failed", job_id=job_id, job_type=job_type, error=str(exc))
+                        bind_context(
+                            outcome="failed", error_category=type(exc).__name__
+                        )
+                        log.error(
+                            "job_failed",
+                            job_id=job_id,
+                            job_type=job_type,
+                            error=str(exc),
+                        )
 
                 else:
                     bind_context(outcome="failed", error_category=type(exc).__name__)
-                    log.error("job_failed_no_update", job_id=job_id, job_type=job_type, error=str(exc))
+                    log.error(
+                        "job_failed_no_update",
+                        job_id=job_id,
+                        job_type=job_type,
+                        error=str(exc),
+                    )
 
             finally:
                 unbind_context()

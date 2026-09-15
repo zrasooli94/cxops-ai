@@ -16,9 +16,7 @@ def test_health_endpoint():
 
 
 def test_openapi_available():
-    response = client.get(
-        "/openapi.json"
-    )
+    response = client.get("/openapi.json")
 
     assert response.status_code == 200
 
@@ -29,13 +27,8 @@ def test_openapi_available():
 
 
 def test_metrics_endpoint_available():
-    response = client.get(
-        "/metrics"
-    )
+    response = client.get("/metrics")
 
     assert response.status_code == 200
 
-    assert (
-        "cxops_agent_decisions_total"
-        in response.text
-    )
+    assert "cxops_agent_decisions_total" in response.text

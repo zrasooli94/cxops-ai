@@ -81,14 +81,11 @@ def _int_b64(i: int) -> str:
 
 def _generate_keypair() -> tuple[RSAPrivateKey, str, rsa.RSAPublicKey]:
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = (
-        private.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        .decode()
-    )
+    pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
     return private, pem, private.public_key()
 
 
@@ -165,7 +162,11 @@ def _rs256_token(
     kid: str = KID_A,
     **payload_overrides,
 ) -> str:
-    return _sign_rsa(key_pem, {"alg": "RS256", "typ": "JWT", "kid": kid}, _payload(**payload_overrides))
+    return _sign_rsa(
+        key_pem,
+        {"alg": "RS256", "typ": "JWT", "kid": kid},
+        _payload(**payload_overrides),
+    )
 
 
 def _tampered(token: str) -> str:
@@ -192,9 +193,7 @@ async def _probe_request(token: str) -> httpx.Response:
     async with AsyncClient(
         transport=ASGITransport(app=probe_app), base_url="http://testserver"
     ) as client:
-        return await client.get(
-            "/probe", headers={"Authorization": f"Bearer {token}"}
-        )
+        return await client.get("/probe", headers={"Authorization": f"Bearer {token}"})
 
 
 def _mock_jwks(doc: dict) -> respx.Route:
@@ -319,19 +318,25 @@ class TestJWKSAlgorithmConfusion:
 
     @pytest.mark.asyncio
     async def test_hs256_rejected_in_jwks_mode(self):
-        token = _sign_symmetric(TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256")
+        token = _sign_symmetric(
+            TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256"
+        )
         with pytest.raises(JWKSAlgorithmError):
             await verify_jwks_token(token)
 
     @pytest.mark.asyncio
     async def test_hs512_rejected_in_jwks_mode(self):
-        token = _sign_symmetric(TEST_SECRET, {"alg": "HS512", "kid": KID_A}, _payload(), "HS512")
+        token = _sign_symmetric(
+            TEST_SECRET, {"alg": "HS512", "kid": KID_A}, _payload(), "HS512"
+        )
         with pytest.raises(JWKSAlgorithmError):
             await verify_jwks_token(token)
 
     @pytest.mark.asyncio
     async def test_none_algorithm_rejected(self):
-        token = _sign_rsa(_PEM_A, {"alg": "none", "typ": "JWT", "kid": KID_A}, _payload())
+        token = _sign_rsa(
+            _PEM_A, {"alg": "none", "typ": "JWT", "kid": KID_A}, _payload()
+        )
         with pytest.raises(JWKSAlgorithmError):
             await verify_jwks_token(token)
 
@@ -352,7 +357,9 @@ class TestJWKSAlgorithmConfusion:
 
     @pytest.mark.asyncio
     async def test_allowlist_rejects_rs384(self):
-        token = _sign_rsa(_PEM_A, {"alg": "RS384", "kid": KID_A}, _payload(), alg="RS384")
+        token = _sign_rsa(
+            _PEM_A, {"alg": "RS384", "kid": KID_A}, _payload(), alg="RS384"
+        )
         with pytest.raises(JWKSAlgorithmError):
             await verify_jwks_token(token)
 
@@ -362,14 +369,18 @@ class TestJWKSAlgorithmConfusion:
         with respx.mock:
             _mock_jwks(_jwks_doc(_public_jwk(_PUB_A, KID_A)))
             payload = await verify_jwks_token(
-                _sign_rsa(_PEM_A, {"alg": "RS384", "kid": KID_A}, _payload(), alg="RS384")
+                _sign_rsa(
+                    _PEM_A, {"alg": "RS384", "kid": KID_A}, _payload(), alg="RS384"
+                )
             )
         assert payload["sub"] == "user-123"
 
     @pytest.mark.asyncio
     async def test_allowlist_cannot_re_enable_hs256_in_jwks(self, monkeypatch):
         _configure(monkeypatch, AUTH_JWKS_ALGORITHMS="RS256,HS256")
-        token = _sign_symmetric(TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256")
+        token = _sign_symmetric(
+            TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256"
+        )
         with pytest.raises(JWKSAlgorithmError):
             await verify_jwks_token(token)
 
@@ -407,7 +418,10 @@ class TestJWKSKidAndKeys:
         route = respx.get(JWKS_URL)
         route.side_effect = [
             httpx.Response(200, json=_jwks_doc(_public_jwk(_PUB_A, KID_A))),
-            httpx.Response(200, json=_jwks_doc(_public_jwk(_PUB_A, KID_A), _public_jwk(_PUB_B, KID_B))),
+            httpx.Response(
+                200,
+                json=_jwks_doc(_public_jwk(_PUB_A, KID_A), _public_jwk(_PUB_B, KID_B)),
+            ),
         ]
         async with respx.mock:
             response = await _probe_request(_rs256_token(key_pem=_PEM_B, kid=KID_B))
@@ -419,7 +433,11 @@ class TestJWKSKidAndKeys:
     async def test_malformed_jwks_json_raises_parse_error(self):
         with respx.mock:
             respx.get(JWKS_URL).mock(
-                return_value=httpx.Response(200, content=b"not-json{", headers={"content-type": "application/json"})
+                return_value=httpx.Response(
+                    200,
+                    content=b"not-json{",
+                    headers={"content-type": "application/json"},
+                )
             )
             with pytest.raises(JWKSParseError):
                 await verify_jwks_token(_rs256_token())
@@ -428,7 +446,11 @@ class TestJWKSKidAndKeys:
     async def test_malformed_jwks_json_fails_closed_503(self):
         with respx.mock:
             respx.get(JWKS_URL).mock(
-                return_value=httpx.Response(200, content=b"not-json{", headers={"content-type": "application/json"})
+                return_value=httpx.Response(
+                    200,
+                    content=b"not-json{",
+                    headers={"content-type": "application/json"},
+                )
             )
             response = await _probe_request(_rs256_token())
         assert response.status_code == 503
@@ -463,7 +485,13 @@ class TestJWKSKidAndKeys:
 
     @pytest.mark.asyncio
     async def test_invalid_base64_jwk_is_skipped(self):
-        malformed = {"kty": "RSA", "kid": KID_B, "use": "sig", "n": "not!!base64!!", "e": "AQAB"}
+        malformed = {
+            "kty": "RSA",
+            "kid": KID_B,
+            "use": "sig",
+            "n": "not!!base64!!",
+            "e": "AQAB",
+        }
         with respx.mock:
             route = _mock_jwks(_jwks_doc(_public_jwk(_PUB_A, KID_A), malformed))
             bad = await _probe_request(_rs256_token(key_pem=_PEM_B, kid=KID_B))
@@ -583,7 +611,11 @@ class TestKeyRotation:
             key, _cached_at = _get_cache()[KID_A]
             _get_cache()[KID_A] = (key, time.time() - _cache_ttl() - 1)
 
-            route.mock(return_value=httpx.Response(200, json=_jwks_doc(_public_jwk(_PUB_B, KID_B))))
+            route.mock(
+                return_value=httpx.Response(
+                    200, json=_jwks_doc(_public_jwk(_PUB_B, KID_B))
+                )
+            )
             revoked = await _probe_request(_rs256_token())
             assert revoked.status_code == 401
             assert route.call_count == 3  # refresh + forced refresh both lack kid-a
@@ -619,7 +651,9 @@ class TestProviderOutage:
     @pytest.mark.asyncio
     async def test_connection_error_fails_closed_503(self):
         with respx.mock:
-            respx.get(JWKS_URL).mock(side_effect=httpx.ConnectError("connection refused"))
+            respx.get(JWKS_URL).mock(
+                side_effect=httpx.ConnectError("connection refused")
+            )
             response = await _probe_request(_rs256_token())
         assert response.status_code == 503
 
@@ -658,13 +692,19 @@ class TestHTTPErrorSemantics:
             if case == "wrong_key":
                 token = _rs256_token(key_pem=_PEM_B)
             elif case == "expired":
-                token = _rs256_token(exp=int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()))
+                token = _rs256_token(
+                    exp=int(
+                        (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
+                    )
+                )
             elif case == "wrong_issuer":
                 token = _rs256_token(iss="evil-issuer")
             elif case == "wrong_audience":
                 token = _rs256_token(aud="evil-audience")
             elif case == "unsupported_algorithm":
-                token = _sign_symmetric(TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256")
+                token = _sign_symmetric(
+                    TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256"
+                )
             elif case == "unknown_kid":
                 token = _rs256_token(kid=KID_UNKNOWN)
             else:
@@ -698,13 +738,19 @@ class TestHTTPErrorSemantics:
             if case == "wrong_key":
                 token = _rs256_token(key_pem=_PEM_B)
             elif case == "expired":
-                token = _rs256_token(exp=int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()))
+                token = _rs256_token(
+                    exp=int(
+                        (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
+                    )
+                )
             elif case == "wrong_issuer":
                 token = _rs256_token(iss="evil-issuer")
             elif case == "wrong_audience":
                 token = _rs256_token(aud="evil-audience")
             elif case == "unsupported_algorithm":
-                token = _sign_symmetric(TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256")
+                token = _sign_symmetric(
+                    TEST_SECRET, {"alg": "HS256", "kid": KID_A}, _payload(), "HS256"
+                )
             elif case == "unknown_kid":
                 token = _rs256_token(kid=KID_UNKNOWN)
             else:

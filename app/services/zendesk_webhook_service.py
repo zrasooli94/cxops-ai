@@ -22,7 +22,15 @@ class ZendeskWebhookService:
         event_type: str,
         zendesk_ticket_id: int,
         payload: dict,
+        organization_id: int,
     ) -> WebhookReceipt:
+        """Process a trusted Zendesk event within ``organization_id``.
+
+        The organization is resolved from the verified integration at the
+        webhook boundary; processing here never guesses an organization. All
+        CXOps reads/writes go through tenant-aware sync, so a collision with
+        another organization's ticket id or customer email fails closed.
+        """
 
         event = await TicketEventRepository.get_by_event_key(
             db=db,
@@ -37,9 +45,10 @@ class ZendeskWebhookService:
                 status="already_processed",
             )
 
-        local_ticket = await ZendeskSyncService.sync_ticket_unscoped_internal(
+        local_ticket = await ZendeskSyncService.sync_ticket_for_tenant(
             db=db,
             zendesk_ticket_id=zendesk_ticket_id,
+            organization_id=organization_id,
         )
 
         if event is None:
@@ -64,9 +73,10 @@ class ZendeskWebhookService:
             event=event,
         )
 
-        refreshed_ticket = await TicketRepository.get_by_id_unscoped(
+        refreshed_ticket = await TicketRepository.get_by_id_for_tenant(
             db=db,
             ticket_id=local_ticket.id,
+            organization_id=organization_id,
         )
 
         if refreshed_ticket is None:
@@ -88,6 +98,7 @@ class ZendeskWebhookService:
         comments_response = await zendesk_client.get_ticket_comments(
             db=db,
             ticket_id=zendesk_ticket_id,
+            organization_id=organization_id,
         )
 
         already_written = any(
@@ -102,6 +113,7 @@ class ZendeskWebhookService:
             await zendesk_client.update_ticket(
                 db=db,
                 ticket_id=zendesk_ticket_id,
+                organization_id=organization_id,
                 changes={
                     "priority": local_ticket.priority,
                     "comment": {

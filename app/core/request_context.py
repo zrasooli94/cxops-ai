@@ -40,7 +40,6 @@ def get_request_id() -> str | None:
 
 
 class RequestCorrelationMiddleware:
-
     def __init__(self, app):
         self.app = app
 
@@ -62,8 +61,7 @@ class RequestCorrelationMiddleware:
         headers = Headers(scope=scope)
 
         request_id = (
-            sanitize_request_id(headers.get(REQUEST_ID_HEADER))
-            or uuid.uuid4().hex
+            sanitize_request_id(headers.get(REQUEST_ID_HEADER)) or uuid.uuid4().hex
         )
 
         token = request_id_var.set(request_id)
@@ -75,10 +73,9 @@ class RequestCorrelationMiddleware:
         header_value = request_id.encode("latin-1")
 
         async def send_with_request_id(message):
-            if (
-                message["type"] == "http.response.start"
-                and headers_list_has_no_request_id(message)
-            ):
+            if message[
+                "type"
+            ] == "http.response.start" and headers_list_has_no_request_id(message):
                 message["headers"] = [
                     *message["headers"],
                     (header_name, header_value),

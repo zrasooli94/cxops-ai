@@ -16,9 +16,7 @@ def test_internal_note_is_low_risk_and_auto_authorized():
         }
     ]
 
-    authorized = ToolAuthorizationService.authorize_plan(
-        plan
-    )
+    authorized = ToolAuthorizationService.authorize_plan(plan)
 
     tool = authorized[0]
 
@@ -26,12 +24,7 @@ def test_internal_note_is_low_risk_and_auto_authorized():
     assert tool["requires_approval"] is False
     assert tool["authorized"] is True
 
-    assert (
-        ToolAuthorizationService.can_auto_execute(
-            authorized
-        )
-        is True
-    )
+    assert ToolAuthorizationService.can_auto_execute(authorized) is True
 
 
 def test_send_reply_requires_human_approval():
@@ -44,9 +37,7 @@ def test_send_reply_requires_human_approval():
         }
     ]
 
-    authorized = ToolAuthorizationService.authorize_plan(
-        plan
-    )
+    authorized = ToolAuthorizationService.authorize_plan(plan)
 
     tool = authorized[0]
 
@@ -54,12 +45,7 @@ def test_send_reply_requires_human_approval():
     assert tool["requires_approval"] is True
     assert tool["authorized"] is False
 
-    assert (
-        ToolAuthorizationService.can_auto_execute(
-            authorized
-        )
-        is False
-    )
+    assert ToolAuthorizationService.can_auto_execute(authorized) is False
 
 
 def test_update_ticket_requires_human_approval():
@@ -72,9 +58,7 @@ def test_update_ticket_requires_human_approval():
         }
     ]
 
-    authorized = ToolAuthorizationService.authorize_plan(
-        plan
-    )
+    authorized = ToolAuthorizationService.authorize_plan(plan)
 
     tool = authorized[0]
 
@@ -91,16 +75,9 @@ def test_human_review_is_never_auto_executed():
         }
     ]
 
-    authorized = ToolAuthorizationService.authorize_plan(
-        plan
-    )
+    authorized = ToolAuthorizationService.authorize_plan(plan)
 
-    assert (
-        ToolAuthorizationService.can_auto_execute(
-            authorized
-        )
-        is False
-    )
+    assert ToolAuthorizationService.can_auto_execute(authorized) is False
 
 
 def test_unauthorized_high_risk_plan_cannot_execute():
@@ -113,13 +90,7 @@ def test_unauthorized_high_risk_plan_cannot_execute():
         }
     ]
 
-    authorized = ToolAuthorizationService.authorize_plan(
-        plan
-    )
+    authorized = ToolAuthorizationService.authorize_plan(plan)
 
-    with pytest.raises(
-        ToolAuthorizationError
-    ):
-        ToolAuthorizationService.assert_executable(
-            authorized
-        )
+    with pytest.raises(ToolAuthorizationError):
+        ToolAuthorizationService.assert_executable(authorized)

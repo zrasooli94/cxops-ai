@@ -1,4 +1,3 @@
-
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 
@@ -110,7 +109,9 @@ def _decode_and_validate_token(token: str) -> dict:
     return payload
 
 
-def create_principal_from_payload(payload: dict, auth_method: str = "jwt") -> AuthenticatedPrincipal:
+def create_principal_from_payload(
+    payload: dict, auth_method: str = "jwt"
+) -> AuthenticatedPrincipal:
     """Create AuthenticatedPrincipal from validated JWT payload."""
     subject = payload.get("sub")
     if not subject:
@@ -125,7 +126,9 @@ def create_principal_from_payload(payload: dict, auth_method: str = "jwt") -> Au
     )
 
 
-async def get_current_principal(authorization: str | None = None) -> AuthenticatedPrincipal:
+async def get_current_principal(
+    authorization: str | None = None,
+) -> AuthenticatedPrincipal:
     """FastAPI dependency: get current authenticated principal.
 
     Validates Authorization header Bearer token.

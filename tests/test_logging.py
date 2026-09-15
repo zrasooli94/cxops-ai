@@ -69,6 +69,7 @@ def test_bind_context_redacts_sensitive():
     # Test that sensitive values in context get redacted
     # The function only binds known params, but we can test the sanitizer directly
     from app.core.logging import _sanitize_value
+
     assert _sanitize_value("api_key", "secret") == "[REDACTED]"
     assert _sanitize_value("password", "pwd") == "[REDACTED]"
     assert _sanitize_value("oauth_token", "token") == "[REDACTED]"
@@ -77,6 +78,7 @@ def test_bind_context_redacts_sensitive():
 def test_sanitize_value_redacts_nested_dict():
     # Test recursive redaction of nested dictionaries
     from app.core.logging import _sanitize_value
+
     nested = {
         "config": {
             "api_key": "nested-secret",
@@ -93,6 +95,7 @@ def test_sanitize_value_redacts_nested_dict():
 def test_sanitize_value_redacts_nested_list():
     # Test recursive redaction of lists
     from app.core.logging import _sanitize_value
+
     nested_list = [
         {"api_key": "list-secret-1"},
         {"normal": "value"},
@@ -107,6 +110,7 @@ def test_sanitize_value_redacts_nested_list():
 def test_sanitize_value_preserves_non_sensitive_nested():
     # Test that non-sensitive nested structures are preserved
     from app.core.logging import _sanitize_value
+
     nested = {
         "metadata": {
             "user_id": 123,

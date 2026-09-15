@@ -100,6 +100,7 @@ class TicketService:
         # fetched through the tenant-scoped get_by_id_for_tenant above.
         if "customer_id" in changes and changes["customer_id"] is not None:
             from app.repositories.customer_repository import CustomerRepository
+
             customer = await CustomerRepository.get_by_id_for_tenant(
                 db, changes["customer_id"], organization_id
             )

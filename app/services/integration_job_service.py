@@ -74,6 +74,7 @@ class IntegrationJobService:
         event_type: str,
         zendesk_ticket_id: int,
         payload: dict,
+        organization_id: int,
     ) -> JobAccepted:
         existing = await IntegrationJobRepository.get_by_dedupe_key(
             db=db,
@@ -89,6 +90,7 @@ class IntegrationJobService:
             )
 
         job = IntegrationJob(
+            organization_id=organization_id,
             dedupe_key=invocation_id,
             job_type=(IntegrationJobService.ZENDESK_TICKET_EVENT),
             payload={
@@ -139,12 +141,18 @@ class IntegrationJobService:
         if job.job_type == IntegrationJobService.ZENDESK_TICKET_EVENT:
             payload = job.payload
 
+            if job.organization_id is None:
+                raise ValueError(
+                    "Zendesk webhook job is missing an organization binding"
+                )
+
             await ZendeskWebhookService.process(
                 db=db,
                 invocation_id=(payload["invocation_id"]),
                 event_type=(payload["event_type"]),
                 zendesk_ticket_id=(payload["zendesk_ticket_id"]),
                 payload=payload["payload"],
+                organization_id=job.organization_id,
             )
 
             return

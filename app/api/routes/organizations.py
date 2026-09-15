@@ -75,8 +75,10 @@ async def get_organization(
     tenant: CurrentTenant,
 ):
     # Validate membership before returning
-    membership = await OrganizationMembershipRepository.get_for_subject_and_organization(
-        db, principal.subject, organization_id
+    membership = (
+        await OrganizationMembershipRepository.get_for_subject_and_organization(
+            db, principal.subject, organization_id
+        )
     )
     if membership is None:
         raise HTTPException(

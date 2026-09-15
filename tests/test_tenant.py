@@ -133,9 +133,7 @@ async def org_scope(db):
                 OrganizationMembership.organization_id.in_(org_ids)
             )
         )
-        await db.execute(
-            delete(Organization).where(Organization.id.in_(org_ids))
-        )
+        await db.execute(delete(Organization).where(Organization.id.in_(org_ids)))
         await db.commit()
 
 

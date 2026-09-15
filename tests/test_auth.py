@@ -304,22 +304,25 @@ class TestAuthEndpoints:
         assert response.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_zendesk_oauth_login_public(self, client):
+    async def test_zendesk_oauth_login_requires_auth(self, client):
         async with client:
             response = await client.get("/auth/zendesk/login", follow_redirects=False)
-        assert response.status_code in (302, 307)
+        assert response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_zendesk_oauth_callback_public(self, client):
         async with client:
             response = await client.get("/auth/zendesk/callback?code=test&state=test")
+        # Reachable without a human JWT (the browser follows Zendesk's redirect),
+        # but the missing/forged state is rejected with a controlled 4xx.
         assert response.status_code != 401
+        assert response.status_code == 400
 
     @pytest.mark.asyncio
     async def test_zendesk_webhook_endpoint_uses_hmac(self, client):
         async with client:
             response = await client.post(
-                "/webhooks/zendesk/tickets",
+                "/webhooks/zendesk/tickets/unknown-integration-id",
                 json={"test": "data"},
                 headers={
                     "x-zendesk-webhook-signature": "invalid",
@@ -327,8 +330,9 @@ class TestAuthEndpoints:
                     "x-zendesk-webhook-invocation-id": "test-123",
                 },
             )
-        assert response.status_code == 401
-        assert "signature" in response.json()["detail"].lower()
+        # Unknown integration fails closed (404) before any signature check, so
+        # the endpoint never reveals whether an integration exists.
+        assert response.status_code == 404
 
     @pytest.mark.asyncio
     async def test_probe_requires_auth(self, probe):

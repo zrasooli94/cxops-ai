@@ -33,9 +33,7 @@ def _sanitize_value(key: str, value: Any) -> Any:
 
     # Recursively sanitize nested structures
     if isinstance(value, dict):
-        return {
-            k: _sanitize_value(k, v) for k, v in value.items()
-        }
+        return {k: _sanitize_value(k, v) for k, v in value.items()}
     elif isinstance(value, list):
         return [
             _sanitize_value(f"list_item[{i}]", item) for i, item in enumerate(value)

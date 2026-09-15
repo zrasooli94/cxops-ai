@@ -33,9 +33,7 @@ async def bootstrap(
             select(Organization).where(Organization.id == organization_id)
         )
         if organization.scalar_one_or_none() is None:
-            raise SystemExit(
-                f"error: organization {organization_id} does not exist"
-            )
+            raise SystemExit(f"error: organization {organization_id} does not exist")
 
         result = await db.execute(
             pg_insert(OrganizationMembership)
@@ -55,14 +53,15 @@ async def bootstrap(
                 f"subject={subject} organization_id={organization_id}"
             )
         return (
-            f"membership created: "
-            f"subject={subject} organization_id={organization_id}"
+            f"membership created: subject={subject} organization_id={organization_id}"
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap an organization membership")
-    parser.add_argument("--subject", required=True, help="Nhost JWT sub (external user id)")
+    parser.add_argument(
+        "--subject", required=True, help="Nhost JWT sub (external user id)"
+    )
     parser.add_argument(
         "--organization-id",
         required=True,

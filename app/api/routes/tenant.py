@@ -33,9 +33,7 @@ async def get_my_tenant(
     or any token/JWT claims. Requires an authenticated principal and an existing
     organization membership.
     """
-    organization = await OrganizationRepository.get_by_id(
-        db, tenant.organization_id
-    )
+    organization = await OrganizationRepository.get_by_id(db, tenant.organization_id)
 
     if organization is None:
         raise HTTPException(

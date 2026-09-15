@@ -83,7 +83,6 @@ class AgentObservabilityService:
 
         return int(result.scalar_one())
 
-
     @staticmethod
     async def tool_metrics(
         db: AsyncSession,

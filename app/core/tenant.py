@@ -11,6 +11,7 @@ class TenantContext:
     It contains only the resolved organization and the subject it was resolved
     for. Authorization roles are deliberately absent (Phase 1D).
     """
+
     organization_id: int
     subject: str
 

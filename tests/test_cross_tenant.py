@@ -80,16 +80,18 @@ def _build_token(*, sub: str, secret: str = TEST_SECRET) -> str:
 @pytest.fixture
 def make_client():
     """Factory fixture that returns a fresh AsyncClient for each call."""
+
     def _make():
-        return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+        return AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        )
+
     return _make
 
 
 @pytest.fixture
 def client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
-
-
 
 
 @pytest_asyncio.fixture
@@ -121,10 +123,12 @@ async def two_orgs(db):
     org_b_id = org_b.id
 
     # Grant alpha membership in Org A, beta in Org B
-    db.add_all([
-        OrganizationMembership(subject=USER_ALPHA, organization_id=org_a_id),
-        OrganizationMembership(subject=USER_BETA, organization_id=org_b_id),
-    ])
+    db.add_all(
+        [
+            OrganizationMembership(subject=USER_ALPHA, organization_id=org_a_id),
+            OrganizationMembership(subject=USER_BETA, organization_id=org_b_id),
+        ]
+    )
     await db.commit()
 
     try:
@@ -226,16 +230,10 @@ async def tenant_data(db, two_orgs):
     # Rollback first to reset any incomplete/aborted transaction from the test.
     await db.rollback()
     await db.execute(
-        delete(TicketEvent).where(
-            TicketEvent.event_key.in_([event_a_key, event_b_key])
-        )
+        delete(TicketEvent).where(TicketEvent.event_key.in_([event_a_key, event_b_key]))
     )
-    await db.execute(
-        delete(Ticket).where(Ticket.id.in_([ticket_a_id, ticket_b_id]))
-    )
-    await db.execute(
-        delete(Customer).where(Customer.id.in_([cust_a_id, cust_b_id]))
-    )
+    await db.execute(delete(Ticket).where(Ticket.id.in_([ticket_a_id, ticket_b_id])))
+    await db.execute(delete(Customer).where(Customer.id.in_([cust_a_id, cust_b_id])))
     await db.commit()
 
 
@@ -268,7 +266,9 @@ async def test_alpha_lists_only_org_a_customers(make_client, tenant_data):
 @pytest.mark.asyncio
 async def test_alpha_cannot_get_org_b_customer(make_client, tenant_data):
     async with make_client() as client:
-        r = await client.get(f"/customers/{tenant_data['cust_b'].id}", headers=_h_alpha())
+        r = await client.get(
+            f"/customers/{tenant_data['cust_b'].id}", headers=_h_alpha()
+        )
     # 404 (not 403) to avoid resource enumeration
     assert r.status_code == 404
 
@@ -335,7 +335,9 @@ async def test_alpha_lists_only_org_a_tickets(make_client, tenant_data):
 @pytest.mark.asyncio
 async def test_alpha_cannot_get_org_b_ticket(make_client, tenant_data):
     async with make_client() as client:
-        r = await client.get(f"/tickets/{tenant_data['ticket_b'].id}", headers=_h_alpha())
+        r = await client.get(
+            f"/tickets/{tenant_data['ticket_b'].id}", headers=_h_alpha()
+        )
     assert r.status_code == 404
 
 
@@ -519,7 +521,9 @@ async def test_multi_membership_without_selector_409(make_client, db, two_orgs):
     async with make_client() as client:
         for path in ["/customers", "/tickets", "/organizations", "/me/tenant"]:
             r = await client.get(path, headers=headers)
-            assert r.status_code == 409, f"{path} should 409 for multi-membership without selector"
+            assert r.status_code == 409, (
+                f"{path} should 409 for multi-membership without selector"
+            )
 
     # Clean up the extra membership so subsequent tests see clean state
     await db.execute(
@@ -603,7 +607,9 @@ async def test_customer_repo_internal_vs_tenant(db, two_orgs, tenant_data):
     assert cust.organization_id == org_b.id
 
     # Tenant-safe get_by_id_for_tenant does NOT find it for alpha
-    cust = await CustomerRepository.get_by_id_for_tenant(db, tenant_data["cust_b"].id, org_a.id)
+    cust = await CustomerRepository.get_by_id_for_tenant(
+        db, tenant_data["cust_b"].id, org_a.id
+    )
     assert cust is None
 
     # Tenant-safe list_for_tenant returns only alpha's
@@ -639,7 +645,9 @@ async def test_ticket_repo_internal_vs_tenant(db, two_orgs, tenant_data):
     assert ticket is not None
     assert ticket.organization_id == org_b.id
 
-    ticket = await TicketRepository.get_by_id_for_tenant(db, tenant_data["ticket_b"].id, org_a.id)
+    ticket = await TicketRepository.get_by_id_for_tenant(
+        db, tenant_data["ticket_b"].id, org_a.id
+    )
     assert ticket is None
 
 
@@ -753,7 +761,7 @@ def _fake_zendesk_ticket(
     requester_id=None,
     description="Synced from Zendesk",
 ):
-    async def _get_ticket(db, ticket_id):
+    async def _get_ticket(db, ticket_id, *, organization_id=None):
         return {
             "ticket": {
                 "id": ticket_id,
@@ -769,7 +777,7 @@ def _fake_zendesk_ticket(
 
 
 def _fake_zendesk_user(email, name="Zendesk Requester"):
-    async def _get_user(db, user_id):
+    async def _get_user(db, user_id, *, organization_id=None):
         return {"user": {"id": user_id, "email": email, "name": name}}
 
     return _get_user
@@ -780,9 +788,15 @@ def _zendesk_external_id() -> int:
 
 
 @pytest.mark.asyncio
-async def test_tenant_sync_cannot_update_foreign_ticket(
+async def test_tenant_sync_same_external_id_safe_across_orgs(
     monkeypatch, make_client, db, tenant_data
 ):
+    """Same Zendesk external ticket id is safe in Org A and Org B.
+
+    Phase 1C.3A removed the global-unique ticket external_id oracle. Org A
+    syncing an id that Org B already owns must create Org A's own row and
+    never read/update Org B's row.
+    """
     from app.integrations.zendesk.client import zendesk_client
     from app.repositories.ticket_repository import TicketRepository
 
@@ -806,29 +820,39 @@ async def test_tenant_sync_cannot_update_foreign_ticket(
         _fake_zendesk_ticket(requester_id=None),
     )
 
+    a_ticket_id = None
     try:
         async with make_client() as client:
-            r = await client.post(
-                f"/zendesk/tickets/{zid}/sync", headers=_h_alpha()
-            )
-        # Fail closed: never returns 200 and never reaches Org B's row.
-        assert r.status_code == 409
+            r = await client.post(f"/zendesk/tickets/{zid}/sync", headers=_h_alpha())
+        assert r.status_code == 200
+        body = r.json()
+        a_ticket_id = body["id"]
 
-        # Same external-id lookup through Org A tenant scope cannot cross.
-        assert (
-            await TicketRepository.get_by_external_id_for_tenant(
-                db, str(zid), tenant_data["org_a"].id
-            )
-        ) is None
+        # Org A created its own tenant-owned ticket for the same external id.
+        assert body["organization_id"] == tenant_data["org_a"].id
+        assert body["external_id"] == str(zid)
 
+        # Org B's row is untouched.
         unchanged = await TicketRepository.get_by_id_for_tenant(
             db, b_ticket_id, tenant_data["org_b"].id
         )
         assert unchanged is not None
         assert unchanged.subject == "Org B owned"
         assert unchanged.status == "new"
+
+        # Both rows coexist under the composite (org, external_id) unique.
+        a_in_db = await TicketRepository.get_by_external_id_for_tenant(
+            db, str(zid), tenant_data["org_a"].id
+        )
+        b_in_db = await TicketRepository.get_by_external_id_for_tenant(
+            db, str(zid), tenant_data["org_b"].id
+        )
+        assert a_in_db is not None and a_in_db.id != b_ticket_id
+        assert b_in_db is not None and b_in_db.id == b_ticket_id
     finally:
         await db.rollback()
+        if a_ticket_id is not None:
+            await db.execute(delete(Ticket).where(Ticket.id == a_ticket_id))
         await db.execute(delete(Ticket).where(Ticket.id == b_ticket_id))
         await db.commit()
 
@@ -848,9 +872,7 @@ async def test_tenant_sync_creates_tenant_owned_ticket(
     )
 
     async with make_client() as client:
-        r = await client.post(
-            f"/zendesk/tickets/{zid}/sync", headers=_h_alpha()
-        )
+        r = await client.post(f"/zendesk/tickets/{zid}/sync", headers=_h_alpha())
 
     created_id = None
     try:
@@ -874,11 +896,18 @@ async def test_tenant_sync_creates_tenant_owned_ticket(
 
 
 @pytest.mark.asyncio
-async def test_tenant_sync_cannot_reuse_foreign_customer(
+async def test_tenant_sync_same_customer_email_safe_across_orgs(
     monkeypatch, make_client, db, tenant_data
 ):
+    """Same customer email is safe in Org A and Org B.
+
+    Phase 1C.3A made customer email uniqueness tenant-composite. Org A syncing
+    a requester email Org B already owns must create Org A's own customer and
+    never reuse/modify Org B's row.
+    """
     from app.integrations.zendesk.client import zendesk_client
     from app.repositories.customer_repository import CustomerRepository
+    from app.repositories.ticket_repository import TicketRepository
 
     b_email = f"b-extra-{uuid.uuid4().hex[:8]}@example.com"
     b_extra = Customer(
@@ -894,26 +923,43 @@ async def test_tenant_sync_cannot_reuse_foreign_customer(
     monkeypatch.setattr(
         zendesk_client, "get_ticket", _fake_zendesk_ticket(requester_id=9_001)
     )
-    monkeypatch.setattr(
-        zendesk_client, "get_user", _fake_zendesk_user(b_email)
-    )
+    monkeypatch.setattr(zendesk_client, "get_user", _fake_zendesk_user(b_email))
 
+    a_customer_id = None
+    a_ticket_id = None
     try:
         async with make_client() as client:
-            r = await client.post(
-                f"/zendesk/tickets/{zid}/sync", headers=_h_alpha()
-            )
-        # Org A cannot attach Org B's customer; sync fails closed rather than
-        # reusing the foreign row.
-        assert r.status_code == 409
+            r = await client.post(f"/zendesk/tickets/{zid}/sync", headers=_h_alpha())
+        # Org A creates its own customer (same email) + tenant-owned ticket.
+        assert r.status_code == 200
+        body = r.json()
+        a_ticket_id = body["id"]
+        a_customer_id = body["customer_id"]
+        assert body["organization_id"] == tenant_data["org_a"].id
+
+        # Org A has its own row for the email; Org B's is untouched.
+        a_cust = await CustomerRepository.get_by_email_for_tenant(
+            db, b_email, tenant_data["org_a"].id
+        )
+        assert a_cust is not None
+        assert a_cust.id != b_extra_id
 
         still_b = await CustomerRepository.get_by_id_for_tenant(
             db, b_extra_id, tenant_data["org_b"].id
         )
         assert still_b is not None
         assert still_b.email == b_email
+
+        b_ticket = await TicketRepository.get_by_external_id_for_tenant(
+            db, str(zid), tenant_data["org_b"].id
+        )
+        assert b_ticket is None
     finally:
         await db.rollback()
+        if a_ticket_id is not None:
+            await db.execute(delete(Ticket).where(Ticket.id == a_ticket_id))
+        if a_customer_id is not None:
+            await db.execute(delete(Customer).where(Customer.id == a_customer_id))
         await db.execute(delete(Customer).where(Customer.id == b_extra_id))
         await db.commit()
 
@@ -1050,7 +1096,9 @@ async def test_automation_rule_tenant_isolation(make_client, db, tenant_data):
         assert all(x.id != beta_rule_id for x in alpha_rules)
     finally:
         await db.rollback()
-        await db.execute(delete(AutomationRule).where(AutomationRule.id == beta_rule_id))
+        await db.execute(
+            delete(AutomationRule).where(AutomationRule.id == beta_rule_id)
+        )
         await db.commit()
 
 

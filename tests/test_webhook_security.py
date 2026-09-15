@@ -165,7 +165,9 @@ class TestWebhookEndpoint:
     @pytest.mark.asyncio
     async def test_modified_payload_rejected(self, monkeypatch, client):
         _configure(monkeypatch)
-        original = json.dumps({"event_id": "evt-1", "event_type": "ticket.created"}).encode()
+        original = json.dumps(
+            {"event_id": "evt-1", "event_type": "ticket.created"}
+        ).encode()
         tampered = original.replace(b"evt-1", b"evt-9")
         signature = compute_signature(secret=TEST_SECRET, body=original)
 
@@ -230,7 +232,9 @@ class TestWebhookEndpoint:
         assert response.status_code == 503
 
     @pytest.mark.asyncio
-    async def test_valid_signed_webhook_accepted_without_human_jwt(self, monkeypatch, probe):
+    async def test_valid_signed_webhook_accepted_without_human_jwt(
+        self, monkeypatch, probe
+    ):
         _configure(monkeypatch)
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()

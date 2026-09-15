@@ -1,6 +1,14 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -9,6 +17,18 @@ from app.models.base import Base
 class Ticket(Base):
     __tablename__ = "tickets"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "external_id",
+            name="ux_tickets_organization_id_external_id",
+        ),
+        Index(
+            "ix_tickets_organization_id",
+            "organization_id",
+        ),
+    )
+
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
@@ -16,7 +36,6 @@ class Ticket(Base):
 
     external_id: Mapped[str | None] = mapped_column(
         String(100),
-        unique=True,
         nullable=True,
     )
 

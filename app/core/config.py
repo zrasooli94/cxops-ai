@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     zendesk_client_secret: str = ""
     zendesk_redirect_uri: str = "http://127.0.0.1:8000/auth/zendesk/callback"
     zendesk_oauth_scope: str = "read write"
+    zendesk_oauth_state_ttl_seconds: int = 600
+    zendesk_webhook_replay_window_seconds: int = 300
 
     openai_api_key: str = ""
 

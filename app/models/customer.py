@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     String,
     UniqueConstraint,
     func,
@@ -20,6 +21,15 @@ class Customer(Base):
             "organization_id",
             "external_id",
             name="ux_customers_organization_id_external_id",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "email",
+            name="ux_customers_organization_id_email",
+        ),
+        Index(
+            "ix_customers_organization_id",
+            "organization_id",
         ),
     )
 
@@ -40,7 +50,6 @@ class Customer(Base):
 
     email: Mapped[str] = mapped_column(
         String(255),
-        unique=True,
         nullable=False,
     )
 

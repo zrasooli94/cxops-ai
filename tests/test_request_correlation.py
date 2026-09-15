@@ -152,9 +152,7 @@ async def test_middleware_does_not_add_duplicate_header():
 
     await middleware(scope, receive, send)
 
-    xrid_count = sum(
-        1 for name, _ in captured_headers if name == b"x-request-id"
-    )
+    xrid_count = sum(1 for name, _ in captured_headers if name == b"x-request-id")
     assert xrid_count == 1
 
 
