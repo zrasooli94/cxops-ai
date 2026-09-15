@@ -241,6 +241,29 @@ async def two_orgs(db):
     await db.commit()
 
 
+@pytest.fixture(autouse=True)
+def _block_real_openai_embeddings(monkeypatch):
+    """Fail loudly if the real OpenAI embeddings client is ever invoked.
+
+    The documented guarantee of this file is zero OpenAI network calls. Any
+    access to ``embedding_service.embed_text``/``embed_documents`` from a
+    knowledge test without an installed fake raises immediately, so a forgotten
+    ``_fake_embeddings``/``_fake_embedding_returns`` produces a loud local
+    failure instead of a live API call (and a spurious CI 401 with a test key).
+    The fakes below override these raisers after this autouse fixture runs.
+    """
+
+    async def _raise(*_args):
+        raise RuntimeError(
+            "Real OpenAI embeddings client invoked from a knowledge test. "
+            "Request _fake_embeddings or _fake_embedding_returns so the suite "
+            "stays offline."
+        )
+
+    monkeypatch.setattr(embedding_service, "embed_text", _raise)
+    monkeypatch.setattr(embedding_service, "embed_documents", _raise)
+
+
 @pytest.fixture
 def _fake_embeddings(monkeypatch):
     """Deterministic offline embeddings for both embed calls."""
@@ -256,8 +279,16 @@ def _fake_embeddings(monkeypatch):
 
 
 @pytest.fixture
-def _fake_embedding_returns(monkeypatch):
-    """Override to a canned embedding for a query."""
+def _fake_embedding_returns(monkeypatch, _fake_embeddings):
+    """Override the QUERY embedding to a canned vector — fully offline.
+
+    Depends on ``_fake_embeddings`` so the DOCUMENT embedding path
+    (``embed_documents``) is deterministically stubbed too: a test that uses
+    this fixture to control a query embedding and then calls
+    ``two_orgs["ingest"]`` (which embeds documents) must never reach the real
+    OpenAI client. Tests that use this fixture are safe to ingest, search, and
+    answer offline.
+    """
 
     def _patch(vector: list[float]):
         async def _embed_text(_text: str) -> list[float]:
