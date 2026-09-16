@@ -3,6 +3,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.metrics import (
     record_agent_approval,
 )
+from app.core.rbac import (
+    AuthorizationContext,
+    Capability,
+    require_capability,
+)
 from app.models.agent_run import AgentRun
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
@@ -18,6 +23,16 @@ class InvalidAgentRunStateError(Exception):
 
 
 class AgentApprovalService:
+    """Human reviewer approval/rejection for agent runs.
+
+    ``approve`` and ``reject`` are human-only entrypoints. They are called
+    exclusively from ``app/api/routes/agent.py`` (``/agent/runs/{run_id}/approve``
+    and ``/agent/runs/{run_id}/reject``), which enforce
+    ``RequireCapability(Capability.AGENT_APPROVE)``. No internal automation or
+    machine workflow invokes these methods; the machine execution path uses
+    ``IntegrationJobService.enqueue_agent_execution`` directly.
+    """
+
     @staticmethod
     async def _get_pending_run(
         db: AsyncSession,
@@ -49,7 +64,10 @@ class AgentApprovalService:
         organization_id: int,
         note: str | None,
         actor: str = "human-reviewer",
+        authz: AuthorizationContext,
     ) -> AgentRun:
+
+        require_capability(authz, Capability.AGENT_APPROVE)
 
         run = await AgentApprovalService._get_pending_run(
             db,
@@ -136,7 +154,10 @@ class AgentApprovalService:
         organization_id: int,
         note: str | None,
         actor: str = "human-reviewer",
+        authz: AuthorizationContext,
     ) -> AgentRun:
+
+        require_capability(authz, Capability.AGENT_APPROVE)
 
         run = await AgentApprovalService._get_pending_run(
             db,

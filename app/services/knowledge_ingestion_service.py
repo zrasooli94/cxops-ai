@@ -4,6 +4,11 @@ import re
 import tiktoken
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rbac import (
+    AuthorizationContext,
+    Capability,
+    require_capability,
+)
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.repositories.knowledge_repository import (
@@ -100,6 +105,32 @@ class KnowledgeIngestionService:
         return chunks
 
     @staticmethod
+    async def ingest_for_user(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        title: str,
+        content: str,
+        source: str,
+        source_uri: str | None,
+        metadata: dict,
+        authz: AuthorizationContext,
+    ):
+        """Human HTTP entrypoint: verify the caller can manage knowledge."""
+
+        require_capability(authz, Capability.KNOWLEDGE_MANAGE)
+
+        return await KnowledgeIngestionService.ingest(
+            db=db,
+            organization_id=organization_id,
+            title=title,
+            content=content,
+            source=source,
+            source_uri=source_uri,
+            metadata=metadata,
+        )
+
+    @staticmethod
     async def ingest(
         db: AsyncSession,
         *,
@@ -110,6 +141,12 @@ class KnowledgeIngestionService:
         source_uri: str | None,
         metadata: dict,
     ):
+        """Tenant-safe ingestion primitive.
+
+        This method performs no human RBAC check; callers must either enforce
+        a capability gate (``ingest_for_user``) or supply an explicit,
+        trusted ``organization_id`` (scripts, internal automation).
+        """
 
         organization_id = KnowledgeIngestionService._require_organization_id(
             organization_id

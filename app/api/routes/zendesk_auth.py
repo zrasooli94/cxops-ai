@@ -11,10 +11,11 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.logging import get_logger
+from app.core.rbac import AuthorizationContext, Capability
 from app.services.zendesk_oauth_service import (
     ZendeskOAuthError,
     ZendeskOAuthService,
@@ -33,6 +34,11 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+IntegrationManageAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.INTEGRATION_MANAGE)),
+]
+
 STATE_COOKIE_NAME = "zendesk_oauth_state"
 
 
@@ -44,6 +50,7 @@ async def zendesk_login(
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: IntegrationManageAuthz,
 ):
     """Tenant-bound OAuth initiation.
 
@@ -55,6 +62,7 @@ async def zendesk_login(
         db=db,
         organization_id=tenant.organization_id,
         subject=principal.subject,
+        authz=authz,
     )
 
     authorization_url = ZendeskOAuthService.build_authorization_url(state)

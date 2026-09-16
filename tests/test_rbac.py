@@ -8,6 +8,7 @@ run against the local database with synthetic JWT subjects.
 import os
 import time
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -629,8 +630,10 @@ async def test_require_capability_dependency_blocks_unauthorized(client, org_sco
         organization_id=1, subject="sub", role=OrganizationRole.VIEWER
     )
     dep = RequireCapability(Capability.TICKET_WRITE)
+    request = MagicMock()
+    request.url.path = "/test"
     with pytest.raises(HTTPException):
-        await dep(authz)
+        await dep(authz, request)
 
 
 @pytest.mark.asyncio
@@ -642,5 +645,7 @@ async def test_require_capability_dependency_allows_authorized():
         organization_id=1, subject="sub", role=OrganizationRole.AGENT
     )
     dep = RequireCapability(Capability.TICKET_WRITE)
-    result = await dep(authz)
+    request = MagicMock()
+    request.url.path = "/test"
+    result = await dep(authz, request)
     assert result is authz

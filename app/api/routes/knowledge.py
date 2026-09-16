@@ -11,8 +11,9 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant
+from app.api.deps import CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.knowledge_repository import (
     KnowledgeRepository,
 )
@@ -51,6 +52,15 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+KnowledgeManageAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.KNOWLEDGE_MANAGE)),
+]
+KnowledgeReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.KNOWLEDGE_READ)),
+]
+
 
 def serialize_document(
     document,
@@ -75,8 +85,9 @@ async def ingest_document(
     data: KnowledgeDocumentCreate,
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeManageAuthz,
 ):
-    return await KnowledgeIngestionService.ingest(
+    return await KnowledgeIngestionService.ingest_for_user(
         db=db,
         organization_id=tenant.organization_id,
         title=data.title,
@@ -84,6 +95,7 @@ async def ingest_document(
         source=data.source,
         source_uri=data.source_uri,
         metadata=data.metadata,
+        authz=authz,
     )
 
 
@@ -94,6 +106,7 @@ async def ingest_document(
 async def list_documents(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeReadAuthz,
     offset: int = 0,
     limit: int = 100,
 ):
@@ -120,6 +133,7 @@ async def get_document(
     document_id: int,
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeReadAuthz,
 ):
     document = await KnowledgeRepository.get_document_for_tenant(
         db,
@@ -144,6 +158,7 @@ async def delete_document(
     document_id: int,
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeManageAuthz,
 ):
     deleted = await KnowledgeRepository.delete_document_for_tenant(
         db,
@@ -166,6 +181,7 @@ async def search_knowledge(
     data: KnowledgeSearchRequest,
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeReadAuthz,
 ):
     return await KnowledgeSearchService.search(
         db=db,
@@ -183,6 +199,7 @@ async def search_knowledge(
 async def upload_document(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeManageAuthz,
     file: Annotated[UploadFile, File()],
     title: str | None = Form(default=None),
     source: str = Form(default="uploaded-file"),
@@ -211,7 +228,7 @@ async def upload_document(
 
     document_title = title or filename.rsplit(".", 1)[0]
 
-    result = await KnowledgeIngestionService.ingest(
+    result = await KnowledgeIngestionService.ingest_for_user(
         db=db,
         organization_id=tenant.organization_id,
         title=document_title,
@@ -222,6 +239,7 @@ async def upload_document(
             "filename": filename,
             "content_type": file.content_type,
         },
+        authz=authz,
     )
 
     return {
@@ -238,6 +256,7 @@ async def answer_from_knowledge(
     data: RAGAnswerRequest,
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: KnowledgeReadAuthz,
 ):
     return await rag_service.answer(
         db=db,

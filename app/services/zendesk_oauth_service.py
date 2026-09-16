@@ -6,6 +6,11 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.rbac import (
+    AuthorizationContext,
+    Capability,
+    require_capability,
+)
 from app.models.zendesk_oauth_state import ZendeskOAuthState
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
 from app.repositories.zendesk_oauth_state_repository import (
@@ -65,12 +70,15 @@ class ZendeskOAuthService:
         *,
         organization_id: int,
         subject: str,
+        authz: AuthorizationContext,
     ) -> str:
         """Create an unguessable nonce durably bound to an organization.
 
         The nonce itself carries no secret material: organization and subject
         are recovered from the persisted row at callback time.
         """
+        require_capability(authz, Capability.INTEGRATION_MANAGE)
+
         import secrets
 
         nonce = secrets.token_urlsafe(32)

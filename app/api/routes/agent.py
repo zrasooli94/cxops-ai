@@ -8,8 +8,9 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant
+from app.api.deps import CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
@@ -44,6 +45,19 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+AgentRunAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.AGENT_RUN)),
+]
+AgentApproveAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.AGENT_APPROVE)),
+]
+AgentExecuteAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.AGENT_EXECUTE)),
+]
+
 
 def serialize_run(
     run,
@@ -74,6 +88,7 @@ async def analyze_ticket(
     ticket_id: int,
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: AgentRunAuthz,
 ):
 
     try:
@@ -99,6 +114,7 @@ async def approve_agent_run(
     data: AgentReviewRequest,
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: AgentApproveAuthz,
 ):
 
     try:
@@ -107,6 +123,7 @@ async def approve_agent_run(
             run_id=run_id,
             organization_id=tenant.organization_id,
             note=data.note,
+            authz=authz,
         )
 
         return serialize_run(run)
@@ -131,6 +148,7 @@ async def approve_agent_run(
 async def list_agent_runs(
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: AgentRunAuthz,
     run_status: str | None = None,
     limit: int = 100,
 ):
@@ -158,6 +176,7 @@ async def reject_agent_run(
     data: AgentReviewRequest,
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: AgentApproveAuthz,
 ):
 
     try:
@@ -166,6 +185,7 @@ async def reject_agent_run(
             run_id=run_id,
             organization_id=tenant.organization_id,
             note=data.note,
+            authz=authz,
         )
 
         return serialize_run(run)
@@ -192,6 +212,7 @@ async def execute_agent_run(
     run_id: str,
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: AgentExecuteAuthz,
 ):
 
     run = await AgentRunRepository.get_by_run_id_for_tenant(
@@ -251,6 +272,7 @@ async def list_agent_run_events(
     run_id: str,
     tenant: CurrentTenant,
     db: DatabaseSession,
+    authz: AgentRunAuthz,
 ):
     run = await AgentRunRepository.get_by_run_id_for_tenant(
         db,

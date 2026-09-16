@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.principal import AuthenticatedPrincipal
 from app.core.rbac import AuthorizationContext, Capability
+from app.core.request_context import get_request_id
 from app.core.tenant import TenantContext
 from app.integrations.webhooks.security import verify_signed_webhook_signature
 from app.services.authorization_service import (
@@ -191,12 +192,33 @@ CurrentAuthorization = Annotated[
 def RequireCapability(capability: Capability | str):
     """Dependency factory that requires a specific capability.
 
-    Usage:
+    Safe patterns:
+
+        # 1. Module-level Annotated alias (preferred, B008-clean, matches
+        #    CurrentPrincipal / CurrentTenant):
+        TicketWriteAuthz = Annotated[
+            AuthorizationContext,
+            Depends(RequireCapability(Capability.TICKET_WRITE)),
+        ]
+
+        @router.post("/tickets")
+        async def create_ticket(authz: TicketWriteAuthz):
+            ...
+
+        # 2. Plain annotation with Depends in the default value:
         @router.post("/tickets")
         async def create_ticket(
-            authz: CurrentAuthorization = Depends(RequireCapability("ticket.write")),
+            authz: AuthorizationContext = Depends(
+                RequireCapability(Capability.TICKET_WRITE),
+            ),
         ):
             ...
+
+    Do NOT combine pattern 2 with ``Annotated[...Depends(...)]`` (e.g.
+    ``CurrentAuthorization``) and also put ``Depends`` in the default value:
+    FastAPI rejects ``Depends`` appearing both in ``Annotated`` and as a default
+    value with an ``AssertionError`` at app build, which fails the whole
+    application.
     """
     from app.core.rbac import has_capability
 
@@ -204,6 +226,7 @@ def RequireCapability(capability: Capability | str):
 
     async def _require(
         authz: CurrentAuthorization,
+        request: Request,
     ) -> AuthorizationContext:
         if not has_capability(authz, resolved):
             log.warning(
@@ -212,6 +235,8 @@ def RequireCapability(capability: Capability | str):
                 organization_id=authz.organization_id,
                 role=authz.role.value,
                 capability=resolved.value,
+                request_id=get_request_id(),
+                route=request.url.path,
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -4,8 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import (
+    CurrentPrincipal,
+    CurrentTenant,
+    RequireCapability,
+)
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.schemas.customer import CustomerCreate, CustomerRead, CustomerUpdate
 from app.services.customer_service import CustomerService
 
@@ -19,6 +24,15 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+CustomerWriteAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.CUSTOMER_WRITE)),
+]
+CustomerReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.CUSTOMER_READ)),
+]
+
 
 @router.post(
     "",
@@ -30,6 +44,7 @@ async def create_customer(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: CustomerWriteAuthz,
 ):
     # organization_id comes from CurrentTenant, never from client payload
     try:
@@ -50,6 +65,7 @@ async def list_customers(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
 ):
     return await CustomerService.list_for_tenant(db, tenant.organization_id)
 
@@ -63,6 +79,7 @@ async def get_customer(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
 ):
     customer = await CustomerService.get_for_tenant(
         db, customer_id, tenant.organization_id
@@ -87,6 +104,7 @@ async def update_customer(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: CustomerWriteAuthz,
 ):
     customer = await CustomerService.get_for_tenant(
         db, customer_id, tenant.organization_id

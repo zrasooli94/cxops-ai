@@ -8,8 +8,9 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.integrations.zendesk.client import (
     ZendeskAPIError,
     zendesk_client,
@@ -37,6 +38,23 @@ router = APIRouter(
 DatabaseSession = Annotated[
     AsyncSession,
     Depends(get_db),
+]
+
+CustomerReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.CUSTOMER_READ)),
+]
+IntegrationReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.INTEGRATION_READ)),
+]
+TicketReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.TICKET_READ)),
+]
+TicketWriteAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.TICKET_WRITE)),
 ]
 
 
@@ -81,6 +99,7 @@ async def get_zendesk_current_user(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: IntegrationReadAuthz,
 ):
     try:
         return await zendesk_client.get_current_user(
@@ -102,6 +121,7 @@ async def get_zendesk_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketReadAuthz,
 ):
     try:
         return await zendesk_client.get_ticket(
@@ -124,6 +144,7 @@ async def create_zendesk_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
 ):
     try:
         return await zendesk_client.create_ticket(
@@ -153,6 +174,7 @@ async def update_zendesk_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
 ):
     changes = data.model_dump(
         exclude_none=True,
@@ -185,6 +207,7 @@ async def get_zendesk_user(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
 ):
     try:
         return await zendesk_client.get_user(
@@ -210,6 +233,7 @@ async def sync_zendesk_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
 ):
     try:
         return await ZendeskSyncService.sync_ticket_for_tenant(
@@ -238,6 +262,7 @@ async def get_zendesk_ticket_comments(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketReadAuthz,
 ):
     try:
         return await zendesk_client.get_ticket_comments(

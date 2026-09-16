@@ -3,8 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.automation_rule_repository import (
     AutomationRuleRepository,
 )
@@ -28,6 +29,15 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+AutomationManageAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.AUTOMATION_MANAGE)),
+]
+AutomationReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.AUTOMATION_READ)),
+]
+
 
 @router.post(
     "",
@@ -39,6 +49,7 @@ async def create_rule(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: AutomationManageAuthz,
 ):
     # organization_id comes from CurrentTenant, never from client payload
     return await AutomationRuleService.create_for_tenant(
@@ -56,6 +67,7 @@ async def list_rules(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: AutomationReadAuthz,
 ):
     return await AutomationRuleRepository.list_for_tenant(
         db=db,
@@ -72,6 +84,7 @@ async def get_rule(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: AutomationReadAuthz,
 ):
     rule = await AutomationRuleRepository.get_by_id_for_tenant(
         db=db,
@@ -98,6 +111,7 @@ async def update_rule(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: AutomationManageAuthz,
 ):
     rule = await AutomationRuleService.update_for_tenant(
         db=db,

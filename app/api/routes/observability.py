@@ -6,8 +6,9 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant
+from app.api.deps import CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.schemas.observability import (
     AgentObservabilitySummary,
     AgentOperationalKPIs,
@@ -33,6 +34,11 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+ObservabilityReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.OBSERVABILITY_READ)),
+]
+
 
 @router.get(
     "/ai/summary",
@@ -41,6 +47,7 @@ DatabaseSession = Annotated[
 async def ai_summary(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
 ):
     return await AIObservabilityService.summary(
         db,
@@ -55,6 +62,7 @@ async def ai_summary(
 async def agent_summary(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
 ):
     return await AgentObservabilityService.summary(
         db,
@@ -69,6 +77,7 @@ async def agent_summary(
 async def ai_by_feature(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
 ):
     return await AIObservabilityService.breakdown(
         db,
@@ -83,6 +92,7 @@ async def ai_by_feature(
 async def agent_operational_kpis(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
 ):
     return await AgentObservabilityService.operational_kpis(
         db,
@@ -97,6 +107,7 @@ async def agent_operational_kpis(
 async def agent_roi(
     db: DatabaseSession,
     tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
 ):
     return await AgentObservabilityService.roi_summary(
         db,

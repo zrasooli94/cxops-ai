@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.schemas.ticket import (
     TicketCreate,
     TicketRead,
@@ -24,6 +25,15 @@ DatabaseSession = Annotated[
     Depends(get_db),
 ]
 
+TicketReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.TICKET_READ)),
+]
+TicketWriteAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.TICKET_WRITE)),
+]
+
 
 @router.post(
     "",
@@ -35,6 +45,7 @@ async def create_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
 ):
     # organization_id comes from CurrentTenant, never from client payload
     try:
@@ -62,6 +73,7 @@ async def list_tickets(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketReadAuthz,
     offset: int = Query(
         default=0,
         ge=0,
@@ -89,6 +101,7 @@ async def get_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketReadAuthz,
 ):
     ticket = await TicketService.get_ticket_for_tenant(
         db=db,
@@ -115,6 +128,7 @@ async def update_ticket(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
 ):
     ticket = await TicketService.update_ticket_for_tenant(
         db=db,

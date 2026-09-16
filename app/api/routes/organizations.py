@@ -3,8 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.database import get_db
+from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.organization_membership_repository import (
     OrganizationMembershipRepository,
 )
@@ -20,6 +21,11 @@ router = APIRouter(
 DatabaseSession = Annotated[
     AsyncSession,
     Depends(get_db),
+]
+
+OrganizationReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.ORGANIZATION_READ)),
 ]
 
 
@@ -46,6 +52,7 @@ async def list_organizations(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: OrganizationReadAuthz,
 ):
     # Return only organizations the authenticated subject has memberships for
     memberships = await OrganizationMembershipRepository.list_for_subject(
@@ -73,6 +80,7 @@ async def get_organization(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
+    authz: OrganizationReadAuthz,
 ):
     # Validate membership before returning
     membership = (
