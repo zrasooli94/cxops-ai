@@ -33,6 +33,7 @@ os.environ["ENVIRONMENT"] = "development"
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
 from app.core.principal import AuthenticatedPrincipal
+from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
@@ -110,7 +111,10 @@ async def org_scope(db):
     """Create unique test organizations and remove them on teardown."""
     org_ids: list[int] = []
 
-    async def make(subject: str | None = None) -> Organization:
+    async def make(
+        subject: str | None = None,
+        role: OrganizationRole = OrganizationRole.OWNER,
+    ) -> Organization:
         org = Organization(name=f"tenant-test-{uuid.uuid4().hex[:10]}")
         db.add(org)
         await db.flush()
@@ -120,6 +124,7 @@ async def org_scope(db):
                 OrganizationMembership(
                     subject=subject,
                     organization_id=org.id,
+                    role=role,
                 )
             )
         await db.commit()
@@ -215,7 +220,7 @@ async def test_multiple_memberships_require_selector(db, org_scope):
 
 def test_membership_schema_has_no_token_columns():
     columns = {column.name for column in OrganizationMembership.__table__.columns}
-    assert columns == {"id", "organization_id", "subject", "created_at"}
+    assert columns == {"id", "organization_id", "subject", "role", "created_at"}
 
 
 @pytest.mark.asyncio
@@ -224,6 +229,7 @@ async def test_membership_row_persists_only_minimal_fields(db, org_scope):
     membership = OrganizationMembership(
         subject=USER_ALPHA,
         organization_id=org.id,
+        role=OrganizationRole.OWNER,
     )
     db.add(membership)
     await db.commit()
@@ -252,6 +258,7 @@ async def test_duplicate_membership_rejected_by_constraint(db, org_scope):
         OrganizationMembership(
             subject=USER_ALPHA,
             organization_id=org.id,
+            role=OrganizationRole.OWNER,
         )
     )
     await db.commit()
@@ -260,6 +267,7 @@ async def test_duplicate_membership_rejected_by_constraint(db, org_scope):
         OrganizationMembership(
             subject=USER_ALPHA,
             organization_id=org.id,
+            role=OrganizationRole.OWNER,
         )
     )
     with pytest.raises(IntegrityError):

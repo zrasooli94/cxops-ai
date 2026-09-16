@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rbac import OrganizationRole
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.repositories.organization_repository import OrganizationRepository
@@ -25,6 +26,7 @@ class OrganizationService:
         membership = OrganizationMembership(
             subject=subject,
             organization_id=organization.id,
+            role=OrganizationRole.OWNER,
         )
         db.add(membership)
 

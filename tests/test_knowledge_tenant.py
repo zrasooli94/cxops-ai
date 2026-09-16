@@ -43,6 +43,7 @@ os.environ["ENVIRONMENT"] = "development"
 
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.ai_request_log import AIRequestLog
 from app.models.knowledge_chunk import KnowledgeChunk
@@ -170,6 +171,7 @@ async def two_orgs(db):
                 OrganizationMembership(
                     subject=subject,
                     organization_id=org.id,
+                    role=OrganizationRole.OWNER,
                 )
             )
         await db.commit()
@@ -201,6 +203,7 @@ async def two_orgs(db):
             OrganizationMembership(
                 subject=subject,
                 organization_id=organization_id,
+                role=OrganizationRole.OWNER,
             )
         )
         await db.commit()

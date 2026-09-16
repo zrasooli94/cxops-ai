@@ -36,6 +36,7 @@ from sqlalchemy import delete, func, select
 
 from app.core.config import reset_settings_cache, settings
 from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.agent_run import AgentRun
 from app.models.ai_request_log import AIRequestLog
@@ -159,6 +160,7 @@ async def seeded(db):
             OrganizationMembership(
                 subject=subject,
                 organization_id=org.id,
+                role=OrganizationRole.OWNER,
             )
         )
         await db.commit()
@@ -443,12 +445,14 @@ async def seeded(db):
         OrganizationMembership(
             subject=USER_GAMMA,
             organization_id=org_a.id,
+            role=OrganizationRole.OWNER,
         )
     )
     db.add(
         OrganizationMembership(
             subject=USER_GAMMA,
             organization_id=org_b.id,
+            role=OrganizationRole.OWNER,
         )
     )
     await db.commit()

@@ -45,6 +45,7 @@ os.environ["ENVIRONMENT"] = "development"
 from app.api.routes import agent as agent_route_module
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.agent_run import AgentRun
 from app.models.ai_request_log import AIRequestLog
@@ -195,6 +196,7 @@ async def two_orgs(db):
                 OrganizationMembership(
                     subject=subject,
                     organization_id=org.id,
+                    role=OrganizationRole.OWNER,
                 )
             )
         await db.commit()
@@ -257,6 +259,7 @@ async def two_orgs(db):
             OrganizationMembership(
                 subject=subject,
                 organization_id=organization_id,
+                role=OrganizationRole.OWNER,
             )
         )
         await db.commit()

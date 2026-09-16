@@ -1,12 +1,15 @@
 """Bootstrap an organization membership for a development user.
 
 Usage:
-    python -m scripts.bootstrap_tenant --subject <nhost-subject> --organization-id <id>
+    python -m scripts.bootstrap_tenant \
+        --subject <nhost-subject> \
+        --organization-id <id> \
+        --role owner|admin|supervisor|agent|viewer
 
 Idempotent: re-running with the same (organization_id, subject) is a no-op.
 
-Designed to be reusable for any user and never commits a personal subject into
-migrations or source.
+The role must be explicit to avoid silent privilege escalation. Roles are
+organization-scoped CXOps roles; they are not Nhost/Hasura roles.
 """
 
 import argparse
@@ -17,16 +20,20 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
+from app.core.rbac import OrganizationRole
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 
 log = get_logger(__name__)
+
+VALID_ROLES = ", ".join(sorted(OrganizationRole.values()))
 
 
 async def bootstrap(
     *,
     subject: str,
     organization_id: int,
+    role: OrganizationRole,
 ) -> str:
     async with AsyncSessionLocal() as db:
         organization = await db.execute(
@@ -40,6 +47,7 @@ async def bootstrap(
             .values(
                 subject=subject,
                 organization_id=organization_id,
+                role=role.value,
             )
             .on_conflict_do_nothing(
                 constraint="uq_organization_memberships_organization_id_subject",
@@ -47,13 +55,14 @@ async def bootstrap(
         )
         await db.commit()
 
-        if result.rowcount == 0:
+        if result.rowcount == 0:  # type: ignore[attr-defined]
             return (
                 f"membership already exists: "
                 f"subject={subject} organization_id={organization_id}"
             )
         return (
-            f"membership created: subject={subject} organization_id={organization_id}"
+            f"membership created: subject={subject} "
+            f"organization_id={organization_id} role={role.value}"
         )
 
 
@@ -68,10 +77,20 @@ def main() -> None:
         type=int,
         help="CXOps organization id to grant access to",
     )
+    parser.add_argument(
+        "--role",
+        required=True,
+        choices=sorted(OrganizationRole.values()),
+        help=f"CXOps organization role ({VALID_ROLES})",
+    )
     args = parser.parse_args()
 
     result = asyncio.run(
-        bootstrap(subject=args.subject, organization_id=args.organization_id)
+        bootstrap(
+            subject=args.subject,
+            organization_id=args.organization_id,
+            role=OrganizationRole(args.role),
+        )
     )
     print(result)
     log.info("tenant_bootstrap", result=result)

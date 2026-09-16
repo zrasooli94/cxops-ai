@@ -3,12 +3,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant
+from app.api.deps import CurrentAuthorization, CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
 from app.repositories.organization_membership_repository import (
     OrganizationMembershipRepository,
 )
 from app.repositories.organization_repository import OrganizationRepository
+from app.schemas.authorization import AuthorizationInfo
 from app.schemas.organization import OrganizationRead
 from app.schemas.tenant import TenantInfo
 
@@ -79,3 +80,24 @@ async def get_my_organizations(
         if org:
             organizations.append(org)
     return organizations
+
+
+@router.get(
+    "/authorization",
+    response_model=AuthorizationInfo,
+)
+async def get_my_authorization(
+    authz: CurrentAuthorization,
+):
+    """Return the authenticated subject's role and capabilities for the tenant.
+
+    This is a proof endpoint for the full chain:
+    identity → tenant → membership → role → capabilities.
+
+    Only safe data is returned: no JWT claims, tokens, or secrets.
+    """
+    return AuthorizationInfo(
+        organization_id=authz.organization_id,
+        role=authz.role.value,
+        capabilities=sorted(c.value for c in authz.capabilities),
+    )

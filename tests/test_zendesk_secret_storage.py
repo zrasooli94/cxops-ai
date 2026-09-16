@@ -16,6 +16,7 @@ os.environ["ENCRYPTION_ALLOW_LEGACY_PLAINTEXT"] = "false"
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
 from app.core.encryption import CIPHER_PREFIX, is_encrypted_text
+from app.core.rbac import OrganizationRole
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
@@ -70,7 +71,9 @@ async def org_and_user(db):
     await db.commit()
     await db.refresh(org)
 
-    membership = OrganizationMembership(subject=USER, organization_id=org.id)
+    membership = OrganizationMembership(
+        subject=USER, organization_id=org.id, role=OrganizationRole.OWNER
+    )
     db.add(membership)
     await db.commit()
 

@@ -8,8 +8,14 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.principal import AuthenticatedPrincipal
+from app.core.rbac import AuthorizationContext, Capability
 from app.core.tenant import TenantContext
 from app.integrations.webhooks.security import verify_signed_webhook_signature
+from app.services.authorization_service import (
+    AuthorizationMembershipMissingError,
+    AuthorizationRoleInvalidError,
+    resolve_authorization_context,
+)
 from app.services.tenant_service import (
     TenantAccessDeniedError,
     TenantMembershipAmbiguousError,
@@ -139,6 +145,81 @@ CurrentTenant = Annotated[
     TenantContext,
     Depends(get_current_tenant),
 ]
+
+
+async def get_current_authorization(
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AuthorizationContext:
+    """FastAPI dependency for the current authorization context.
+
+    Resolves the subject's role inside the already-validated tenant from the
+    database membership row. Membership revocation or invalid persisted roles
+    after tenant resolution are handled fail-closed (403).
+    """
+    try:
+        return await resolve_authorization_context(db, principal, tenant)
+    except AuthorizationMembershipMissingError:
+        log.warning(
+            "authorization_membership_missing",
+            subject=principal.subject,
+            organization_id=tenant.organization_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization membership not found",
+        )
+    except AuthorizationRoleInvalidError:
+        log.warning(
+            "authorization_invalid_role",
+            subject=principal.subject,
+            organization_id=tenant.organization_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid organization membership role",
+        )
+
+
+CurrentAuthorization = Annotated[
+    AuthorizationContext,
+    Depends(get_current_authorization),
+]
+
+
+def RequireCapability(capability: Capability | str):
+    """Dependency factory that requires a specific capability.
+
+    Usage:
+        @router.post("/tickets")
+        async def create_ticket(
+            authz: CurrentAuthorization = Depends(RequireCapability("ticket.write")),
+        ):
+            ...
+    """
+    from app.core.rbac import has_capability
+
+    resolved = capability if isinstance(capability, Capability) else Capability(capability)
+
+    async def _require(
+        authz: CurrentAuthorization,
+    ) -> AuthorizationContext:
+        if not has_capability(authz, resolved):
+            log.warning(
+                "capability_denied",
+                subject=authz.subject,
+                organization_id=authz.organization_id,
+                role=authz.role.value,
+                capability=resolved.value,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return authz
+
+    return _require
 
 
 async def verify_ticket_event_signature(request: Request) -> bytes:

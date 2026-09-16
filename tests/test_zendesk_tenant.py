@@ -46,6 +46,7 @@ os.environ["ENCRYPTION_ALLOW_LEGACY_PLAINTEXT"] = "false"
 
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
 from app.integrations.zendesk.security import verify_zendesk_signature
 from app.main import app
 from app.models.customer import Customer
@@ -185,8 +186,16 @@ async def zendesk_env(db):
 
     db.add_all(
         [
-            OrganizationMembership(subject=USER_ALPHA, organization_id=org_a_id),
-            OrganizationMembership(subject=USER_BETA, organization_id=org_b_id),
+            OrganizationMembership(
+                subject=USER_ALPHA,
+                organization_id=org_a_id,
+                role=OrganizationRole.OWNER,
+            ),
+            OrganizationMembership(
+                subject=USER_BETA,
+                organization_id=org_b_id,
+                role=OrganizationRole.OWNER,
+            ),
             token_a,
             token_b,
         ]

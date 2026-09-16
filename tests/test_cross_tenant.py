@@ -25,6 +25,7 @@ os.environ["ENVIRONMENT"] = "development"
 
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.customer import Customer
 from app.models.organization import Organization
@@ -125,8 +126,16 @@ async def two_orgs(db):
     # Grant alpha membership in Org A, beta in Org B
     db.add_all(
         [
-            OrganizationMembership(subject=USER_ALPHA, organization_id=org_a_id),
-            OrganizationMembership(subject=USER_BETA, organization_id=org_b_id),
+            OrganizationMembership(
+                subject=USER_ALPHA,
+                organization_id=org_a_id,
+                role=OrganizationRole.OWNER,
+            ),
+            OrganizationMembership(
+                subject=USER_BETA,
+                organization_id=org_b_id,
+                role=OrganizationRole.OWNER,
+            ),
         ]
     )
     await db.commit()
@@ -514,7 +523,13 @@ async def test_multi_membership_without_selector_409(make_client, db, two_orgs):
     """Grant alpha membership in BOTH orgs, then call without selector."""
     _org_a, org_b = two_orgs
     # Add alpha to org_b as well
-    db.add(OrganizationMembership(subject=USER_ALPHA, organization_id=org_b.id))
+    db.add(
+        OrganizationMembership(
+            subject=USER_ALPHA,
+            organization_id=org_b.id,
+            role=OrganizationRole.OWNER,
+        )
+    )
     await db.commit()
 
     headers = _h_alpha()
@@ -542,7 +557,13 @@ async def test_multi_membership_without_selector_409(make_client, db, two_orgs):
 async def test_valid_selector_scopes_data(make_client, db, two_orgs, tenant_data):
     _org_a, org_b = two_orgs
     # Ensure alpha has membership in org_b for this test
-    db.add(OrganizationMembership(subject=USER_ALPHA, organization_id=org_b.id))
+    db.add(
+        OrganizationMembership(
+            subject=USER_ALPHA,
+            organization_id=org_b.id,
+            role=OrganizationRole.OWNER,
+        )
+    )
     await db.commit()
 
     headers = {**_h_alpha(), X_TENANT: str(org_b.id)}
@@ -1209,7 +1230,13 @@ async def test_automation_rule_multi_membership_selector(make_client, db, two_or
     from app.models.automation_rule import AutomationRule
 
     org_a, org_b = two_orgs
-    db.add(OrganizationMembership(subject=USER_ALPHA, organization_id=org_b.id))
+    db.add(
+        OrganizationMembership(
+            subject=USER_ALPHA,
+            organization_id=org_b.id,
+            role=OrganizationRole.OWNER,
+        )
+    )
     await db.commit()
 
     rule_id = None
