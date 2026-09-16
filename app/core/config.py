@@ -4,6 +4,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.encryption import validate_encryption_keys
+
 
 class Settings(BaseSettings):
     app_name: str = "CXOps AI"
@@ -34,7 +36,6 @@ class Settings(BaseSettings):
 
     zendesk_webhook_secret: str = ""
     ticket_event_webhook_secret: str = ""
-    zendesk_oauth_token: str = ""
     zendesk_subdomain: str = ""
     zendesk_client_id: str = ""
     zendesk_client_secret: str = ""
@@ -42,6 +43,15 @@ class Settings(BaseSettings):
     zendesk_oauth_scope: str = "read write"
     zendesk_oauth_state_ttl_seconds: int = 600
     zendesk_webhook_replay_window_seconds: int = 300
+    generic_webhook_replay_window_seconds: int = 300
+
+    # Encryption at rest for Zendesk OAuth tokens and webhook secrets.
+    # Comma-separated Fernet keys, primary (encryption) key first.
+    encryption_keys: str = ""
+
+    # Allow reading non-encrypted legacy secret values. Enable only during a
+    # deliberate migration window; production must enforce strict ciphertext.
+    encryption_allow_legacy_plaintext: bool = False
 
     openai_api_key: str = ""
 
@@ -49,6 +59,17 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
 
     chat_model: str = "gpt-4o-mini"
+
+    @field_validator(
+        "generic_webhook_replay_window_seconds",
+        "zendesk_webhook_replay_window_seconds",
+        mode="after",
+    )
+    @classmethod
+    def _require_positive_replay_window(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Replay window must be a positive number of seconds")
+        return value
 
     @model_validator(mode="after")
     def _reject_dev_auth_in_production(self) -> "Settings":
@@ -62,6 +83,17 @@ class Settings(BaseSettings):
             )
         if self.auth_mode == "jwks" and not self.auth_jwks_url:
             raise ValueError("AUTH_JWKS_URL is required when AUTH_MODE=jwks")
+        if self.environment == "production" and not self.encryption_keys:
+            raise ValueError(
+                "ENCRYPTION_KEYS is required in production to protect stored credentials"
+            )
+        if self.encryption_keys:
+            # Fail early on malformed keys rather than at first runtime encryption.
+            keys = validate_encryption_keys(self.encryption_keys)
+            if self.environment == "production" and len(keys) == 0:
+                raise ValueError(
+                    "ENCRYPTION_KEYS must contain at least one valid key in production"
+                )
         return self
 
     rag_top_k: int = 5
@@ -144,4 +176,9 @@ def reset_settings_cache() -> None:
     """
     global settings
     get_settings.cache_clear()
+    # Encryption key material is cached by raw key string; clear it so a
+    # settings reload definitely uses the new keys.
+    from app.core.encryption import clear_fernet_cache
+
+    clear_fernet_cache()
     settings = get_settings()

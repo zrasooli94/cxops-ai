@@ -6,6 +6,7 @@
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import pytest
@@ -14,13 +15,19 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.deps import verify_ticket_event_signature
 from app.core.config import reset_settings_cache
-from app.integrations.webhooks.security import compute_signature, verify_signature
+from app.integrations.webhooks.security import (
+    compute_signature,
+    compute_signed_webhook_signature,
+    verify_signature,
+    verify_signed_webhook_signature,
+)
 from app.main import app
 
 # Synthetic test fixtures — obviously non-secret deterministic values.
 TEST_SECRET = "x" * 32
 ALT_SECRET = "y" * 32
 SIGNATURE_HEADER = "x-cxops-signature"
+TIMESTAMP_HEADER = "x-cxops-timestamp"
 
 
 os.environ["ENVIRONMENT"] = "development"
@@ -30,11 +37,35 @@ def _configure(monkeypatch, **overrides) -> None:
     values = {
         "TICKET_EVENT_WEBHOOK_SECRET": TEST_SECRET,
         "ENVIRONMENT": "development",
+        "GENERIC_WEBHOOK_REPLAY_WINDOW_SECONDS": "300",
     }
     values.update(overrides)
     for key, value in values.items():
         monkeypatch.setenv(key, value)
     reset_settings_cache()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _sign(
+    secret: str,
+    body: bytes,
+    *,
+    timestamp: str | None = None,
+) -> dict:
+    ts = timestamp if timestamp is not None else _now_iso()
+    signature = compute_signed_webhook_signature(
+        secret=secret,
+        timestamp=ts,
+        body=body,
+    )
+    return {
+        "body": body,
+        "timestamp": ts,
+        "signature": signature,
+    }
 
 
 class LogRecorder:
@@ -86,7 +117,7 @@ def probe():
 
 
 class TestSignatureVerification:
-    """Unit-level coverage of the HMAC primitive."""
+    """Unit-level coverage of the body-only HMAC primitive."""
 
     def test_valid_signature_verifies(self):
         body = b'{"event_id": "evt-1", "event_type": "ticket.created"}'
@@ -132,6 +163,130 @@ class TestSignatureVerification:
             )
 
 
+class TestSignedWebhookVerification:
+    """Unit-level coverage of the timestamp + body HMAC primitive."""
+
+    def test_valid_signed_signature_verifies(self):
+        body = b'{"event_id": "evt-1"}'
+        signed = _sign(TEST_SECRET, body)
+
+        assert verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=signed["timestamp"],
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+        )
+
+    def test_wrong_secret_rejected(self):
+        body = b'{"event_id": "evt-1"}'
+        signed = _sign(ALT_SECRET, body)
+
+        assert not verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=signed["timestamp"],
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+        )
+
+    def test_modified_timestamp_rejected(self):
+        body = b'{"event_id": "evt-1"}'
+        signed = _sign(TEST_SECRET, body)
+
+        assert not verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=_now_iso(),
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+        )
+
+    def test_stale_timestamp_rejected(self):
+        body = b'{"event_id": "evt-1"}'
+        stale = (
+            (datetime.now(timezone.utc) - timedelta(seconds=400))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        signed = _sign(TEST_SECRET, body, timestamp=stale)
+
+        assert not verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=signed["timestamp"],
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+        )
+
+    def test_future_timestamp_rejected(self):
+        body = b'{"event_id": "evt-1"}'
+        future = (
+            (datetime.now(timezone.utc) + timedelta(seconds=400))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        signed = _sign(TEST_SECRET, body, timestamp=future)
+
+        assert not verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=signed["timestamp"],
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+        )
+
+    def test_timestamp_exactly_at_boundary_accepted(self):
+        body = b'{"event_id": "evt-1"}'
+        now = datetime.now(timezone.utc)
+        boundary = now - timedelta(seconds=300)
+        signed = _sign(
+            TEST_SECRET,
+            body,
+            timestamp=boundary.isoformat().replace("+00:00", "Z"),
+        )
+
+        assert verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=signed["timestamp"],
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+            now=now,
+        )
+
+    def test_timestamp_one_second_past_boundary_rejected(self):
+        body = b'{"event_id": "evt-1"}'
+        now = datetime.now(timezone.utc)
+        past = now - timedelta(seconds=301)
+        signed = _sign(
+            TEST_SECRET,
+            body,
+            timestamp=past.isoformat().replace("+00:00", "Z"),
+        )
+
+        assert not verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp=signed["timestamp"],
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+            now=now,
+        )
+
+    def test_malformed_timestamp_rejected(self):
+        body = b'{"event_id": "evt-1"}'
+        signed = _sign(TEST_SECRET, body)
+
+        assert not verify_signed_webhook_signature(
+            secret=TEST_SECRET,
+            timestamp="not-a-timestamp",
+            body=body,
+            signature=signed["signature"],
+            replay_window_seconds=300,
+        )
+
+
 class TestWebhookEndpoint:
     """Route-level integration through the real app."""
 
@@ -147,17 +302,36 @@ class TestWebhookEndpoint:
         assert "signature" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_invalid_signature_rejected(self, monkeypatch, client):
+    async def test_missing_timestamp_rejected(self, monkeypatch, client):
         _configure(monkeypatch)
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()
-        bad_signature = compute_signature(secret=ALT_SECRET, body=body)
+        signed = _sign(TEST_SECRET, body)
 
         async with client:
             response = await client.post(
                 "/webhooks/ticket-events",
                 content=body,
-                headers={SIGNATURE_HEADER: bad_signature},
+                headers={SIGNATURE_HEADER: signed["signature"]},
+            )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_invalid_signature_rejected(self, monkeypatch, client):
+        _configure(monkeypatch)
+        payload = {"event_id": "evt-1", "event_type": "ticket.created"}
+        body = json.dumps(payload).encode()
+        signed = _sign(ALT_SECRET, body)
+
+        async with client:
+            response = await client.post(
+                "/webhooks/ticket-events",
+                content=body,
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
             )
 
         assert response.status_code == 401
@@ -169,13 +343,64 @@ class TestWebhookEndpoint:
             {"event_id": "evt-1", "event_type": "ticket.created"}
         ).encode()
         tampered = original.replace(b"evt-1", b"evt-9")
-        signature = compute_signature(secret=TEST_SECRET, body=original)
+        signed = _sign(TEST_SECRET, original)
 
         async with client:
             response = await client.post(
                 "/webhooks/ticket-events",
                 content=tampered,
-                headers={SIGNATURE_HEADER: signature},
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
+            )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_stale_timestamp_rejected(self, monkeypatch, client):
+        _configure(monkeypatch)
+        payload = {"event_id": "evt-1", "event_type": "ticket.created"}
+        body = json.dumps(payload).encode()
+        stale = (
+            (datetime.now(timezone.utc) - timedelta(seconds=400))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        signed = _sign(TEST_SECRET, body, timestamp=stale)
+
+        async with client:
+            response = await client.post(
+                "/webhooks/ticket-events",
+                content=body,
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
+            )
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_future_timestamp_rejected(self, monkeypatch, client):
+        _configure(monkeypatch)
+        payload = {"event_id": "evt-1", "event_type": "ticket.created"}
+        body = json.dumps(payload).encode()
+        future = (
+            (datetime.now(timezone.utc) + timedelta(seconds=400))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        signed = _sign(TEST_SECRET, body, timestamp=future)
+
+        async with client:
+            response = await client.post(
+                "/webhooks/ticket-events",
+                content=body,
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
             )
 
         assert response.status_code == 401
@@ -188,7 +413,10 @@ class TestWebhookEndpoint:
             response = await client.post(
                 "/webhooks/ticket-events",
                 json={"event_id": "evt-1", "event_type": "ticket.created"},
-                headers={SIGNATURE_HEADER: "definitely-not-a-signature"},
+                headers={
+                    SIGNATURE_HEADER: "definitely-not-a-signature",
+                    TIMESTAMP_HEADER: _now_iso(),
+                },
             )
 
         assert response.status_code == 401
@@ -198,13 +426,16 @@ class TestWebhookEndpoint:
         _configure(monkeypatch, TICKET_EVENT_WEBHOOK_SECRET="")
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()
-        signature = compute_signature(secret=TEST_SECRET, body=body)
+        signed = _sign(TEST_SECRET, body)
 
         async with client:
             response = await client.post(
                 "/webhooks/ticket-events",
                 content=body,
-                headers={SIGNATURE_HEADER: signature},
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
             )
 
         assert response.status_code == 503
@@ -220,13 +451,16 @@ class TestWebhookEndpoint:
         )
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()
-        signature = compute_signature(secret=TEST_SECRET, body=body)
+        signed = _sign(TEST_SECRET, body)
 
         async with client:
             response = await client.post(
                 "/webhooks/ticket-events",
                 content=body,
-                headers={SIGNATURE_HEADER: signature},
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
             )
 
         assert response.status_code == 503
@@ -238,13 +472,16 @@ class TestWebhookEndpoint:
         _configure(monkeypatch)
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()
-        signature = compute_signature(secret=TEST_SECRET, body=body)
+        signed = _sign(TEST_SECRET, body)
 
         async with probe:
             response = await probe.post(
                 "/webhooks/ticket-events",
                 content=body,
-                headers={SIGNATURE_HEADER: signature},
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
             )
 
         assert response.status_code == 202
@@ -262,13 +499,16 @@ class TestWebhookEndpoint:
         _configure(monkeypatch)
         payload = {"event_id": "evt-1", "event_type": "ticket.created"}
         body = json.dumps(payload).encode()
-        signature = compute_signature(secret=TEST_SECRET, body=body)
+        signed = _sign(TEST_SECRET, body)
 
         async with probe:
             response = await probe.post(
                 "/webhooks/ticket-events",
                 content=body,
-                headers={SIGNATURE_HEADER: signature},
+                headers={
+                    SIGNATURE_HEADER: signed["signature"],
+                    TIMESTAMP_HEADER: signed["timestamp"],
+                },
             )
 
         assert response.status_code == 202
@@ -291,7 +531,10 @@ class TestRedactionInWebhookLogs:
             await client.post(
                 "/webhooks/ticket-events",
                 content=body,
-                headers={SIGNATURE_HEADER: bad_signature},
+                headers={
+                    SIGNATURE_HEADER: bad_signature,
+                    TIMESTAMP_HEADER: _now_iso(),
+                },
             )
 
         assert recorder.events, "expected auth log output"

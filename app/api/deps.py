@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.principal import AuthenticatedPrincipal
 from app.core.tenant import TenantContext
-from app.integrations.webhooks.security import verify_signature
+from app.integrations.webhooks.security import verify_signed_webhook_signature
 from app.services.tenant_service import (
     TenantAccessDeniedError,
     TenantMembershipAmbiguousError,
@@ -20,6 +20,7 @@ from app.services.tenant_service import (
 log = get_logger(__name__)
 
 WEBHOOK_SIGNATURE_HEADER = "x-cxops-signature"
+WEBHOOK_TIMESTAMP_HEADER = "x-cxops-timestamp"
 TENANT_ORGANIZATION_ID_HEADER = "x-cxops-organization-id"
 
 
@@ -144,12 +145,14 @@ async def verify_ticket_event_signature(request: Request) -> bytes:
     """Machine-authentication dependency for the generic ticket-event webhook.
 
     Rejects the request unless it carries a valid HMAC-SHA256 signature over
-    the raw request body in the ``X-CXOps-Signature`` header. This is machine
+    ``timestamp + body`` in the ``X-CXOps-Signature`` header and a parseable
+    ``X-CXOps-Timestamp`` within the configured replay window. This is machine
     authentication only — human JWT is neither required nor accepted here.
 
     Returns the raw request body on success.
     """
-    secret = get_settings().ticket_event_webhook_secret
+    settings = get_settings()
+    secret = settings.ticket_event_webhook_secret
 
     if not secret:
         log.warning("webhook_secret_not_configured", route="ticket-events")
@@ -159,20 +162,28 @@ async def verify_ticket_event_signature(request: Request) -> bytes:
         )
 
     signature = request.headers.get(WEBHOOK_SIGNATURE_HEADER)
+    timestamp = request.headers.get(WEBHOOK_TIMESTAMP_HEADER)
 
-    if not signature:
-        log.warning("webhook_signature_missing", route="ticket-events")
+    if not signature or not timestamp:
+        log.warning(
+            "webhook_signature_missing",
+            route="ticket-events",
+            has_signature=bool(signature),
+            has_timestamp=bool(timestamp),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing webhook signature",
+            detail="Missing webhook signature or timestamp",
         )
 
     body = await request.body()
 
-    if not verify_signature(
+    if not verify_signed_webhook_signature(
         secret=secret,
+        timestamp=timestamp,
         body=body,
         signature=signature,
+        replay_window_seconds=settings.generic_webhook_replay_window_seconds,
     ):
         log.warning("webhook_signature_invalid", route="ticket-events")
         raise HTTPException(

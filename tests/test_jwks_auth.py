@@ -142,6 +142,7 @@ def _rsa_hash(alg: str) -> hashes.HashAlgorithm:
 
 def _sign_rsa(pem: str, header: dict, payload: dict, alg: str = "RS256") -> str:
     private = load_pem_private_key(pem.encode(), password=None)
+    assert isinstance(private, RSAPrivateKey)
     h = _b64u(json.dumps(header, separators=(",", ":")).encode())
     p = _b64u(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{h}.{p}".encode()

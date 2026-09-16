@@ -11,6 +11,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.encryption import EncryptedText
 from app.models.base import Base
 
 
@@ -57,12 +58,12 @@ class ZendeskOAuthToken(Base):
     )
 
     access_token: Mapped[str] = mapped_column(
-        Text,
+        EncryptedText,
         nullable=False,
     )
 
     refresh_token: Mapped[str | None] = mapped_column(
-        Text,
+        EncryptedText,
         nullable=True,
     )
 
@@ -88,7 +89,7 @@ class ZendeskOAuthToken(Base):
     )
 
     webhook_secret: Mapped[str | None] = mapped_column(
-        Text,
+        EncryptedText,
         nullable=True,
     )
 

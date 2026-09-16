@@ -21,6 +21,7 @@ Q  valid fresh webhook accepted
 + duplicate invocation dedup, unconfigured coverage, missing-secret fail-closed.
 """
 
+import base64
 import os
 import time
 import uuid
@@ -39,6 +40,9 @@ os.environ["AUTH_JWT_ISSUER"] = "test-zendesk-tenant-issuer"
 os.environ["AUTH_JWT_AUDIENCE"] = "test-zendesk-tenant-audience"
 os.environ["AUTH_DEV_MODE"] = "False"
 os.environ["ENVIRONMENT"] = "development"
+# Valid Fernet key so the encrypted columns can round-trip in tests.
+os.environ["ENCRYPTION_KEYS"] = base64.urlsafe_b64encode(b"0" * 32).decode()
+os.environ["ENCRYPTION_ALLOW_LEGACY_PLAINTEXT"] = "false"
 
 from app.core.config import reset_settings_cache
 from app.core.database import AsyncSessionLocal
@@ -79,6 +83,8 @@ def _configure(monkeypatch, **overrides) -> None:
         "ZENDESK_OAUTH_SCOPE": "read write",
         "ZENDESK_OAUTH_STATE_TTL_SECONDS": "600",
         "ZENDESK_WEBHOOK_REPLAY_WINDOW_SECONDS": "300",
+        "ENCRYPTION_KEYS": base64.urlsafe_b64encode(b"0" * 32).decode(),
+        "ENCRYPTION_ALLOW_LEGACY_PLAINTEXT": "false",
     }
     values.update(overrides)
     for key, value in values.items():
