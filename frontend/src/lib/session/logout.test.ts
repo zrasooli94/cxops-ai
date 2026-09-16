@@ -49,11 +49,13 @@ function createDeps(overrides: Partial<{
   signOutSuccess: boolean;
   clearThrows: boolean;
   deleteThrows: boolean;
+  deleteOrgThrows: boolean;
 }> = {}): LogoutDeps & {
   __testAccess: {
     signOutCalled: boolean;
     clearCalled: boolean;
     deleteCalled: boolean;
+    deleteOrgCalled: boolean;
     lastRefreshToken: string;
   };
 } {
@@ -62,9 +64,11 @@ function createDeps(overrides: Partial<{
   const signOutSuccess = overrides.signOutSuccess ?? true;
   const clearThrows = overrides.clearThrows ?? false;
   const deleteThrows = overrides.deleteThrows ?? false;
+  const deleteOrgThrows = overrides.deleteOrgThrows ?? false;
 
   let clearCalled = false;
   let deleteCalled = false;
+  let deleteOrgCalled = false;
   let signOutCalled = false;
   let lastRefreshToken = "";
 
@@ -86,10 +90,15 @@ function createDeps(overrides: Partial<{
       deleteCalled = true;
       if (deleteThrows) throw new Error("Delete failed");
     },
+    deleteOrganizationCookie: () => {
+      deleteOrgCalled = true;
+      if (deleteOrgThrows) throw new Error("Delete org cookie failed");
+    },
     __testAccess: {
       get signOutCalled() { return signOutCalled; },
       get clearCalled() { return clearCalled; },
       get deleteCalled() { return deleteCalled; },
+      get deleteOrgCalled() { return deleteOrgCalled; },
       get lastRefreshToken() { return lastRefreshToken; },
     },
   };
@@ -107,6 +116,7 @@ describe("performLogout", () => {
     assert.equal(deps.__testAccess.lastRefreshToken, "refresh-token-uuid");
     assert.equal(deps.__testAccess.clearCalled, true);
     assert.equal(deps.__testAccess.deleteCalled, true);
+    assert.equal(deps.__testAccess.deleteOrgCalled, true);
   });
 
   it("B: remote signOut fails, local still cleared, safe partial error", async () => {
@@ -120,6 +130,7 @@ describe("performLogout", () => {
     assert.ok(!result.error?.includes("Network error"));
     assert.equal(deps.__testAccess.clearCalled, true);
     assert.equal(deps.__testAccess.deleteCalled, true);
+    assert.equal(deps.__testAccess.deleteOrgCalled, true);
   });
 
   it("C: session has no refresh token, local cleared, no remote call, correct semantics", async () => {

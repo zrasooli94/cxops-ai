@@ -2,9 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  FORWARDED_HEADERS,
   TENANT_SELECTOR_HEADER,
-  selectForwardHeaders,
+  buildBackendHeaders,
 } from "./proxy-headers.ts";
 
 describe("backend proxy auth behavior", () => {
@@ -334,106 +333,102 @@ describe("backend proxy auth behavior", () => {
   });
 });
 
-describe("BFF tenant selector forwarding", () => {
-  it("A: X-CXOps-Organization-ID is forwarded when present", () => {
-    const source = new Headers({
-      [TENANT_SELECTOR_HEADER]: "42",
+describe("BFF backend header construction", () => {
+  it("A: server-managed tenant selector is injected into outbound headers", () => {
+    const source = new Headers();
+
+    const { headers } = buildBackendHeaders(source, {
+      activeOrganizationId: 42,
+      authHeader: "Bearer token",
+      isDevelopment: false,
     });
 
-    const forwarded = selectForwardHeaders(source);
-
-    assert.equal(forwarded.get(TENANT_SELECTOR_HEADER), "42");
+    assert.equal(headers.get(TENANT_SELECTOR_HEADER), "42");
+    assert.equal(headers.get("authorization"), "Bearer token");
   });
 
-  it("A2: selector value is forwarded unchanged (data only)", () => {
+  it("A2: browser-provided tenant header is ignored in favor of cookie value", () => {
     const source = new Headers({
-      [TENANT_SELECTOR_HEADER]: "1",
+      [TENANT_SELECTOR_HEADER]: "99",
     });
 
-    const forwarded = selectForwardHeaders(source);
-
-    assert.equal(forwarded.get(TENANT_SELECTOR_HEADER), "1");
-  });
-
-  it("B: header is not synthesized when absent", () => {
-    const source = new Headers({
-      "content-type": "application/json",
+    const { headers } = buildBackendHeaders(source, {
+      activeOrganizationId: 42,
+      authHeader: "Bearer token",
+      isDevelopment: false,
     });
 
-    const forwarded = selectForwardHeaders(source);
-
-    assert.equal(forwarded.has(TENANT_SELECTOR_HEADER), false);
-    assert.equal(forwarded.get("content-type"), "application/json");
+    assert.equal(headers.get(TENANT_SELECTOR_HEADER), "42");
   });
 
-  it("C: Nhost Authorization is injected by the server client, never via header forwarding", () => {
+  it("B: tenant header is omitted when no active organization is selected", () => {
+    const source = new Headers();
+
+    const { headers } = buildBackendHeaders(source, {
+      activeOrganizationId: null,
+      authHeader: "Bearer token",
+      isDevelopment: false,
+    });
+
+    assert.equal(headers.has(TENANT_SELECTOR_HEADER), false);
+  });
+
+  it("C: production requests without server session are rejected", () => {
+    const source = new Headers();
+
+    const { rejectUnauthorized } = buildBackendHeaders(source, {
+      activeOrganizationId: null,
+      authHeader: null,
+      isDevelopment: false,
+    });
+
+    assert.equal(rejectUnauthorized, true);
+  });
+
+  it("D: development requests without server session fall back to incoming Authorization", () => {
+    const source = new Headers({
+      authorization: "Bearer dev-token",
+    });
+
+    const { headers, rejectUnauthorized } = buildBackendHeaders(source, {
+      activeOrganizationId: null,
+      authHeader: null,
+      isDevelopment: true,
+    });
+
+    assert.equal(rejectUnauthorized, false);
+    assert.equal(headers.get("authorization"), "Bearer dev-token");
+  });
+
+  it("E: server session Authorization takes precedence over incoming header", () => {
     const source = new Headers({
       authorization: "Bearer browser-token",
     });
 
-    const forwarded = selectForwardHeaders(source);
+    const { headers } = buildBackendHeaders(source, {
+      activeOrganizationId: null,
+      authHeader: "Bearer server-token",
+      isDevelopment: false,
+    });
 
-    // The BFF's forwarding layer must never carry an Authorization header;
-    // it is always sourced from the server-side Nhost session instead.
-    assert.equal(forwarded.has("authorization"), false);
-    assert.equal(FORWARDED_HEADERS.includes("authorization"), false);
+    assert.equal(headers.get("authorization"), "Bearer server-token");
   });
 
-  it("D: cookie/Host remain blocked by the allowlist", () => {
+  it("F: cookie/Host remain blocked by the allowlist", () => {
     const source = new Headers({
       cookie: "nhostSession=secret",
       host: "evil.example.com",
       "x-request-id": "req-1",
     });
 
-    const forwarded = selectForwardHeaders(source);
+    const { headers } = buildBackendHeaders(source, {
+      activeOrganizationId: null,
+      authHeader: "Bearer token",
+      isDevelopment: false,
+    });
 
-    assert.equal(forwarded.has("cookie"), false);
-    assert.equal(forwarded.has("host"), false);
-    assert.equal(forwarded.get("x-request-id"), "req-1");
-  });
-
-  it("E: tenant selector is transported only; frontend auth decisions ignore it", async () => {
-    const mockNhost = {
-      getUserSession: () => ({
-        accessToken: "access-token",
-        accessTokenExpiresIn: 900,
-        refreshToken: "refresh-token",
-        refreshTokenId: "refresh-id",
-        user: { id: "user-1", email: "test@example.com" },
-        decodedToken: { exp: Date.now() / 1000 + 900, sub: "user-1" },
-      }),
-      refreshSession: async (marginSeconds: number) => {
-        assert.equal(marginSeconds, 60);
-        return {
-          accessToken: "new-access-token",
-          accessTokenExpiresIn: 900,
-          refreshToken: "new-refresh-token",
-          refreshTokenId: "new-refresh-id",
-          user: { id: "user-1", email: "test@example.com" },
-          decodedToken: { exp: Date.now() / 1000 + 900, sub: "user-1" },
-        };
-      },
-      clearSession: () => {},
-    };
-
-    async function getAuthHeaderMock(nhost: typeof mockNhost): Promise<string | null> {
-      const session = nhost.getUserSession();
-      if (!session?.accessToken) return null;
-      const refreshed = await nhost.refreshSession(60);
-      if (!refreshed?.accessToken) return null;
-      return `Bearer ${refreshed.accessToken}`;
-    }
-
-    // A browser-supplied selector travels as data only. It must never
-    // influence the Authorization value produced for the backend.
-    const source = new Headers({ [TENANT_SELECTOR_HEADER]: "42" });
-    const forwarded = selectForwardHeaders(source);
-
-    const authHeader = await getAuthHeaderMock(mockNhost);
-
-    assert.equal(forwarded.get(TENANT_SELECTOR_HEADER), "42");
-    assert.equal(authHeader, "Bearer new-access-token");
-    assert.match(authHeader, /^Bearer new-access-token$/);
+    assert.equal(headers.has("cookie"), false);
+    assert.equal(headers.has("host"), false);
+    assert.equal(headers.get("x-request-id"), "req-1");
   });
 });

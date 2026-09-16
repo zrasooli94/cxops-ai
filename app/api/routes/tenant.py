@@ -3,9 +3,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant
+from app.api.deps import CurrentPrincipal, CurrentTenant
 from app.core.database import get_db
+from app.repositories.organization_membership_repository import (
+    OrganizationMembershipRepository,
+)
 from app.repositories.organization_repository import OrganizationRepository
+from app.schemas.organization import OrganizationRead
 from app.schemas.tenant import TenantInfo
 
 router = APIRouter(
@@ -45,3 +49,33 @@ async def get_my_tenant(
         organization_id=tenant.organization_id,
         organization_name=organization.name,
     )
+
+
+@router.get(
+    "/organizations",
+    response_model=list[OrganizationRead],
+)
+async def get_my_organizations(
+    principal: CurrentPrincipal,
+    db: DatabaseSession,
+):
+    """Return organizations the authenticated subject is a member of.
+
+    This endpoint intentionally does NOT require a resolved tenant: it is used
+    by the frontend organization picker before a tenant has been selected.
+    Authorization is still enforced via ``CurrentPrincipal`` and the membership
+    table.
+    """
+    memberships = await OrganizationMembershipRepository.list_for_subject(
+        db, principal.subject
+    )
+    organization_ids = [m.organization_id for m in memberships]
+    if not organization_ids:
+        return []
+
+    organizations = []
+    for org_id in organization_ids:
+        org = await OrganizationRepository.get_by_id(db, org_id)
+        if org:
+            organizations.append(org)
+    return organizations

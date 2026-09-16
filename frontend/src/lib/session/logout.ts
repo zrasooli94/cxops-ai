@@ -2,6 +2,7 @@
 
 import { cookies } from "next/headers";
 import { createNhostServerClient } from "@/lib/nhost/server";
+import { ACTIVE_ORGANIZATION_COOKIE_NAME } from "@/lib/tenant/cookie-helpers";
 import { performLogout, type LogoutDeps, type LogoutResult } from "./logout-helpers";
 
 export async function logout(): Promise<LogoutResult> {
@@ -19,5 +20,15 @@ export async function logout(): Promise<LogoutResult> {
     deleteCookie: () => cookieStore.delete(COOKIE_NAME),
   };
 
-  return performLogout(deps);
+  const result = await performLogout(deps);
+
+  // Always clear the active organization cookie, even if remote sign-out fails,
+  // so no tenant selection survives logout.
+  try {
+    cookieStore.delete(ACTIVE_ORGANIZATION_COOKIE_NAME);
+  } catch {
+    // Best-effort cleanup.
+  }
+
+  return result;
 }

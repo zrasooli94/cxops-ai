@@ -3,7 +3,13 @@ import {
   NextResponse,
 } from "next/server";
 
-import { selectForwardHeaders } from "@/lib/auth/proxy-headers";
+import {
+  buildBackendHeaders,
+} from "@/lib/auth/proxy-headers";
+import {
+  clearActiveOrganizationId,
+  getActiveOrganizationId,
+} from "@/lib/tenant/cookie";
 import { createNhostServerClient } from "@/lib/nhost/server";
 
 const BACKEND_API_URL =
@@ -63,28 +69,20 @@ async function proxy(
     },
   );
 
-  // Forward only explicitly approved headers (never cookies/Host).
-  const headers = selectForwardHeaders(request.headers);
-
   const authHeader = await getAuthHeader();
+  const activeOrganizationId = await getActiveOrganizationId();
 
-  if (authHeader) {
-    headers.set("authorization", authHeader);
-  } else {
-    // No valid server session
-    if (!isDevelopment) {
-      // Production: return 401 directly, don't forward to FastAPI
-      return NextResponse.json(
-        { detail: "Authentication required." },
-        { status: 401 },
-      );
-    }
+  const { headers, rejectUnauthorized } = buildBackendHeaders(request.headers, {
+    activeOrganizationId,
+    authHeader,
+    isDevelopment,
+  });
 
-    // Development fallback: only use incoming Authorization if present
-    const incomingAuth = request.headers.get("authorization");
-    if (incomingAuth) {
-      headers.set("authorization", incomingAuth);
-    }
+  if (rejectUnauthorized) {
+    return NextResponse.json(
+      { detail: "Authentication required." },
+      { status: 401 },
+    );
   }
 
   // Buffer request body for potential retry
@@ -151,6 +149,13 @@ async function proxy(
         JSON.stringify({ detail: "Authentication expired." }),
         { status: 401 },
       );
+    }
+
+    // A stale or invalid active organization selection should not leave the
+    // browser in a retry loop. Clear the cookie and let the UI route the user
+    // back to the organization picker.
+    if (response.status === 403 || response.status === 409) {
+      await clearActiveOrganizationId();
     }
 
     const body = await response.arrayBuffer();

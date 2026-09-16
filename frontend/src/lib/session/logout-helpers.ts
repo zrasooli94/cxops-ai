@@ -11,6 +11,7 @@ export interface LogoutDeps {
   signOut: (refreshToken: string) => Promise<{ status: number; body: string }>;
   clearSession: () => void;
   deleteCookie: () => void;
+  deleteOrganizationCookie?: () => void;
 }
 
 export async function performLogout(deps: LogoutDeps): Promise<LogoutResult> {
@@ -39,6 +40,7 @@ export async function performLogout(deps: LogoutDeps): Promise<LogoutResult> {
     localCleared = true;
     try {
       deps.deleteCookie();
+      deps.deleteOrganizationCookie?.();
     } catch {
       // Cookie deletion failed but session cleared
       error = error ? `${error}; cookie cleanup failed` : "Cookie cleanup failed";
@@ -47,6 +49,7 @@ export async function performLogout(deps: LogoutDeps): Promise<LogoutResult> {
     // Primary flow failed - try to clean up cookie
     try {
       deps.deleteCookie();
+      deps.deleteOrganizationCookie?.();
       localCleared = true;
     } catch {
       localCleared = false;

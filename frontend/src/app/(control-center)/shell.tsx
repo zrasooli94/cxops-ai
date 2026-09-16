@@ -4,6 +4,7 @@ import {
   Activity,
   Bot,
   BrainCircuit,
+  Building2,
   Gauge,
   LogOut,
   ShieldCheck,
@@ -13,10 +14,23 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
+import OrganizationSwitcher from "@/components/organization-switcher";
+import { switchOrganization } from "@/lib/tenant/actions";
+
+interface Organization {
+  id: number;
+  name: string;
+  industry: string | null;
+}
+
 interface ControlCenterShellProps {
   session: {
     displayName: string | null;
     email: string | null;
+  };
+  tenantContext: {
+    activeOrganization: Organization;
+    memberships: Organization[];
   };
   children: React.ReactNode;
 }
@@ -33,6 +47,7 @@ const navItems = [
 
 export default function ControlCenterShell({
   session,
+  tenantContext,
   children,
 }: ControlCenterShellProps) {
   const pathname = usePathname();
@@ -41,7 +56,7 @@ export default function ControlCenterShell({
   return (
     <div className="min-h-screen">
       <aside className="fixed inset-y-0 left-0 z-50 hidden w-[230px] border-r border-slate-200/70 bg-white/80 px-5 py-7 backdrop-blur-2xl xl:flex xl:flex-col">
-        <Link href="/tickets" className="flex items-center gap-3 px-2">
+        <Link href="/dashboard" className="flex items-center gap-3 px-2">
           <div className="grid h-9 w-9 grid-cols-3 gap-[3px]">
             {Array.from({ length: 9 }).map((_, index) => (
               <span
@@ -91,8 +106,26 @@ export default function ControlCenterShell({
           })}
         </nav>
 
-        <div className="mt-auto rounded-2xl border border-slate-200/80 bg-white/85 p-4 shadow-[0_10px_35px_rgba(79,90,130,0.05)]">
-          <div className="flex items-center gap-2.5 mb-4">
+        <div className="mt-auto space-y-3 rounded-2xl border border-slate-200/80 bg-white/85 p-4 shadow-[0_10px_35px_rgba(79,90,130,0.05)]">
+          {tenantContext.memberships.length > 1 ? (
+            <OrganizationSwitcher
+              activeOrganization={tenantContext.activeOrganization}
+              memberships={tenantContext.memberships}
+              onSwitch={switchOrganization}
+            />
+          ) : (
+            <div className="flex items-center gap-2.5 rounded-xl border border-slate-200/80 bg-white/85 px-3 py-2.5">
+              <Building2 className="h-4 w-4 text-violet-500" strokeWidth={1.7} />
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] text-slate-400">Organization</p>
+                <p className="truncate text-xs font-medium text-slate-800">
+                  {tenantContext.activeOrganization.name}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2.5">
             <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.7)]" />
 
             <div className="flex-1 min-w-0">
@@ -120,7 +153,44 @@ export default function ControlCenterShell({
         </div>
       </aside>
 
-      <div className="xl:pl-[230px]">
+      {/* Mobile tenant / account bar */}
+      <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200/80 bg-white/95 px-4 py-3 backdrop-blur-xl xl:hidden">
+        <div className="mx-auto flex max-w-lg items-center gap-3">
+          {tenantContext.memberships.length > 1 ? (
+            <div className="flex-1">
+              <OrganizationSwitcher
+                activeOrganization={tenantContext.activeOrganization}
+                memberships={tenantContext.memberships}
+                onSwitch={switchOrganization}
+              />
+            </div>
+          ) : (
+            <div className="flex flex-1 items-center gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2">
+              <Building2 className="h-4 w-4 text-violet-500" strokeWidth={1.7} />
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] text-slate-400">Organization</p>
+                <p className="truncate text-xs font-medium text-slate-800">
+                  {tenantContext.activeOrganization.name}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <button
+            aria-label="Sign out"
+            className="flex items-center justify-center rounded-xl bg-slate-50 p-2.5 text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+            onClick={async () => {
+              const { logout } = await import("@/lib/session/logout");
+              await logout();
+              router.push("/login");
+            }}
+          >
+            <LogOut className="h-[17px] w-[17px] text-slate-400" strokeWidth={1.7} />
+          </button>
+        </div>
+      </div>
+
+      <div className="pb-20 xl:pb-0 xl:pl-[230px]">
         {children}
       </div>
     </div>

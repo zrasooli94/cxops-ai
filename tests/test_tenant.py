@@ -369,3 +369,51 @@ async def test_malformed_selector_rejected_403(client, org_scope):
     async with client:
         response = await client.get("/me/tenant", headers=headers)
     assert response.status_code == 403
+
+
+# -------------------------------------------------- membership listing endpoint
+
+
+@pytest.mark.asyncio
+async def test_me_organizations_unauthenticated_401(client):
+    async with client:
+        response = await client.get("/me/organizations")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_me_organizations_returns_memberships_only(client, org_scope):
+    org_alpha = await org_scope(subject=USER_ALPHA)
+    org_beta = await org_scope(subject=USER_BETA)
+    headers = {"Authorization": f"Bearer {_build_token(sub=USER_ALPHA)}"}
+
+    async with client:
+        response = await client.get("/me/organizations", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    ids = {org["id"] for org in body}
+    assert org_alpha.id in ids
+    assert org_beta.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_me_organizations_empty_for_no_membership(client, org_scope):
+    await org_scope(subject=USER_BETA)
+    headers = {"Authorization": f"Bearer {_build_token(sub=USER_ALPHA)}"}
+
+    async with client:
+        response = await client.get("/me/organizations", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_me_organizations_does_not_require_tenant_selector(client, org_scope):
+    await org_scope(subject=USER_ALPHA)
+    await org_scope(subject=USER_ALPHA)
+    headers = {"Authorization": f"Bearer {_build_token(sub=USER_ALPHA)}"}
+
+    async with client:
+        response = await client.get("/me/organizations", headers=headers)
+    assert response.status_code == 200
+    assert len(response.json()) == 2
