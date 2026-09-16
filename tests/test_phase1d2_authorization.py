@@ -5,6 +5,8 @@ that the service-layer defense-in-depth guards raise the expected RBAC
 denials. Machine-only paths are verified to carry no human-role gate.
 """
 
+import hashlib
+import math
 import os
 import time
 import uuid
@@ -54,6 +56,66 @@ USER_SUPERVISOR = "user-supervisor"
 USER_AGENT = "user-agent"
 USER_VIEWER = "user-viewer"
 USER_GUEST = "user-guest"
+
+EMBEDDING_DIMS = 1536
+
+
+def _deterministic_vector(*, seed_text: str) -> list[float]:
+    """Deterministic, unit-norm offline embedding used by the fake embeddings.
+
+    Mirrors the offline pattern from ``tests/test_knowledge_tenant.py`` so this
+    authorization suite never opens an OpenAI connection. Not used as a
+    security token (``hashlib.sha256`` here only seeds a deterministic vector).
+    """
+    digest = hashlib.sha256(seed_text.encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:8], "big")
+    values = []
+    state = seed
+    for _ in range(EMBEDDING_DIMS):
+        state = (state * 1103515245 + 12345) % (2**31)
+        values.append(((state / (2**31 - 1)) * 2.0) - 1.0)
+    norm = math.sqrt(sum(value * value for value in values))
+    return [value / norm for value in values]
+
+
+@pytest.fixture(autouse=True)
+def _block_real_openai_embeddings(monkeypatch):
+    """Fail loudly if a knowledge test ever contacts the real OpenAI client.
+
+    Mirrors ``tests/test_knowledge_tenant.py``: the documented, guaranteed
+    property of this authorization suite is zero OpenAI network calls. Any
+    access to ``embedding_service.embed_text`` or ``embed_documents`` from a
+    unit test without an installed fake raises immediately, so a forgotten
+    offline stub produces a loud local failure instead of a live API call (and
+    a spurious CI 401 with the test key).
+    """
+
+    async def _raise(*_):
+        raise RuntimeError(
+            "Real OpenAI embeddings client invoked from a Phase 1D.2 test. "
+            "Request _fake_embeddings instead."
+        )
+
+    monkeypatch.setattr(embedding_service, "embed_text", _raise)
+    monkeypatch.setattr(embedding_service, "embed_documents", _raise)
+
+
+@pytest.fixture
+def _fake_embeddings(monkeypatch):
+    """Deterministic offline embeddings of unit norm for knowledge tests.
+
+    Stubs BOTH ``embed_text`` and ``embed_documents`` so any knowledge test
+    stays fully offline. Requests this instead of the autouse blocker above.
+    """
+
+    async def _fake_embed_text(text: str) -> list[float]:
+        return _deterministic_vector(seed_text=text)
+
+    async def _fake_embed_documents(texts: list[str]) -> list[list[float]]:
+        return [_deterministic_vector(seed_text=text) for text in texts]
+
+    monkeypatch.setattr(embedding_service, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(embedding_service, "embed_documents", _fake_embed_documents)
 
 
 @pytest.fixture(autouse=True)
@@ -257,7 +319,7 @@ async def test_organization_read_owner_allows_guest_denies(client, org_scope):
 
 
 @pytest.mark.asyncio
-async def test_knowledge_manage_owner_allows_agent_denies(client, db, org_scope):
+async def test_knowledge_manage_owner_allows_agent_denies(client, db, org_scope, _fake_embeddings):
     org = await org_scope(subject=USER_OWNER, role=OrganizationRole.OWNER)
     await _add_member(db, org.id, USER_AGENT, OrganizationRole.AGENT)
     body = {
