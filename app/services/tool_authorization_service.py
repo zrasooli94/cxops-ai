@@ -1,3 +1,5 @@
+import hashlib
+import json as _json
 from copy import deepcopy
 from typing import ClassVar
 
@@ -227,9 +229,6 @@ class ToolAuthorizationService:
         legitimately persisted ``authorized`` state (e.g. from human
         approval).  Only normalizes fields that policy controls.
         """
-        import json as _json
-        import hashlib
-
         validated: list[dict] = []
         for raw_tool in tool_plan:
             tool_call = {k: v for k, v in raw_tool.items()}
@@ -281,8 +280,6 @@ class ToolAuthorizationService:
         run,
     ) -> bool:
         """Validate that a run's authorization_digest matches the canonical digest."""
-        import json as _json
-        import hashlib
 
         expected = ToolAuthorizationService.compute_run_digest(
             run_id=run.run_id,

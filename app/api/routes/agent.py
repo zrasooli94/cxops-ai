@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import (
@@ -315,7 +316,7 @@ async def execute_agent_run(
         )
         run.authorization_source = "human_execute"
         run.authorized_by_subject = authz.subject
-        run.authorized_at = dt.datetime.now(dt.timezone.utc)
+        run.authorized_at = datetime.now(UTC)
         run.tool_policy_version = ToolAuthorizationService.TOOL_POLICY_VERSION
         run.authorization_digest = ToolAuthorizationService.compute_run_digest(
             run_id=run.run_id,

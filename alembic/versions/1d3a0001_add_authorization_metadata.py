@@ -1,16 +1,16 @@
 """Add authorization metadata columns to agent_runs (Phase 1D.3).
 
 Revision ID: 1d3a0001
-Revises: cfd495521e21
+Revises: 1d100001
 Create Date: 2026-09-17 12:00:00.000000
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "1d3a0001"
-down_revision = "cfd495521e21"
+down_revision = "1d100001"
 branch_labels = None
 depends_on = None
 
