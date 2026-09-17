@@ -63,7 +63,7 @@ class AgentApprovalService:
         run_id: str,
         organization_id: int,
         note: str | None,
-        actor: str = "human-reviewer",
+        actor: str | None = None,
         authz: AuthorizationContext,
     ) -> AgentRun:
 
@@ -153,7 +153,7 @@ class AgentApprovalService:
         run_id: str,
         organization_id: int,
         note: str | None,
-        actor: str = "human-reviewer",
+        actor: str | None = None,
         authz: AuthorizationContext,
     ) -> AgentRun:
 

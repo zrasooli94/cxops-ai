@@ -8,6 +8,9 @@ from app.models.agent_action_event import (
 )
 from app.models.agent_run import AgentRun
 from app.models.ticket import Ticket
+from app.services.tool_authorization_service import (
+    ToolAuthorizationService,
+)
 
 
 class AgentRunRepository:
@@ -79,9 +82,8 @@ class AgentRunRepository:
             recommended_team=decision.get("recommended_team"),
             recommended_priority=decision.get("recommended_priority"),
             response_draft=decision.get("response_draft"),
-            requires_human_approval=decision.get(
-                "requires_human_approval",
-                True,
+            requires_human_approval=ToolAuthorizationService.requires_human_approval(
+                tool_plan or []
             ),
             status="pending_approval",
             sources=sources,

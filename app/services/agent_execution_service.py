@@ -1,3 +1,4 @@
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -267,6 +268,87 @@ class AgentExecutionService:
 
         raise AgentExecutionError(f"Unsupported agent tool: {tool_name}")
 
+    @staticmethod
+    async def _validate_plan_preflight(
+        db,
+        run: AgentRun,
+        tool_plan: list[dict],
+        resolved_organization_id: int,
+        zendesk_ticket_id: int,
+        organization_id: int,
+    ) -> None:
+        from app.services.tool_authorization_service import (
+            ToolAuthorizationService,
+        )
+        # 1. Policy version check
+        if run.tool_policy_version != ToolAuthorizationService.TOOL_POLICY_VERSION:
+            msg = (
+                "Tool policy version mismatch: run has "
+                + str(run.tool_policy_version)
+                + ", expected "
+                + str(ToolAuthorizationService.TOOL_POLICY_VERSION)
+            )
+            raise AgentExecutionStateError(msg)
+        # 2. Authorization digest check
+        if run.authorization_digest:
+            import hashlib
+            import json as _json
+            digest_payload = {
+                "run_id": run.run_id,
+                "organization_id": run.organization_id,
+                "ticket_id": run.ticket_id,
+                "policy_version": (
+                    run.tool_policy_version
+                    if run.tool_policy_version is not None
+                    else ToolAuthorizationService.TOOL_POLICY_VERSION
+                ),
+                "tool_plan": ToolAuthorizationService.authorize_plan(
+                    run.tool_plan or []
+                ),
+            }
+            expected = hashlib.sha256(
+                _json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if run.authorization_digest != expected:
+                raise AgentExecutionStateError(
+                    "Intent digest mismatch -- plan was modified after authorization."
+                )
+        # 3. Tool validation (risk, requires_approval, required_capability, args)
+        for tool in (tool_plan or []):
+            tool_name = tool.get("tool", "")
+            if tool_name in ("none", "human.review"):
+                continue
+            policy = ToolAuthorizationService.POLICIES.get(tool_name)
+            if policy is None:
+                raise AgentExecutionError("Unrecognized tool in plan: " + tool_name)
+            if tool.get("risk_level") != policy["risk_level"]:
+                raise AgentExecutionError("Tool " + tool_name + " risk_level mismatch")
+            if tool.get("requires_approval") != policy["requires_approval"]:
+                raise AgentExecutionError("Tool " + tool_name + " requires_approval mismatch")
+            if tool.get("required_capability") != policy["required_capability"]:
+                raise AgentExecutionError("Tool " + tool_name + " required_capability mismatch")
+            # Check forbidden args
+            forbidden = {
+                "organization_id",
+                "tenant_id",
+                "integration_id",
+                "credential_id",
+                "zendesk_ticket_id",
+                "external_ticket_id",
+            }
+            for key in tool.get("arguments", {}):
+                if key in forbidden:
+                    raise AgentExecutionError(
+                        f"Tool {tool_name} argument {key} is forbidden"
+                    )
+        # 4. Tenant/org consistency
+        if run.organization_id != resolved_organization_id:
+            raise AgentExecutionError("Agent run organization_id mismatch.")
+        if run.organization_id != organization_id:
+            raise AgentExecutionError("Provided organization_id does not match run's organization.")
+
     async def execute(
         self,
         db: AsyncSession,
@@ -508,6 +590,28 @@ class AgentExecutionService:
             # -------------------------------------
             # Execute persisted tool plan
             # -------------------------------------
+
+            # --- Preflight validation (Phase 1D.3) ---
+            # Validate the entire persisted plan before any external side effect.
+            # This prevents partial execution when a later tool is malformed/unknown.
+            _ = await self._validate_plan_preflight(
+                run,
+                tool_plan,
+                resolved_organization_id,
+                zendesk_ticket_id,
+                organization_id,
+            )
+
+            if not tool_plan:
+                await AgentRunRepository.mark_execution_failed(
+                    db,
+                    run,
+                    ("Agent run contains no tool plan."),
+                )
+                record_agent_execution_failure(
+                    action=str(run.action),
+                )
+                raise AgentExecutionError("Agent run contains no executable tool plan.")
 
             for tool_call in tool_plan:
                 await self._execute_tool(

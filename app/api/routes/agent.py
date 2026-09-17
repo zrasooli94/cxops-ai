@@ -96,6 +96,7 @@ async def analyze_ticket(
             db=db,
             ticket_id=ticket_id,
             organization_id=tenant.organization_id,
+            authz=authz,
         )
 
     except TicketNotFoundError as exc:
@@ -251,13 +252,84 @@ async def execute_agent_run(
             detail=(f"Agent run cannot be queued from status {run.status}."),
         )
 
+    # --- Phase 1D.3: Manual execute two-key authorization ---
+    # Verify agent.execute + all tool required capabilities.
+    # Distinguish between approval-required and low-risk plans.
+    plan = run.tool_plan or []
+    has_approval_required = any(
+        tool.get("requires_approval", True)
+        for tool in plan
+    )
+
+    if has_approval_required:
+        # Medium/high plan: verify existing human_approval authorization
+        # is intact; do NOT overwrite provenance with executor identity.
+        if run.authorization_source != "human_approval":
+            raise HTTPException(
+                status_code=(status.HTTP_403_FORBIDDEN),
+                detail=("Agent run requires human approval but has no "
+                        "valid human_approval authorization."),
+            )
+        # Verify digest using centralized ToolAuthorizationService helper
+        # (the digest was persisted during approval/execution preflight)
+        if run.authorization_digest:
+            from app.services.tool_authorization_service import (
+                ToolAuthorizationService,
+            )
+            if not ToolAuthorizationService.validate_run_digest(
+                run,
+            ):
+                raise HTTPException(
+                    status_code=(status.HTTP_403_FORBIDDEN),
+                    detail=("Intent digest mismatch — plan was modified "
+                            "after authorization."),
+                )
+        # Execution caller still independently needs agent.execute
+        # + required tool capabilities; theenqueue gate enforces this.
+    else:
+        # Low-risk plan with no prior human approval:
+        # Require agent.execute + all tool required capabilities.
+        # Before queue creation, persist human_execute authorization.
+        from app.services.tool_authorization_service import (
+            ToolAuthorizationService,
+        )
+        # Verify agent.execute and all required_capability values
+        for tool in plan:
+            req_cap = tool.get("required_capability")
+            if req_cap is not None and not authz.has(req_cap):
+                    raise HTTPException(
+                        status_code=(status.HTTP_403_FORBIDDEN),
+                        detail=(f"Capability {req_cap.value} required for "
+                                f"tool {tool.get('tool')} but not held by "
+                                f"the executing authorizer."),
+                    )
+            if tool.get("risk_level") != "low":
+                raise HTTPException(
+                    status_code=(status.HTTP_403_FORBIDDEN),
+                    detail=("Low-risk plan verification failed: tool "
+                            f"{tool.get('tool')} risk_level is not low."),
+                    )
+        # Persist human_execute authorization metadata before queue creation
+        from app.services.tool_authorization_service import (
+            ToolAuthorizationService,
+        )
+        run.authorization_source = "human_execute"
+        run.authorized_by_subject = authz.subject
+        run.authorized_at = dt.datetime.now(dt.timezone.utc)
+        run.tool_policy_version = ToolAuthorizationService.TOOL_POLICY_VERSION
+        run.authorization_digest = ToolAuthorizationService.compute_run_digest(
+            run_id=run.run_id,
+            organization_id=run.organization_id,
+            ticket_id=run.ticket_id,
+            tool_plan=plan,
+        )
+
     try:
         return await IntegrationJobService.enqueue_agent_execution(
             db=db,
             run_id=run_id,
             organization_id=tenant.organization_id,
         )
-
     except AgentExecutionQueueBlockedError as exc:
         raise HTTPException(
             status_code=(status.HTTP_409_CONFLICT),

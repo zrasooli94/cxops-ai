@@ -1,4 +1,5 @@
 import time
+from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from app.core.metrics import (
     record_agent_auto_approval,
     record_agent_decision,
 )
+from app.core.rbac import AuthorizationContext, Capability
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.schemas.agent import AgentDecision
@@ -726,6 +728,7 @@ Choose the safest next action.
         organization_id: int,
         allow_auto_queue: bool = True,
         persist_run: bool = True,
+        authz: "AuthorizationContext | None" = None,
     ) -> dict:
 
         run_id = uuid4().hex
@@ -933,30 +936,75 @@ Choose the safest next action.
             and allow_auto_queue
             and run is not None
             and ToolAuthorizationService.can_auto_execute(tool_plan)
+            and (
+                authz is None
+                or authz.has(Capability.AGENT_EXECUTE)
+            )
         ):
-            run = await AgentRunRepository.mark_auto_approved(
-                db=db,
-                run=run,
-            )
+            # additionally verify that every executable tool's required_capability
+            # is held by the authorizing party
+            if authz is not None:
+                for tool in tool_plan:
+                    tool_name = tool.get("tool", "")
+                    if tool_name in ("none", "human.review"):
+                        continue
+                    policy = ToolAuthorizationService.POLICIES.get(tool_name)
+                    if policy and policy.get("required_capability"):
+                        req_cap = policy["required_capability"]
+                        if not authz.has(Capability(req_cap)):
+                            # lack required capability -> disable auto-queue
+                            auto_queued = False
+                            break
+            else:
+                auto_queued = False
 
-            await AgentRunRepository.add_event(
-                db=db,
-                agent_run_id=run.id,
-                event_type="auto_approved",
-                actor="cxops-policy",
-                note=("All executable tools were low risk and pre-authorized."),
-                event_data={
-                    "tool_plan": tool_plan,
-                },
-            )
-            record_agent_auto_approval(
-                action=str(
-                    decision.get(
-                        "action",
-                        "unknown",
-                    )
-                ),
-            )
+            if auto_queued:
+                run = await AgentRunRepository.mark_auto_approved(
+                    db=db,
+                    run=run,
+                )
+
+                # --- Phase 1D.3: persist authorization metadata ---
+                # Persist policy-auto provenance before queue creation.
+                run.authorization_source = "policy_auto"
+                run.authorized_by_subject = authz.subject
+                run.authorized_at = datetime.now(UTC)
+                run.tool_policy_version = ToolAuthorizationService.TOOL_POLICY_VERSION
+                # Compute intent digest over the authorized tool plan
+                import hashlib
+                import json as _json
+                digest_payload = {
+                    "run_id": run.run_id,
+                    "organization_id": run.organization_id,
+                    "ticket_id": run.ticket_id,
+                    "policy_version": ToolAuthorizationService.TOOL_POLICY_VERSION,
+                    "tool_plan": ToolAuthorizationService.authorize_plan(
+                        run.tool_plan or []
+                    ),
+                }
+                _seps = (",", ":")
+                run.authorization_digest = hashlib.sha256(
+                    _json.dumps(digest_payload, sort_keys=True, separators=_seps).encode("utf-8"),
+                ).hexdigest()
+
+                await AgentRunRepository.add_event(
+                    db=db,
+                    agent_run_id=run.id,
+                    event_type="auto_approved",
+                    actor="cxops-policy",
+                    note=("All executable tools were low risk and pre-authorized."),
+                    event_data={
+                        "tool_plan": tool_plan,
+                    },
+                )
+                record_agent_auto_approval(
+                    action=str(
+                        decision.get(
+                            "action",
+                            "unknown",
+                        )
+                    ),
+                )
 
             try:
                 job = await IntegrationJobService.enqueue_agent_execution(

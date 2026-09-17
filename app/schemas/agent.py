@@ -1,8 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
-
-from app.schemas.knowledge import RAGSource
+from pydantic import BaseModel, Field, validator
 
 
 class AgentDecision(BaseModel):
@@ -33,10 +31,14 @@ class AgentDecision(BaseModel):
 
     requires_human_approval: bool = True
 
+    model_config = {"extra": "forbid"}
+
 
 class KnowledgeNeedDecision(BaseModel):
     needs_knowledge: bool
     reason: str
+
+    model_config = {"extra": "forbid"}
 
 
 class AgentToolCall(BaseModel):
@@ -60,6 +62,28 @@ class AgentToolCall(BaseModel):
 
     authorized: bool = False
 
+    @validator("arguments", always=True)
+    def enforce_no_forbidden_arg_keys(cls, v):
+        """Reject forbidden keys in tool arguments (Phase 1D.3)."""
+        if v is None:
+            return {}
+        forbidden = {
+            "organization_id",
+            "tenant_id",
+            "integration_id",
+            "credential_id",
+            "zendesk_ticket_id",
+            "external_ticket_id",
+        }
+        for key in v:
+            if key in forbidden:
+                raise ValueError(
+                    "Tool argument '" + str(key) + "' is forbidden and must not be supplied."
+                )
+        return v
+
+    model_config = {"extra": "forbid"}
+
 
 class AgentAnalysisResponse(BaseModel):
     run_id: str
@@ -67,7 +91,7 @@ class AgentAnalysisResponse(BaseModel):
 
     decision: AgentDecision
 
-    sources: list[RAGSource] = Field(default_factory=list)
+    sources: list[Any] = Field(default_factory=list)
 
     workflow_path: list[str] = Field(default_factory=list)
 
@@ -83,6 +107,8 @@ class AgentReviewRequest(BaseModel):
         max_length=2000,
     )
 
+    model_config = {"extra": "forbid"}
+
 
 class AgentRunResponse(BaseModel):
     run_id: str
@@ -93,7 +119,9 @@ class AgentRunResponse(BaseModel):
     reason: str
 
     recommended_team: str | None = None
+
     recommended_priority: str | None = None
+
     response_draft: str | None = None
 
     requires_human_approval: bool
@@ -103,6 +131,8 @@ class AgentRunResponse(BaseModel):
     workflow_path: list[str] = Field(default_factory=list)
 
     tool_plan: list[AgentToolCall] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
 
 
 class AgentExecutionResponse(BaseModel):
@@ -115,9 +145,13 @@ class AgentExecutionResponse(BaseModel):
     duplicate: bool = False
     message: str
 
+    model_config = {"extra": "forbid"}
+
 
 class AgentExecutionQueuedResponse(BaseModel):
     run_id: str
     job_id: int
     status: str
     duplicate: bool
+
+    model_config = {"extra": "forbid"}
