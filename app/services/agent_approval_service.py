@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.metrics import (
@@ -11,6 +13,9 @@ from app.core.rbac import (
 from app.models.agent_run import AgentRun
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
+)
+from app.services.tool_authorization_service import (
+    ToolAuthorizationService,
 )
 
 
@@ -63,7 +68,6 @@ class AgentApprovalService:
         run_id: str,
         organization_id: int,
         note: str | None,
-        actor: str | None = None,
         authz: AuthorizationContext,
     ) -> AgentRun:
 
@@ -86,7 +90,7 @@ class AgentApprovalService:
                 db,
                 agent_run_id=run.id,
                 event_type="review_required",
-                actor=actor,
+                actor=authz.subject,
                 note=note,
             )
 
@@ -103,11 +107,12 @@ class AgentApprovalService:
                 db,
                 agent_run_id=run.id,
                 event_type="no_action",
-                actor=actor,
+                actor=authz.subject,
                 note=note,
             )
 
             return run
+
         run = await AgentRunRepository.approve(
             db,
             run,
@@ -129,11 +134,32 @@ class AgentApprovalService:
 
         run.tool_plan = updated_tool_plan
 
+        # The run's own organization is the trusted tenant for any external
+        # side effect; a NULL-org legacy run can never reach approval (the
+        # tenant-scoped lookup above refuses it), so this guard is defensive.
+        org = run.organization_id
+        if org is None:
+            raise InvalidAgentRunStateError(
+                "Cannot approve an unowned (NULL-org) agent run."
+            )
+
+        run.tool_policy_version = ToolAuthorizationService.TOOL_POLICY_VERSION
+        run.authorization_source = "human_approval"
+        run.authorized_by_subject = authz.subject
+        run.authorized_at = datetime.now(timezone.utc)
+        run.authorization_digest = ToolAuthorizationService.compute_run_digest(
+            run_id=run.run_id,
+            organization_id=org,
+            ticket_id=run.ticket_id,
+            policy_version=run.tool_policy_version,
+            tool_plan=updated_tool_plan,
+        )
+
         await AgentRunRepository.add_event(
             db,
             agent_run_id=run.id,
             event_type="approved",
-            actor=actor,
+            actor=authz.subject,
             note=note,
             event_data={
                 "action": run.action,
@@ -153,7 +179,6 @@ class AgentApprovalService:
         run_id: str,
         organization_id: int,
         note: str | None,
-        actor: str | None = None,
         authz: AuthorizationContext,
     ) -> AgentRun:
 
@@ -175,7 +200,7 @@ class AgentApprovalService:
             db,
             agent_run_id=run.id,
             event_type="rejected",
-            actor=actor,
+            actor=authz.subject,
             note=note,
         )
         record_agent_approval(

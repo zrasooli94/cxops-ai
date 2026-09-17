@@ -34,6 +34,9 @@ from app.services.integration_job_service import (
     AgentExecutionQueueBlockedError,
     IntegrationJobService,
 )
+from app.services.tool_authorization_service import (
+    ToolAuthorizationService,
+)
 
 router = APIRouter(
     prefix="/agent",
@@ -272,28 +275,28 @@ async def execute_agent_run(
                         "valid human_approval authorization."),
             )
         # Verify digest using centralized ToolAuthorizationService helper
-        # (the digest was persisted during approval/execution preflight)
-        if run.authorization_digest:
-            from app.services.tool_authorization_service import (
-                ToolAuthorizationService,
+        # (the digest was persisted during approval/execution preflight).
+        # A missing digest fails closed: no authorization, no execution.
+        if run.authorization_digest is None:
+            raise HTTPException(
+                status_code=(status.HTTP_403_FORBIDDEN),
+                detail=("Agent run has no authorization digest and cannot "
+                        "be executed."),
             )
-            if not ToolAuthorizationService.validate_run_digest(
-                run,
-            ):
-                raise HTTPException(
-                    status_code=(status.HTTP_403_FORBIDDEN),
-                    detail=("Intent digest mismatch — plan was modified "
-                            "after authorization."),
-                )
+        if not ToolAuthorizationService.validate_run_digest(
+            run,
+        ):
+            raise HTTPException(
+                status_code=(status.HTTP_403_FORBIDDEN),
+                detail=("Intent digest mismatch — plan was modified "
+                        "after authorization."),
+            )
         # Execution caller still independently needs agent.execute
         # + required tool capabilities; theenqueue gate enforces this.
     else:
         # Low-risk plan with no prior human approval:
         # Require agent.execute + all tool required capabilities.
         # Before queue creation, persist human_execute authorization.
-        from app.services.tool_authorization_service import (
-            ToolAuthorizationService,
-        )
         # Verify agent.execute and all required_capability values
         for tool in plan:
             req_cap = tool.get("required_capability")
@@ -310,18 +313,22 @@ async def execute_agent_run(
                     detail=("Low-risk plan verification failed: tool "
                             f"{tool.get('tool')} risk_level is not low."),
                     )
+        org = run.organization_id
+        if org is None:
+            raise HTTPException(
+                status_code=(status.HTTP_403_FORBIDDEN),
+                detail=("Agent run is not owned by an organization."),
+            )
         # Persist human_execute authorization metadata before queue creation
-        from app.services.tool_authorization_service import (
-            ToolAuthorizationService,
-        )
         run.authorization_source = "human_execute"
         run.authorized_by_subject = authz.subject
         run.authorized_at = datetime.now(UTC)
         run.tool_policy_version = ToolAuthorizationService.TOOL_POLICY_VERSION
         run.authorization_digest = ToolAuthorizationService.compute_run_digest(
             run_id=run.run_id,
-            organization_id=run.organization_id,
+            organization_id=org,
             ticket_id=run.ticket_id,
+            policy_version=run.tool_policy_version,
             tool_plan=plan,
         )
 

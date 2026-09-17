@@ -70,6 +70,7 @@ from app.services import (
 from app.services.agent_execution_service import agent_execution_service
 from app.services.agent_workflow_service import agent_workflow_service
 from app.services.knowledge_search_service import KnowledgeSearchService
+from app.services.tool_authorization_service import ToolAuthorizationService
 from app.services.zendesk_sync_service import ZendeskSyncService
 
 TEST_SECRET = "z" * 32
@@ -122,6 +123,45 @@ def _auth_headers(sub: str, *, tenant_id: int | None = None) -> dict:
     if tenant_id is not None:
         headers[X_TENANT] = str(tenant_id)
     return headers
+
+
+def _authorized_internal_note_run(
+    run_id: str,
+    *,
+    organization_id: int,
+    ticket_id: int,
+    reason: str,
+    subject: str = "cxops-test",
+) -> dict:
+    """Return Phase 1D.3-complete metadata for a low-risk executable run.
+
+    The plan carries the policy ``required_capability`` and the digest binds
+    the persisted ``tool_policy_version``, so the execution preflight (policy
+    version, intent digest, per-tool capability) can pass fail-closed checks.
+    """
+    plan = [
+        {
+            "tool": "zendesk.add_internal_note",
+            "arguments": {"reason": reason},
+            "requires_approval": False,
+            "authorized": True,
+            "risk_level": "low",
+            "required_capability": "ticket.write",
+        }
+    ]
+    return {
+        "plan": plan,
+        "tool_policy_version": ToolAuthorizationService.TOOL_POLICY_VERSION,
+        "authorization_source": "policy_auto",
+        "authorized_by_subject": subject,
+        "authorization_digest": ToolAuthorizationService.compute_run_digest(
+            run_id=run_id,
+            organization_id=organization_id,
+            ticket_id=ticket_id,
+            policy_version=ToolAuthorizationService.TOOL_POLICY_VERSION,
+            tool_plan=plan,
+        ),
+    }
 
 
 class _FakeDecisionLLM:
@@ -234,9 +274,14 @@ async def two_orgs(db):
         response_draft: str | None = None,
         reviewer_note: str | None = None,
         plan: list[dict] | None = None,
+        run_id: str | None = None,
+        tool_policy_version: int | None = None,
+        authorization_source: str | None = None,
+        authorized_by_subject: str | None = None,
+        authorization_digest: str | None = None,
     ) -> AgentRun:
         run = AgentRun(
-            run_id=uuid.uuid4().hex,
+            run_id=run_id or uuid.uuid4().hex,
             ticket_id=ticket_id,
             organization_id=organization_id,
             action=action,
@@ -247,6 +292,10 @@ async def two_orgs(db):
             sources=[],
             workflow_path=["load_ticket"],
             tool_plan=plan or [],
+            tool_policy_version=tool_policy_version,
+            authorization_source=authorization_source,
+            authorized_by_subject=authorized_by_subject,
+            authorization_digest=authorization_digest,
         )
         db.add(run)
         await db.commit()
@@ -677,35 +726,43 @@ async def test_i_own_execution_scoped_to_own_ticket_org(
         org_b.id, subject="Beta ticket", external_id="2002"
     )
 
+    run_a_id = uuid.uuid4().hex
+    run_a_meta = _authorized_internal_note_run(
+        run_a_id,
+        organization_id=org_a.id,
+        ticket_id=ticket_a.id,
+        reason="Alpha internal note.",
+    )
     run_a = await two_orgs["make_run"](
         org_a.id,
         ticket_a.id,
+        run_id=run_a_id,
         status="approved",
         action="internal_note",
-        plan=[
-            {
-                "tool": "zendesk.add_internal_note",
-                "arguments": {"reason": "Alpha internal note."},
-                "requires_approval": False,
-                "authorized": True,
-                "risk_level": "low",
-            }
-        ],
+        plan=run_a_meta["plan"],
+        tool_policy_version=run_a_meta["tool_policy_version"],
+        authorization_source=run_a_meta["authorization_source"],
+        authorized_by_subject=run_a_meta["authorized_by_subject"],
+        authorization_digest=run_a_meta["authorization_digest"],
+    )
+    run_b_id = uuid.uuid4().hex
+    run_b_meta = _authorized_internal_note_run(
+        run_b_id,
+        organization_id=org_b.id,
+        ticket_id=ticket_b.id,
+        reason="Beta internal note.",
     )
     run_b = await two_orgs["make_run"](
         org_b.id,
         ticket_b.id,
+        run_id=run_b_id,
         status="approved",
         action="internal_note",
-        plan=[
-            {
-                "tool": "zendesk.add_internal_note",
-                "arguments": {"reason": "Beta internal note."},
-                "requires_approval": False,
-                "authorized": True,
-                "risk_level": "low",
-            }
-        ],
+        plan=run_b_meta["plan"],
+        tool_policy_version=run_b_meta["tool_policy_version"],
+        authorization_source=run_b_meta["authorization_source"],
+        authorized_by_subject=run_b_meta["authorized_by_subject"],
+        authorization_digest=run_b_meta["authorization_digest"],
     )
 
     captured: dict = {"orgs": [], "paths": [], "sync_orgs": []}
@@ -957,20 +1014,24 @@ async def test_p_zendesk_execution_selects_tenant_connection(
     ticket_b = await two_orgs["make_ticket"](
         org_b.id, subject="Beta ticket", external_id="2002"
     )
+    run_b_id = uuid.uuid4().hex
+    run_b_meta = _authorized_internal_note_run(
+        run_b_id,
+        organization_id=org_b.id,
+        ticket_id=ticket_b.id,
+        reason="Beta internal note.",
+    )
     run_b = await two_orgs["make_run"](
         org_b.id,
         ticket_b.id,
+        run_id=run_b_id,
         status="approved",
         action="internal_note",
-        plan=[
-            {
-                "tool": "zendesk.add_internal_note",
-                "arguments": {"reason": "Beta internal note."},
-                "requires_approval": False,
-                "authorized": True,
-                "risk_level": "low",
-            }
-        ],
+        plan=run_b_meta["plan"],
+        tool_policy_version=run_b_meta["tool_policy_version"],
+        authorization_source=run_b_meta["authorization_source"],
+        authorized_by_subject=run_b_meta["authorized_by_subject"],
+        authorization_digest=run_b_meta["authorization_digest"],
     )
 
     captured: dict = {"orgs": []}
@@ -1196,6 +1257,7 @@ async def test_own_run_full_cycle_analyze_approve_execute(
             "requires_approval": False,
             "authorized": True,
             "risk_level": "low",
+            "required_capability": "ticket.write",
         }
     ]
     run_a = await two_orgs["make_run"](
@@ -1226,6 +1288,18 @@ async def test_own_run_full_cycle_analyze_approve_execute(
 
     run = await AgentRunRepository.mark_auto_approved(db, run_a)
     assert run.status == "approved"
+
+    run.tool_policy_version = ToolAuthorizationService.TOOL_POLICY_VERSION
+    run.authorization_source = "policy_auto"
+    run.authorized_by_subject = "cxops-test"
+    run.authorization_digest = ToolAuthorizationService.compute_run_digest(
+        run_id=run.run_id,
+        organization_id=org_a.id,
+        ticket_id=ticket_a.id,
+        policy_version=run.tool_policy_version,
+        tool_plan=plan,
+    )
+    await db.commit()
 
     result = await agent_execution_service.execute(
         db=db,

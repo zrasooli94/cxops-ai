@@ -60,6 +60,8 @@ class AgentToolCall(BaseModel):
 
     requires_approval: bool = True
 
+    required_capability: str | None = None
+
     authorized: bool = False
 
     @validator("arguments", always=True)

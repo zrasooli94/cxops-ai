@@ -214,14 +214,14 @@ def test_legacy_null_metadata_refuses():
     not execute under Phase 1D.3 — they require fresh analysis."""
     # Verify the model has the columns defined by checking the migration file
     # content rather than importing the full model (which pulls in pgvector).
-    import os
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
     migration_path = (
-        "/Users/zakerhussainrasooli/FreeProjects/cxops-ai/"
-        "alembic/versions/1d3a0001_add_authorization_metadata.py"
+        repo_root / "alembic" / "versions" / "1d3a0001_add_authorization_metadata.py"
     )
-    assert os.path.exists(migration_path), "Migration file must exist"
-    with open(migration_path) as f:
-        content = f.read()
+    assert migration_path.exists(), "Migration file must exist"
+    content = migration_path.read_text(encoding="utf-8")
     assert "tool_policy_version" in content
     assert "authorization_digest" in content
     assert "authorization_source" in content

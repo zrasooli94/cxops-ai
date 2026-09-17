@@ -1,7 +1,10 @@
 import hashlib
 import json as _json
 from copy import deepcopy
-from typing import ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from app.models.agent_run import AgentRun
 
 
 class ToolAuthorizationError(Exception):
@@ -47,7 +50,7 @@ def _validate_tool_arguments(
 
 class ToolAuthorizationService:
     TOOL_POLICY_VERSION: ClassVar[int] = 1
-    POLICIES: ClassVar[dict[str, dict[str, object]]] = {
+    POLICIES: ClassVar[dict[str, dict[str, Any]]] = {
         "none": {
             "risk_level": "low",
             "requires_approval": False,
@@ -218,18 +221,21 @@ class ToolAuthorizationService:
 
     @staticmethod
     def compute_run_digest(
+        *,
         run_id: str,
         organization_id: int,
         ticket_id: int,
-        tool_plan: list[dict],
+        policy_version: int,
+        tool_plan: list[dict[str, Any]],
     ) -> str:
         """Compute canonical authorization digest for a run.
 
         Validates each tool against current POLICIES but preserves
         legitimately persisted ``authorized`` state (e.g. from human
         approval).  Only normalizes fields that policy controls.
+        ``policy_version`` MUST be the run's persisted ``tool_policy_version``.
         """
-        validated: list[dict] = []
+        validated: list[dict[str, Any]] = []
         for raw_tool in tool_plan:
             tool_call = {k: v for k, v in raw_tool.items()}
 
@@ -264,7 +270,7 @@ class ToolAuthorizationService:
             "run_id": run_id,
             "organization_id": organization_id,
             "ticket_id": ticket_id,
-            "policy_version": ToolAuthorizationService.TOOL_POLICY_VERSION,
+            "policy_version": policy_version,
             "tool_plan": validated,
         }
         return hashlib.sha256(
@@ -274,17 +280,25 @@ class ToolAuthorizationService:
         ).hexdigest()
 
     @staticmethod
-
-    @staticmethod
     def validate_run_digest(
-        run,
+        run: "AgentRun",
     ) -> bool:
-        """Validate that a run's authorization_digest matches the canonical digest."""
+        """Validate that a run's authorization_digest matches the canonical digest.
+
+        Fails closed when the run has no persisted ``tool_policy_version`` or
+        organization: a missing or stale policy version is never trusted.
+        """
+
+        if run.tool_policy_version is None:
+            return False
+        if run.organization_id is None:
+            return False
 
         expected = ToolAuthorizationService.compute_run_digest(
             run_id=run.run_id,
             organization_id=run.organization_id,
             ticket_id=run.ticket_id,
+            policy_version=run.tool_policy_version,
             tool_plan=run.tool_plan or [],
         )
         return run.authorization_digest == expected

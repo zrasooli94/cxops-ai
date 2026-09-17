@@ -270,16 +270,16 @@ class AgentExecutionService:
 
     @staticmethod
     async def _validate_plan_preflight(
-        db,
         run: AgentRun,
-        tool_plan: list[dict],
-        resolved_organization_id: int,
-        zendesk_ticket_id: int,
-        organization_id: int,
     ) -> None:
         from app.services.tool_authorization_service import (
             ToolAuthorizationService,
         )
+
+        if run.organization_id is None:
+            raise AgentExecutionError(
+                "Agent run is not owned by an organization and cannot execute."
+            )
         # 1. Policy version check
         if run.tool_policy_version != ToolAuthorizationService.TOOL_POLICY_VERSION:
             msg = (
@@ -289,34 +289,15 @@ class AgentExecutionService:
                 + str(ToolAuthorizationService.TOOL_POLICY_VERSION)
             )
             raise AgentExecutionStateError(msg)
-        # 2. Authorization digest check
-        if run.authorization_digest:
-            import hashlib
-            import json as _json
-            digest_payload = {
-                "run_id": run.run_id,
-                "organization_id": run.organization_id,
-                "ticket_id": run.ticket_id,
-                "policy_version": (
-                    run.tool_policy_version
-                    if run.tool_policy_version is not None
-                    else ToolAuthorizationService.TOOL_POLICY_VERSION
-                ),
-                "tool_plan": ToolAuthorizationService.authorize_plan(
-                    run.tool_plan or []
-                ),
-            }
-            expected = hashlib.sha256(
-                _json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode(
-                    "utf-8"
-                )
-            ).hexdigest()
-            if run.authorization_digest != expected:
-                raise AgentExecutionStateError(
-                    "Intent digest mismatch -- plan was modified after authorization."
-                )
+        # 2. Authorization digest check (fails closed when the digest is
+        # missing or the plan was modified after authorization)
+        if not ToolAuthorizationService.validate_run_digest(run):
+            raise AgentExecutionStateError(
+                "Intent digest mismatch -- plan was modified after authorization "
+                "or the run carries no authorization."
+            )
         # 3. Tool validation (risk, requires_approval, required_capability, args)
-        for tool in (tool_plan or []):
+        for tool in (run.tool_plan or []):
             tool_name = tool.get("tool", "")
             if tool_name in ("none", "human.review"):
                 continue
@@ -343,11 +324,9 @@ class AgentExecutionService:
                     raise AgentExecutionError(
                         f"Tool {tool_name} argument {key} is forbidden"
                     )
-        # 4. Tenant/org consistency
-        if run.organization_id != resolved_organization_id:
-            raise AgentExecutionError("Agent run organization_id mismatch.")
-        if run.organization_id != organization_id:
-            raise AgentExecutionError("Provided organization_id does not match run's organization.")
+        # 4. The trusted tenant for external side effects is the run's own
+        # persisted organization (validated against the claimed organization
+        # and the ticket's organization before this point).
 
     async def execute(
         self,
@@ -594,13 +573,7 @@ class AgentExecutionService:
             # --- Preflight validation (Phase 1D.3) ---
             # Validate the entire persisted plan before any external side effect.
             # This prevents partial execution when a later tool is malformed/unknown.
-            _ = await self._validate_plan_preflight(
-                run,
-                tool_plan,
-                resolved_organization_id,
-                zendesk_ticket_id,
-                organization_id,
-            )
+            await self._validate_plan_preflight(run)
 
             if not tool_plan:
                 await AgentRunRepository.mark_execution_failed(
