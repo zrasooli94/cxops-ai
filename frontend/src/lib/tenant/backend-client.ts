@@ -1,12 +1,19 @@
 "use server";
 
+import { cookies } from "next/headers";
 import {
   AUTHORIZATION_PATH,
   loadAuthorization,
+  AuthorizationLoadError,
   tenantSelectorHeaderValue,
 } from "@/lib/authorization/helpers";
 import type { AuthorizationInfo } from "@/lib/authorization/types";
 import { createNhostServerClient } from "@/lib/nhost/server";
+import {
+  SESSION_COOKIE_NAME,
+  deserializeSession,
+} from "@/lib/session/helpers";
+import { accessTokenAuthHeader } from "@/lib/session/read";
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
@@ -79,6 +86,56 @@ async function backendFetch(
 }
 
 /**
+ * READ-ONLY authorization header for Server Component rendering.
+ *
+ * Built from the session cookie without constructing the Nhost client and
+ * without refreshing: refresh (and the cookie write it performs) is only legal
+ * in a Server Action or Route Handler, never during RSC render. Returns null
+ * when the cookie carries no usable access token.
+ */
+async function getReadOnlyAuthHeader(): Promise<string | null> {
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(SESSION_COOKIE_NAME)?.value ?? null;
+  return accessTokenAuthHeader(deserializeSession(raw));
+}
+
+async function backendFetchReadOnly(
+  path: string,
+  options: RequestInit & { organizationId?: number } = {},
+): Promise<Response> {
+  const authHeader = await getReadOnlyAuthHeader();
+  if (!authHeader) {
+    throw new AuthorizationLoadError("Authentication required", "authentication");
+  }
+
+  const headers = new Headers(options.headers);
+  headers.set("authorization", authHeader);
+  headers.set("content-type", "application/json");
+  if (options.organizationId) {
+    headers.set(
+      TENANT_SELECTOR_HEADER,
+      tenantSelectorHeaderValue(options.organizationId),
+    );
+  }
+
+  return fetch(`${BACKEND_API_URL}${path}`, {
+    ...options,
+    headers,
+    cache: "no-store",
+  });
+}
+
+function membershipFromJson(payload: unknown): OrganizationMembership[] {
+  if (!Array.isArray(payload)) {
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
+  }
+  return payload as OrganizationMembership[];
+}
+
+/**
  * List organizations the authenticated subject is a member of.
  *
  * This is used by the organization picker before a tenant has been selected.
@@ -97,6 +154,49 @@ export async function getMyOrganizations(): Promise<OrganizationMembership[]> {
 }
 
 /**
+ * READ-ONLY membership list for Server Component rendering.
+ *
+ * Uses the access token already present in the session cookie - never refreshes
+ * and never writes cookies. On failure it raises a typed
+ * `AuthorizationLoadError` so the caller can route authentication failures to
+ * the recovery Route Handler without a 500.
+ */
+export async function getMyOrganizationsReadOnly(): Promise<OrganizationMembership[]> {
+  let response: Response;
+  try {
+    response = await backendFetchReadOnly("/me/organizations");
+  } catch (error) {
+    if (error instanceof AuthorizationLoadError) throw error;
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
+  }
+
+  if (response.status === 401) {
+    throw new AuthorizationLoadError("Authentication required", "authentication");
+  }
+  if (!response.ok) {
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
+  }
+
+  return membershipFromJson(payload);
+}
+
+/**
  * Load the authenticated subject's role and capabilities for the supplied
  * organization.
  *
@@ -111,6 +211,25 @@ export async function getMyAuthorization(
   return loadAuthorization(
     (resolvedOrganizationId) =>
       backendFetch(AUTHORIZATION_PATH, {
+        organizationId: resolvedOrganizationId,
+      }),
+    organizationId,
+  );
+}
+
+/**
+ * READ-ONLY authorization load for Server Component rendering.
+ *
+ * Mirror of `getMyAuthorization` that uses the cookie access token as-is and
+ * never refreshes, so no cookie write can happen during render. Raises the
+ * same typed `AuthorizationLoadError`s as `loadAuthorization`.
+ */
+export async function getMyAuthorizationReadOnly(
+  organizationId: number,
+): Promise<AuthorizationInfo> {
+  return loadAuthorization(
+    (resolvedOrganizationId) =>
+      backendFetchReadOnly(AUTHORIZATION_PATH, {
         organizationId: resolvedOrganizationId,
       }),
     organizationId,

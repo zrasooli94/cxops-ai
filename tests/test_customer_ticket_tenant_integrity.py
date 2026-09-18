@@ -144,10 +144,18 @@ async def test_cross_org_customer_link_rejected_by_database(db, tracked):
     )
     db.add(bad_ticket)
 
-    with pytest.raises(IntegrityError):
-        await db.commit()
-
-    await db.rollback()
+    # If the composite FK is absent (pre-1E.2 schema) the commit SUCCEEDS and
+    # the test fails with "DID NOT RAISE"; the row must still be removed, or it
+    # leaks into the shared DB, poisons the migration preflight, and blocks the
+    # reconciliation tool. Track it whenever an id was allocated, then roll back
+    # regardless of which path was taken.
+    try:
+        with pytest.raises(IntegrityError):
+            await db.commit()
+    finally:
+        if bad_ticket.id is not None:
+            tracked.tickets.append(bad_ticket.id)
+        await db.rollback()
 
 
 # ===================================================================

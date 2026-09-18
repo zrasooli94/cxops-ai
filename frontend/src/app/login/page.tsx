@@ -1,12 +1,8 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { LoginForm } from "./LoginForm";
-import { getControlCenterSession } from "@/lib/auth/control-center";
-import {
-  getActiveOrganizationId,
-  setActiveOrganizationId,
-} from "@/lib/tenant/cookie";
-import { getMyOrganizations } from "@/lib/tenant/backend-client";
+import { readControlCenterSession } from "@/lib/auth/control-center";
+import { loginPageDecision } from "@/lib/session/read";
 
 export const metadata: Metadata = {
   title: "Sign in | CXOps AI",
@@ -17,32 +13,21 @@ export const metadata: Metadata = {
   },
 };
 
-async function resolvePostAuthRedirect(): Promise<string> {
-  const memberships = await getMyOrganizations();
-
-  if (memberships.length === 0) {
-    return "/no-organization";
-  }
-
-  if (memberships.length === 1) {
-    await setActiveOrganizationId(memberships[0].id);
-    return "/dashboard";
-  }
-
-  const activeOrganizationId = await getActiveOrganizationId();
-  const isValidSelection = memberships.some(
-    (m) => m.id === activeOrganizationId,
-  );
-
-  return isValidSelection ? "/dashboard" : "/select-organization";
-}
-
 export default async function LoginPage() {
-  const session = await getControlCenterSession();
+  const { state } = await readControlCenterSession();
+  const decision = loginPageDecision(state);
 
-  if (session) {
-    const destination = await resolvePostAuthRedirect();
-    redirect(destination);
+  // A valid session is forwarded through the landing Route Handler, which owns
+  // the post-auth destination decision (memberships / active organization).
+  if (decision === "forward") {
+    redirect("/api/auth/landing");
+  }
+
+  // A stale (expired) session must be recovered through a MUTABLE context
+  // (Route Handler): refreshing or clearing cookies is not supported during
+  // Server Component rendering and would crash the page.
+  if (decision === "recover") {
+    redirect("/api/auth/session");
   }
 
   return <LoginForm />;

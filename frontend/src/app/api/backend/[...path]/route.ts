@@ -2,6 +2,7 @@ import {
   NextRequest,
   NextResponse,
 } from "next/server";
+import { cookies } from "next/headers";
 
 import {
   buildBackendHeaders,
@@ -14,6 +15,9 @@ import {
   clearActiveOrganizationId,
   getActiveOrganizationId,
 } from "@/lib/tenant/cookie";
+import { ACTIVE_ORGANIZATION_COOKIE_NAME } from "@/lib/tenant/cookie-helpers";
+import { refreshSessionOnce, type BffRefreshDeps } from "@/lib/session/bff-helpers";
+import { SESSION_COOKIE_NAME } from "@/lib/session/helpers";
 import { createNhostServerClient } from "@/lib/nhost/server";
 
 const BACKEND_API_URL =
@@ -22,35 +26,27 @@ const BACKEND_API_URL =
 
 const isDevelopment = process.env.NODE_ENV !== "production";
 
+async function createRefreshDeps(): Promise<BffRefreshDeps> {
+  const nhost = await createNhostServerClient();
+  const cookieStore = await cookies();
+
+  return {
+    getSession: () => nhost.getUserSession(),
+    refresh: (marginSeconds) => nhost.refreshSession(marginSeconds),
+    clearSession: () => nhost.clearSession(),
+    deleteSessionCookie: () => cookieStore.delete(SESSION_COOKIE_NAME),
+    deleteOrganizationCookie: () =>
+      cookieStore.delete(ACTIVE_ORGANIZATION_COOKIE_NAME),
+  };
+}
+
 async function getAuthHeader(): Promise<string | null> {
-  try {
-    const nhost = await createNhostServerClient();
-    const session = nhost.getUserSession();
+  const { authHeader } = await refreshSessionOnce(
+    await createRefreshDeps(),
+    60,
+  );
 
-    if (!session?.accessToken) {
-      return null;
-    }
-
-    // Proactively refresh if near expiry; SDK checks actual JWT exp internally
-    const refreshed = await nhost.refreshSession(60);
-
-    if (!refreshed?.accessToken) {
-      // Refresh failed - clear local session
-      nhost.clearSession();
-      return null;
-    }
-
-    return `Bearer ${refreshed.accessToken}`;
-  } catch {
-    // Any error during refresh - clear local session
-    try {
-      const nhost = await createNhostServerClient();
-      nhost.clearSession();
-    } catch {
-      // Ignore cleanup errors
-    }
-    return null;
-  }
+  return authHeader;
 }
 
 async function proxy(
@@ -106,22 +102,16 @@ async function proxy(
     const response = await fetch(backendUrl, init);
 
     if (response.status === 401) {
-      // Exactly ONE forced refresh retry
-      try {
-        const nhost = await createNhostServerClient();
-        const refreshed = await nhost.refreshSession(0);
+      // Exactly ONE forced refresh retry; a failed forced refresh also clears
+      // the session and active-organization cookies.
+      const { authHeader: retryAuthHeader } = await refreshSessionOnce(
+        await createRefreshDeps(),
+        0,
+      );
 
-        if (!refreshed?.accessToken) {
-          // Forced refresh failed - clear local session
-          nhost.clearSession();
-          return new NextResponse(
-            JSON.stringify({ detail: "Authentication expired." }),
-            { status: 401 },
-          );
-        }
-
+      if (retryAuthHeader) {
         const retryHeaders = new Headers(init.headers);
-        retryHeaders.set("authorization", `Bearer ${refreshed.accessToken}`);
+        retryHeaders.set("authorization", retryAuthHeader);
 
         const retryResponse = await fetch(backendUrl, {
           ...init,
@@ -137,14 +127,6 @@ async function proxy(
                 retryResponse.headers.get("content-type") ?? "application/json",
             },
           });
-        }
-      } catch {
-        // Forced refresh failed - clear local session
-        try {
-          const nhost = await createNhostServerClient();
-          nhost.clearSession();
-        } catch {
-          // Ignore cleanup errors
         }
       }
 

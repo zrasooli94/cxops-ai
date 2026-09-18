@@ -1,8 +1,8 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { requireControlCenterAuth } from "@/lib/auth/control-center";
-import { getMyOrganizations } from "@/lib/tenant/backend-client";
-import { selectOrganization } from "@/lib/tenant/actions";
+import { AuthorizationLoadError } from "@/lib/authorization/helpers";
+import { getMyOrganizationsReadOnly } from "@/lib/tenant/backend-client";
 import OrganizationSelectionForm from "./OrganizationSelectionForm";
 
 export const metadata: Metadata = {
@@ -15,16 +15,31 @@ export const metadata: Metadata = {
 
 export default async function SelectOrganizationPage() {
   await requireControlCenterAuth();
-  const memberships = await getMyOrganizations();
+
+  let memberships;
+  try {
+    memberships = await getMyOrganizationsReadOnly();
+  } catch (error) {
+    // Only an authentication failure routes through the recovery handler; any
+    // other backend failure falls through to the normal error path (as before).
+    if (
+      error instanceof AuthorizationLoadError &&
+      error.reason === "authentication"
+    ) {
+      redirect("/api/auth/session");
+    }
+    throw error;
+  }
 
   if (memberships.length === 0) {
     redirect("/no-organization");
   }
 
   if (memberships.length === 1) {
-    // Auto-select the sole membership and proceed to the dashboard.
-    await selectOrganization(memberships[0].id);
-    redirect("/dashboard");
+    // Persisting the org cookie for the sole membership is a cookie WRITE and
+    // cannot happen during Server Component rendering; the landing Route
+    // Handler owns it and redirects on to /dashboard.
+    redirect("/api/auth/landing");
   }
 
   return (
