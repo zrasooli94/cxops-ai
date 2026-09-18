@@ -23,6 +23,19 @@ import {
   useState,
 } from "react";
 
+import InsufficientPermission from "@/components/insufficient-permission";
+import {
+  approvalQueuedMessage,
+  deriveAgentExperience,
+  deriveAgentRunActions,
+  planPartialExecutionFailure,
+} from "@/lib/authorization/agent";
+import { useAuthorization } from "@/lib/authorization/context";
+import {
+  authorizationFeedback,
+  planClientAuthorizationResponse,
+} from "@/lib/authorization/helpers";
+
 
 type ToolPlanItem = {
   tool: string;
@@ -204,6 +217,9 @@ function StatCard({
 }
 
 export default function ApprovalsPage() {
+  const { can, refresh } = useAuthorization();
+  const agent = deriveAgentExperience(can);
+
   const [runs, setRuns] =
     useState<AgentRun[]>([]);
 
@@ -320,7 +336,14 @@ export default function ApprovalsPage() {
       } finally {
         setLoading(false);
       }
-    }, []);
+    }, [
+      setError,
+      setLoading,
+      setReviewRuns,
+      setRuns,
+      setSelectedRun,
+      setTickets,
+    ]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -352,49 +375,69 @@ export default function ApprovalsPage() {
     [runs],
   );
 
-  async function approveAndQueue() {
-    if (!selectedRun) {
+  const selectedActions = selectedRun
+    ? deriveAgentRunActions(selectedRun, agent)
+    : null;
+
+  // Approval and execution are independent permissions. `agent.approve`
+  // authorizes the approval request; external queueing additionally requires
+  // `agent.execute`. The backend re-checks everything.
+  async function approveSelectedRun() {
+    if (!selectedRun || !selectedActions?.canApproveRun) {
       return;
     }
+
+    const runId = selectedRun.run_id;
+    const queueExecution =
+      selectedActions.canApproveAndExecute;
 
     setActionLoading(true);
     setError("");
     setSuccess("");
 
     try {
-      const approveResponse =
-        await fetch(
-          `/api/backend/agent/runs/${selectedRun.run_id}/approve`,
-          {
-            method: "POST",
-            headers: {
-              "content-type":
-                "application/json",
-            },
-            body: JSON.stringify({
-              note:
-                reviewNote.trim() ||
-                "Approved from CXOps Control Center",
-            }),
+      const approveResponse = await fetch(
+        `/api/backend/agent/runs/${runId}/approve`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
           },
-        );
+          body: JSON.stringify({
+            note:
+              reviewNote.trim() ||
+              "Approved from CXOps Control Center",
+          }),
+        },
+      );
 
-      const approved =
-        await approveResponse.json();
+      const approved = await approveResponse.json();
 
       if (!approveResponse.ok) {
+        const plan = planClientAuthorizationResponse(
+          approveResponse.status,
+          approved?.detail,
+        );
+        const feedback = authorizationFeedback(plan);
+
+        if (feedback) {
+          setError(feedback);
+          refresh();
+          return;
+        }
+
         throw new Error(
-          approved?.detail ??
-            "Approval failed.",
+          approved?.detail ?? "Approval failed.",
         );
       }
 
-      if (
-        selectedRun.action ===
-        "human_review"
-      ) {
+      // Approval succeeded. No later failure may relabel it as a failure,
+      // and approval is never re-sent.
+      if (!queueExecution) {
         setSuccess(
-          "Run moved to human review.",
+          selectedRun.action === "human_review"
+            ? "Run moved to human review."
+            : "Agent run approved.",
         );
 
         setReviewNote("");
@@ -402,33 +445,40 @@ export default function ApprovalsPage() {
         return;
       }
 
-      const executeResponse =
-        await fetch(
-          `/api/backend/agent/runs/${selectedRun.run_id}/execute`,
-          {
-            method: "POST",
-            cache: "no-store",
-          },
-        );
+      setSuccess("Run approved. Queueing execution…");
 
-      const execution =
-        await executeResponse.json();
-
-      if (!executeResponse.ok) {
-        throw new Error(
-          execution?.detail ??
-            "Run approved but queueing failed.",
-        );
-      }
-
-      setSuccess(
-        `Approved and queued successfully${
-          execution.job_id
-            ? ` — job #${execution.job_id}`
-            : ""
-        }.`,
+      const executeResponse = await fetch(
+        `/api/backend/agent/runs/${runId}/execute`,
+        {
+          method: "POST",
+          cache: "no-store",
+        },
       );
 
+      const execution = await executeResponse.json();
+
+      if (!executeResponse.ok) {
+        const partial = planPartialExecutionFailure(
+          executeResponse.status,
+          execution?.detail,
+        );
+
+        setSuccess("");
+        setError(partial.message);
+
+        if (
+          partial.refreshAuthorization ||
+          partial.recoverTenant
+        ) {
+          refresh();
+        }
+
+        setReviewNote("");
+        await loadData();
+        return;
+      }
+
+      setSuccess(approvalQueuedMessage(execution.job_id));
       setReviewNote("");
       await loadData();
     } catch (err) {
@@ -443,7 +493,7 @@ export default function ApprovalsPage() {
   }
 
   async function rejectRun() {
-    if (!selectedRun) {
+    if (!selectedRun || !selectedActions?.canRejectRun) {
       return;
     }
 
@@ -472,9 +522,20 @@ export default function ApprovalsPage() {
         await response.json();
 
       if (!response.ok) {
+        const plan = planClientAuthorizationResponse(
+          response.status,
+          body?.detail,
+        );
+        const feedback = authorizationFeedback(plan);
+
+        if (feedback) {
+          setError(feedback);
+          refresh();
+          return;
+        }
+
         throw new Error(
-          body?.detail ??
-            "Rejection failed.",
+          body?.detail ?? "Rejection failed.",
         );
       }
 
@@ -993,54 +1054,70 @@ export default function ApprovalsPage() {
                       </div>
                     </div>
 
-                    <textarea
-                      value={reviewNote}
-                      onChange={(event) =>
-                        setReviewNote(
-                          event.target.value,
-                        )
-                      }
-                      rows={4}
-                      placeholder="Reviewer note..."
-                      className="mt-6 w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
-                    />
+                    {!agent.canApprove ? (
+                      <div className="mt-6">
+                        <InsufficientPermission
+                          variant="inline"
+                          title="Read-only review access"
+                          description="You can review runs in this queue, but approving or rejecting requires additional permission."
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <textarea
+                          value={reviewNote}
+                          onChange={(event) =>
+                            setReviewNote(
+                              event.target.value,
+                            )
+                          }
+                          rows={4}
+                          placeholder="Reviewer note..."
+                          className="mt-6 w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                        />
 
-                    <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void approveAndQueue()
-                        }
-                        disabled={actionLoading}
-                        className="flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-3.5 text-sm font-medium text-white shadow-[0_10px_25px_rgba(16,185,129,0.18)] transition hover:-translate-y-0.5 disabled:opacity-50"
-                      >
-                        {actionLoading ? (
-                          <LoaderCircle className="h-4 w-4 animate-spin" />
-                        ) : selectedRun.action ===
-                          "human_review" ? (
-                          <ShieldCheck className="h-4 w-4" />
-                        ) : (
-                          <Play className="h-4 w-4" />
-                        )}
+                        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void approveSelectedRun()
+                            }
+                            disabled={actionLoading}
+                            className="flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-3.5 text-sm font-medium text-white shadow-[0_10px_25px_rgba(16,185,129,0.18)] transition hover:-translate-y-0.5 disabled:opacity-50"
+                          >
+                            {actionLoading ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : selectedRun.action ===
+                              "human_review" ? (
+                              <ShieldCheck className="h-4 w-4" />
+                            ) : selectedActions?.canApproveAndExecute ? (
+                              <Play className="h-4 w-4" />
+                            ) : (
+                              <CheckCircle2 className="h-4 w-4" />
+                            )}
 
-                        {selectedRun.action ===
-                        "human_review"
-                          ? "Send to Human Review"
-                          : "Approve & Queue Execution"}
-                      </button>
+                            {selectedRun.action ===
+                            "human_review"
+                              ? "Send to Human Review"
+                              : selectedActions?.canApproveAndExecute
+                                ? "Approve & Queue Execution"
+                                : "Approve"}
+                          </button>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void rejectRun()
-                        }
-                        disabled={actionLoading}
-                        className="flex flex-1 items-center justify-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-5 py-3.5 text-sm font-medium text-rose-700 transition hover:-translate-y-0.5 hover:bg-rose-100 disabled:opacity-50"
-                      >
-                        <X className="h-4 w-4" />
-                        Reject
-                      </button>
-                    </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void rejectRun()
+                            }
+                            disabled={actionLoading}
+                            className="flex flex-1 items-center justify-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-5 py-3.5 text-sm font-medium text-rose-700 transition hover:-translate-y-0.5 hover:bg-rose-100 disabled:opacity-50"
+                          >
+                            <X className="h-4 w-4" />
+                            Reject
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <div className="flex gap-3 bg-slate-50/70 p-5">

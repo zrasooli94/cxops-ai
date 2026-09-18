@@ -8,7 +8,9 @@ import {
   Clock3,
   Filter,
   LoaderCircle,
+  Play,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -24,6 +26,17 @@ import {
   useMemo,
   useState,
 } from "react";
+
+import {
+  deriveAgentExperience,
+  deriveAgentRunActions,
+  executionQueuedMessage,
+} from "@/lib/authorization/agent";
+import { useAuthorization } from "@/lib/authorization/context";
+import {
+  authorizationFeedback,
+  planClientAuthorizationResponse,
+} from "@/lib/authorization/helpers";
 
 
 type ToolPlanItem = {
@@ -227,6 +240,9 @@ function StatCard({
 }
 
 export default function RunsPage() {
+  const { can, refresh } = useAuthorization();
+  const agent = deriveAgentExperience(can);
+
   const [runs, setRuns] =
     useState<AgentRun[]>([]);
 
@@ -258,6 +274,14 @@ export default function RunsPage() {
 
   const [error, setError] =
     useState("");
+
+  const [success, setSuccess] =
+    useState("");
+
+  const [
+    actionLoading,
+    setActionLoading,
+  ] = useState(false);
 
   const loadData =
     useCallback(async () => {
@@ -335,7 +359,7 @@ export default function RunsPage() {
       } finally {
         setLoading(false);
       }
-    }, []);
+    }, [setError, setLoading, setRuns, setSelectedRun, setTickets]);
 
   useEffect(() => {
     const timer =
@@ -481,6 +505,68 @@ export default function RunsPage() {
         )
       : undefined;
 
+  const selectedActions = selectedRun
+    ? deriveAgentRunActions(selectedRun, agent)
+    : null;
+
+  // Independent execution/retry. This is a separate user action, never an
+  // automatic retry: the button only appears when `agent.execute` is held and
+  // the persisted run state is one the backend already accepts. The backend
+  // still re-validates approval, digest, tool policy and capabilities.
+  async function executeSelectedRun() {
+    if (!selectedRun || !selectedActions?.canExecuteRun) {
+      return;
+    }
+
+    setActionLoading(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const response = await fetch(
+        `/api/backend/agent/runs/${selectedRun.run_id}/execute`,
+        {
+          method: "POST",
+          cache: "no-store",
+        },
+      );
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        const plan = planClientAuthorizationResponse(
+          response.status,
+          body?.detail,
+        );
+        const feedback = authorizationFeedback(plan);
+
+        if (feedback) {
+          setError(feedback);
+          refresh();
+          return;
+        }
+
+        throw new Error(
+          body?.detail ??
+            "Execution could not be queued.",
+        );
+      }
+
+      setSuccess(
+        executionQueuedMessage(body?.job_id),
+      );
+      await loadData();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Execution could not be queued.",
+      );
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   const highestRisk =
     selectedRun?.tool_plan.some(
       (tool) =>
@@ -560,6 +646,13 @@ export default function RunsPage() {
             <div className="mb-6 flex gap-3 rounded-[18px] border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
               <XCircle className="h-5 w-5 shrink-0" />
               {error}
+            </div>
+          )}
+
+          {success && (
+            <div className="mb-6 flex gap-3 rounded-[18px] border border-emerald-200 bg-emerald-50/80 p-4 text-sm text-emerald-700">
+              <CheckCircle2 className="h-5 w-5 shrink-0" />
+              {success}
             </div>
           )}
 
@@ -1130,6 +1223,66 @@ export default function RunsPage() {
                     </div>
                   )}
                 </section>
+
+                {selectedActions?.canExecuteRun && (
+                  <section className="app-panel rounded-[22px] p-6 md:p-7">
+                    <div className="flex flex-col justify-between gap-5 md:flex-row md:items-center">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-500">
+                          {selectedRun.status ===
+                          "execution_failed" ? (
+                            <RotateCcw className="h-5 w-5" />
+                          ) : (
+                            <Play className="h-5 w-5" />
+                          )}
+                        </div>
+
+                        <div>
+                          <h2 className="font-medium text-slate-900">
+                            {selectedRun.status ===
+                            "execution_failed"
+                              ? "Retry execution"
+                              : "Execute run"}
+                          </h2>
+
+                          <p className="mt-1 max-w-xl text-xs leading-6 text-slate-400">
+                            Queues the approved plan
+                            through the durable
+                            integration worker. The
+                            backend re-validates the
+                            approval, intent digest,
+                            tool policy and required
+                            capabilities before
+                            anything runs.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void executeSelectedRun()
+                        }
+                        disabled={actionLoading}
+                        className="flex shrink-0 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-3 text-sm font-medium text-white shadow-[0_10px_25px_rgba(16,185,129,0.18)] transition hover:-translate-y-0.5 disabled:opacity-50"
+                      >
+                        {actionLoading ? (
+                          <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : selectedRun.status ===
+                          "execution_failed" ? (
+                          <RotateCcw className="h-4 w-4" />
+                        ) : (
+                          <Play className="h-4 w-4" />
+                        )}
+
+                        {selectedRun.status ===
+                        "execution_failed"
+                          ? "Retry execution"
+                          : "Execute run"}
+                      </button>
+                    </div>
+                  </section>
+                )}
 
                 {selectedRun.status ===
                   "superseded" && (

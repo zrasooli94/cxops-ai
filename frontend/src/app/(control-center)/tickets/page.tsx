@@ -28,6 +28,7 @@ import {
   useState,
 } from "react";
 
+import { deriveAgentExperience } from "@/lib/authorization/agent";
 import { useAuthorization } from "@/lib/authorization/context";
 import {
   authorizationFeedback,
@@ -274,6 +275,7 @@ function InfoRow({
 export default function TicketsPage() {
   const { can, refresh } = useAuthorization();
   const { canWrite } = deriveTicketExperience(can);
+  const { canRun } = deriveAgentExperience(can);
 
   const [tickets, setTickets] = useState<
     Ticket[]
@@ -812,24 +814,26 @@ export default function TicketsPage() {
                           </h2>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void analyzeTicket()
-                          }
-                          disabled={analyzing}
-                          className="group flex shrink-0 items-center justify-center gap-2.5 rounded-full bg-gradient-to-r from-[#765cff] to-[#508cff] px-5 py-3 text-sm font-medium text-white shadow-[0_12px_30px_rgba(104,86,255,0.22)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {analyzing ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Sparkles className="h-4 w-4" />
-                          )}
+                        {canRun && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void analyzeTicket()
+                            }
+                            disabled={analyzing}
+                            className="group flex shrink-0 items-center justify-center gap-2.5 rounded-full bg-gradient-to-r from-[#765cff] to-[#508cff] px-5 py-3 text-sm font-medium text-white shadow-[0_12px_30px_rgba(104,86,255,0.22)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {analyzing ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-4 w-4" />
+                            )}
 
-                          {analyzing
-                            ? "Analyzing..."
-                            : "Analyze with AI"}
-                        </button>
+                            {analyzing
+                              ? "Analyzing..."
+                              : "Analyze with AI"}
+                          </button>
+                        )}
                       </div>
 
                       <div className="relative mt-7 rounded-2xl border border-slate-200/70 bg-[#fbfcff]/80 p-5 md:p-6">
