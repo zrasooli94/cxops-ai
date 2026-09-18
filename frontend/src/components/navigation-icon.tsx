@@ -6,6 +6,7 @@ import {
   Gauge,
   ShieldCheck,
   Ticket,
+  Users,
   Workflow,
 } from "lucide-react";
 
@@ -19,6 +20,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   brain: BrainCircuit,
   workflow: Workflow,
   activity: Activity,
+  users: Users,
 };
 
 export default function NavigationIcon({

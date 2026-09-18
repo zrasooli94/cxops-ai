@@ -18,11 +18,13 @@ export type NavigationIconName =
   | "shield"
   | "brain"
   | "workflow"
-  | "activity";
+  | "activity"
+  | "users";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
   | "/dashboard"
+  | "/customers"
   | "/tickets"
   | "/tickets/new"
   | "/agent"
@@ -42,6 +44,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   Record<ControlCenterRoute, Capability | null>
 > = {
   "/dashboard": null,
+  "/customers": CAPABILITIES.CUSTOMER_READ,
   "/tickets": CAPABILITIES.TICKET_READ,
   "/tickets/new": CAPABILITIES.TICKET_WRITE,
   "/agent": CAPABILITIES.AGENT_RUN,
@@ -83,6 +86,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Operations overview",
     icon: "gauge",
     requiredCapability: ROUTE_REQUIREMENTS["/dashboard"],
+  },
+  {
+    href: "/customers",
+    label: "Customers",
+    description: "Customer 360 workspace",
+    icon: "users",
+    requiredCapability: ROUTE_REQUIREMENTS["/customers"],
   },
   {
     href: "/tickets",

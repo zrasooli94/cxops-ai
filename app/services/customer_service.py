@@ -34,6 +34,29 @@ class CustomerService:
         return await CustomerRepository.list_for_tenant(db, organization_id)
 
     @staticmethod
+    async def search_for_tenant(
+        db: AsyncSession,
+        organization_id: int,
+        *,
+        search: str | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Customer], int]:
+        items = await CustomerRepository.search_for_tenant(
+            db,
+            organization_id,
+            search=search,
+            offset=offset,
+            limit=limit,
+        )
+        total = await CustomerRepository.count_search_for_tenant(
+            db,
+            organization_id,
+            search=search,
+        )
+        return items, total
+
+    @staticmethod
     async def get_for_tenant(
         db: AsyncSession,
         customer_id: int,

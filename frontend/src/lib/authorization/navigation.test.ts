@@ -36,6 +36,24 @@ describe("capability-driven navigation", () => {
     assert.equal(visibleHrefs([]).includes("/tickets"), false);
   });
 
+  it("customers destination is shown only with customer.read", () => {
+    assert.equal(visibleHrefs([]).includes("/customers"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/customers"),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.CUSTOMER_READ]).includes("/customers"),
+    );
+  });
+
+  it("customer.write alone never reveals the customers destination", () => {
+    assert.equal(
+      visibleHrefs([CAPABILITIES.CUSTOMER_WRITE]).includes("/customers"),
+      false,
+    );
+  });
+
   it("a viewer-like capability set shows only permitted destinations", () => {
     const visible = visibleHrefs([
       CAPABILITIES.TICKET_READ,
@@ -129,6 +147,7 @@ describe("capability-driven navigation", () => {
 describe("control-center route requirements", () => {
   const expected: ReadonlyArray<[ControlCenterRoute, string | null]> = [
     ["/dashboard", null],
+    ["/customers", CAPABILITIES.CUSTOMER_READ],
     ["/tickets", CAPABILITIES.TICKET_READ],
     ["/tickets/new", CAPABILITIES.TICKET_WRITE],
     ["/agent", CAPABILITIES.AGENT_RUN],

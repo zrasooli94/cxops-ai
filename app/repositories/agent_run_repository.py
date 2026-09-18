@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_action_event import (
@@ -174,6 +174,52 @@ class AgentRunRepository:
         result = await db.execute(statement)
 
         return list(result.scalars().all())
+
+    # Tenant-safe customer-scoped reads (customer 360). Runs are joined to their
+    # tenant-owned ticket so a foreign customer id can never surface another
+    # tenant's run history.
+
+    @staticmethod
+    async def list_for_customer_for_tenant(
+        db: AsyncSession,
+        *,
+        customer_id: int,
+        organization_id: int,
+        offset: int,
+        limit: int,
+    ) -> list[AgentRun]:
+        result = await db.execute(
+            select(AgentRun)
+            .join(Ticket, AgentRun.ticket_id == Ticket.id)
+            .where(
+                Ticket.customer_id == customer_id,
+                AgentRun.organization_id == organization_id,
+            )
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def count_for_customer_for_tenant(
+        db: AsyncSession,
+        *,
+        customer_id: int,
+        organization_id: int,
+    ) -> int:
+        result = await db.execute(
+            select(func.count())
+            .select_from(AgentRun)
+            .join(Ticket, AgentRun.ticket_id == Ticket.id)
+            .where(
+                Ticket.customer_id == customer_id,
+                AgentRun.organization_id == organization_id,
+            )
+        )
+
+        return int(result.scalar_one())
 
     @staticmethod
     async def approve(

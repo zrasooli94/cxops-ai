@@ -264,9 +264,10 @@ async def test_alpha_lists_only_org_a_customers(make_client, tenant_data):
         r = await client.get("/customers", headers=_h_alpha())
     assert r.status_code == 200
     body = r.json()
-    assert len(body) == 1
-    assert body[0]["email"] == tenant_data["email_alpha"]
-    assert body[0]["organization_id"] == tenant_data["org_a"].id
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["email"] == tenant_data["email_alpha"]
+    assert body["items"][0]["organization_id"] == tenant_data["org_a"].id
 
 
 # ===================================================================
@@ -572,9 +573,10 @@ async def test_valid_selector_scopes_data(make_client, db, two_orgs, tenant_data
         r1 = await client.get("/customers", headers=headers)
         assert r1.status_code == 200
         body = r1.json()
-        assert len(body) == 1
-        assert body[0]["email"] == tenant_data["email_beta"]
-        assert body[0]["organization_id"] == org_b.id
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["email"] == tenant_data["email_beta"]
+        assert body["items"][0]["organization_id"] == org_b.id
 
         r2 = await client.get("/tickets", headers=headers)
         assert r2.status_code == 200

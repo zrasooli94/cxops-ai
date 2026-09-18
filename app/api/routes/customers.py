@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,14 +10,27 @@ from app.api.deps import (
     RequireCapability,
 )
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.core.rbac import AuthorizationContext, Capability
-from app.schemas.customer import CustomerCreate, CustomerRead, CustomerUpdate
+from app.schemas.customer import (
+    CustomerCreate,
+    CustomerListResponse,
+    CustomerRead,
+    CustomerSummary,
+    CustomerTicketListResponse,
+    CustomerUpdate,
+)
+from app.schemas.customer_timeline import CustomerTimelineResponse
+from app.services.customer_360_service import Customer360Service
 from app.services.customer_service import CustomerService
+from app.services.customer_timeline_service import CustomerTimelineService
 
 router = APIRouter(
     prefix="/customers",
     tags=["Customers"],
 )
+
+log = get_logger(__name__)
 
 DatabaseSession = Annotated[
     AsyncSession,
@@ -31,6 +44,11 @@ CustomerWriteAuthz = Annotated[
 CustomerReadAuthz = Annotated[
     AuthorizationContext,
     Depends(RequireCapability(Capability.CUSTOMER_READ)),
+]
+# Composite read: customer.read AND ticket.read. Both gates are enforced.
+CustomerTicketReadAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.TICKET_READ)),
 ]
 
 
@@ -59,15 +77,42 @@ async def create_customer(
 
 @router.get(
     "",
-    response_model=list[CustomerRead],
+    response_model=CustomerListResponse,
 )
 async def list_customers(
     db: DatabaseSession,
     principal: CurrentPrincipal,
     tenant: CurrentTenant,
     authz: CustomerReadAuthz,
+    search: str | None = Query(default=None, max_length=200),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
 ):
-    return await CustomerService.list_for_tenant(db, tenant.organization_id)
+    items, total = await CustomerService.search_for_tenant(
+        db,
+        tenant.organization_id,
+        search=search,
+        offset=offset,
+        limit=limit,
+    )
+
+    # Structured, PII-free search metric: the search term itself is never logged.
+    log.info(
+        "customer_search_performed",
+        organization_id=tenant.organization_id,
+        result_count=len(items),
+        total=total,
+        offset=offset,
+        limit=limit,
+        search_present=search is not None and search.strip() != "",
+    )
+
+    return CustomerListResponse(
+        items=[CustomerRead.model_validate(item) for item in items],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get(
@@ -92,6 +137,107 @@ async def get_customer(
         )
 
     return customer
+
+
+@router.get(
+    "/{customer_id}/summary",
+    response_model=CustomerSummary,
+)
+async def get_customer_summary(
+    customer_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
+):
+    customer = await Customer360Service.get_for_tenant(
+        db, customer_id, tenant.organization_id
+    )
+
+    if customer is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found",
+        )
+
+    return await Customer360Service.get_summary(
+        db,
+        customer_id=customer_id,
+        organization_id=tenant.organization_id,
+    )
+
+
+@router.get(
+    "/{customer_id}/tickets",
+    response_model=CustomerTicketListResponse,
+)
+async def list_customer_tickets(
+    customer_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
+    ticket_authz: CustomerTicketReadAuthz,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    customer = await Customer360Service.get_for_tenant(
+        db, customer_id, tenant.organization_id
+    )
+
+    if customer is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found",
+        )
+
+    items, total = await Customer360Service.list_tickets_for_customer(
+        db,
+        customer_id=customer_id,
+        organization_id=tenant.organization_id,
+        offset=offset,
+        limit=limit,
+    )
+
+    return CustomerTicketListResponse(
+        items=items,
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/{customer_id}/timeline",
+    response_model=CustomerTimelineResponse,
+)
+async def get_customer_timeline(
+    customer_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    customer = await Customer360Service.get_for_tenant(
+        db, customer_id, tenant.organization_id
+    )
+
+    if customer is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found",
+        )
+
+    return await CustomerTimelineService.build_timeline(
+        db,
+        customer_id=customer_id,
+        organization_id=tenant.organization_id,
+        authz=authz,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.patch(
@@ -124,7 +270,17 @@ async def update_customer(
     for field, value in changes.items():
         setattr(customer, field, value)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Duplicate email or external_id for another customer in this
+        # organization is a generic resource conflict — constraint names and
+        # internal details are never exposed back to the client.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Customer resource conflict.",
+        )
     await db.refresh(customer)
 
     return customer
