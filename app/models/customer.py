@@ -27,6 +27,15 @@ class Customer(Base):
             "email",
             name="ux_customers_organization_id_email",
         ),
+        # Composite unique that exists solely as the target for the
+        # tenant-safe ticket FK (customer_id, organization_id). It is
+        # redundant for uniqueness (id is already the PK) but lets the
+        # database reject attaching a customer owned by another tenant.
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="ux_customers_id_organization_id",
+        ),
         Index(
             "ix_customers_organization_id",
             "organization_id",
@@ -77,4 +86,5 @@ class Customer(Base):
     tickets = relationship(
         "Ticket",
         back_populates="customer",
+        foreign_keys="Ticket.customer_id",
     )

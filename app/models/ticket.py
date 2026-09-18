@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -28,9 +29,25 @@ class Ticket(Base):
             "organization_id",
             name="ux_tickets_id_organization_id",
         ),
+        # Tenant-safe customer linkage: a ticket may only reference a customer
+        # owned by the same organization. MATCH SIMPLE leaves rows with a NULL
+        # customer_id (or NULL organization_id) exempt, so legacy unlinked
+        # tickets remain valid while a non-null link is enforced by Postgres.
+        # NO ACTION on delete is intentional: there is no customer delete path,
+        # and default SET NULL would null organization_id and destroy tenant
+        # ownership of the ticket.
+        ForeignKeyConstraint(
+            ["customer_id", "organization_id"],
+            ["customers.id", "customers.organization_id"],
+            name="fk_tickets_customer_id_organization_id_customers",
+        ),
         Index(
             "ix_tickets_organization_id",
             "organization_id",
+        ),
+        Index(
+            "ix_tickets_customer_id",
+            "customer_id",
         ),
     )
 
@@ -91,7 +108,6 @@ class Ticket(Base):
     )
 
     customer_id: Mapped[int | None] = mapped_column(
-        ForeignKey("customers.id"),
         nullable=True,
     )
 
@@ -100,7 +116,11 @@ class Ticket(Base):
         nullable=True,
     )
 
-    customer = relationship("Customer", back_populates="tickets")
+    customer = relationship(
+        "Customer",
+        back_populates="tickets",
+        foreign_keys="Ticket.customer_id",
+    )
 
     organization = relationship("Organization", back_populates="tickets")
 
