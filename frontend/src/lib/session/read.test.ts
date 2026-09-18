@@ -9,6 +9,7 @@ import {
   landingDestination,
   landingMembershipLoadDisposition,
   loginPageDecision,
+  POST_SIGN_IN_DESTINATION,
   protectedDecision,
   readSession,
   sanitizeNextPath,
@@ -455,5 +456,176 @@ describe("control-center redirect FSM terminates (no dashboard <-> landing loop)
         `members=${scenario.memberships.length} cookie=${scenario.cookie}`,
       );
     }
+  });
+});
+
+// First-login navigation: a successful sign-in must enter the canonical
+// post-auth bootstrap through the landing Route Handler (which initializes the
+// active-organization cookie exactly once), never render /dashboard before an
+// org cookie exists. The pre-change chain sign-in -> /dashboard ->
+// /api/auth/landing -> /dashboard made Safari occasionally show "This page
+// couldn't load" on the very first login.
+describe("sign-in -> landing first-login flow", () => {
+  interface FlowState {
+    memberships: { id: number }[];
+    cookie: number | null;
+  }
+
+  const MAX_HOPS = 4;
+
+  // Pure mirror of the landing Route Handler: a sole membership is persisted as
+  // the org cookie and lands on /dashboard; a multi-membership selection is
+  // reused when valid, cleared otherwise; zero memberships -> /no-organization.
+  function landingOutcome(state: FlowState): {
+    nextCookie: number | null;
+    destination: string;
+  } {
+    if (state.memberships.length === 0) {
+      return { nextCookie: null, destination: "/no-organization" };
+    }
+    if (state.memberships.length === 1) {
+      return { nextCookie: state.memberships[0].id, destination: "/dashboard" };
+    }
+    const selected =
+      state.cookie !== null &&
+      state.memberships.some((m) => m.id === state.cookie);
+    return selected
+      ? { nextCookie: state.cookie, destination: "/dashboard" }
+      : { nextCookie: null, destination: "/select-organization" };
+  }
+
+  // Full sign-in timeline. `writes` counts active-organization cookie writes;
+  // only the landing (MUTABLE Route Handler) hop can write, never the RSC
+  // dashboard render hop.
+  function simulateSignInFlow(start: FlowState): {
+    steps: string[];
+    terminal: string;
+    writes: number;
+  } {
+    let state: FlowState = { ...start };
+    let writes = 0;
+    const steps: string[] = [`sign-in:${POST_SIGN_IN_DESTINATION}`];
+
+    for (let hop = 0; hop < MAX_HOPS; hop += 1) {
+      // Landing Route Handler (MUTABLE): resolves memberships and writes the
+      // active-organization cookie. This is the ONLY cookie-write hop.
+      const outcome = landingOutcome(state);
+      if (outcome.nextCookie !== state.cookie) writes += 1;
+      steps.push(`landing:${outcome.destination}`);
+      state = { ...state, cookie: outcome.nextCookie };
+
+      if (outcome.destination !== "/dashboard") {
+        return { steps, terminal: outcome.destination, writes };
+      }
+
+      // The control-center layout at /dashboard renders READ-ONLY: it never
+      // writes cookies, so it must terminate in "render" once the cookie set
+      // above matches (single org) or was already valid (multi org).
+      const bootstrap = controlCenterBootstrap(
+        "valid",
+        state.memberships,
+        state.cookie,
+      );
+      if (bootstrap === "render") {
+        steps.push("dashboard:render");
+        return { steps, terminal: "render", writes };
+      }
+      if (bootstrap === "login" || bootstrap === "recover") {
+        steps.push(`layout:${bootstrap}`);
+        return { steps, terminal: bootstrap, writes };
+      }
+      if (bootstrap === "no-organization") {
+        steps.push("no-organization");
+        return { steps, terminal: "/no-organization", writes };
+      }
+    }
+    return { steps, terminal: "UNBOUNDED", writes };
+  }
+
+  it("1. successful sign-in routes to /api/auth/landing, not /dashboard", () => {
+    assert.equal(POST_SIGN_IN_DESTINATION, "/api/auth/landing");
+    assert.notEqual(POST_SIGN_IN_DESTINATION, "/dashboard");
+  });
+
+  it("2. one-org first login: org cookie initialized once, then dashboard rendered", () => {
+    const flow = simulateSignInFlow({ memberships: [{ id: 7 }], cookie: null });
+    assert.equal(flow.terminal, "render");
+    assert.equal(flow.writes, 1);
+    assert.deepEqual(flow.steps, [
+      "sign-in:/api/auth/landing",
+      "landing:/dashboard",
+      "dashboard:render",
+    ]);
+  });
+
+  it("3. dashboard does not need a second landing once the org is initialized", () => {
+    const flow = simulateSignInFlow({ memberships: [{ id: 7 }], cookie: null });
+    const landingSteps = flow.steps.filter((step) =>
+      step.startsWith("landing:"),
+    );
+    assert.equal(landingSteps.length, 1);
+    assert.equal(flow.steps[flow.steps.length - 1], "dashboard:render");
+  });
+
+  it("4. zero-membership sign-in still lands on /no-organization", () => {
+    const flow = simulateSignInFlow({ memberships: [], cookie: null });
+    assert.equal(flow.terminal, "/no-organization");
+    assert.equal(flow.writes, 0);
+  });
+
+  it("5a. multiple-org sign-in with an existing selection reuses it (no write) then renders", () => {
+    const flow = simulateSignInFlow({ memberships: [{ id: 1 }, { id: 2 }], cookie: 2 });
+    assert.equal(flow.terminal, "render");
+    assert.equal(flow.writes, 0);
+    assert.deepEqual(flow.steps, [
+      "sign-in:/api/auth/landing",
+      "landing:/dashboard",
+      "dashboard:render",
+    ]);
+  });
+
+  it("5b. multiple-org sign-in without a valid selection routes to the selector", () => {
+    const flow = simulateSignInFlow({ memberships: [{ id: 1 }, { id: 2 }], cookie: null });
+    assert.equal(flow.terminal, "/select-organization");
+    assert.equal(flow.writes, 0);
+    assert.ok(
+      flow.steps.some((step) => step.startsWith("landing:/select-organization")),
+    );
+  });
+
+  it("7. no redirect loop: every first-login shape terminates within the hop bound", () => {
+    const scenarios: FlowState[] = [
+      { memberships: [], cookie: null },
+      { memberships: [{ id: 7 }], cookie: null },
+      { memberships: [{ id: 7 }], cookie: 7 },
+      { memberships: [{ id: 7 }], cookie: 99 },
+      { memberships: [{ id: 1 }, { id: 2 }], cookie: null },
+      { memberships: [{ id: 1 }, { id: 2 }], cookie: 2 },
+      { memberships: [{ id: 1 }, { id: 2 }], cookie: 99 },
+    ];
+    for (const scenario of scenarios) {
+      const flow = simulateSignInFlow(scenario);
+      assert.notEqual(flow.terminal, "UNBOUNDED");
+      assert.ok(
+        flow.steps.length <= MAX_HOPS,
+        `members=${scenario.memberships.length} cookie=${scenario.cookie}`,
+      );
+    }
+  });
+
+  it("8. cookie writes happen only in the landing (mutable) hop, never in the RSC render hop", () => {
+    const firstLogin = simulateSignInFlow({ memberships: [{ id: 7 }], cookie: null });
+    const renderIndex = firstLogin.steps.indexOf("dashboard:render");
+    const landingIndexes = firstLogin.steps
+      .map((step, index) => (step.startsWith("landing:") ? index : -1))
+      .filter((index) => index >= 0);
+
+    assert.equal(firstLogin.writes, 1);
+    assert.equal(landingIndexes.length, 1);
+    assert.ok(renderIndex > (landingIndexes[0] ?? -1));
+
+    const afterInitialization = simulateSignInFlow({ memberships: [{ id: 7 }], cookie: 7 });
+    assert.equal(afterInitialization.writes, 0);
+    assert.equal(afterInitialization.terminal, "render");
   });
 });

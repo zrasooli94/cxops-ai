@@ -4,6 +4,7 @@ import { createNhostServerClient } from "@/lib/nhost/server";
 import { redirect } from "next/navigation";
 import { FetchError } from "@nhost/nhost-js/fetch";
 import { NhostConfigurationError, structuredAuthLog } from "@/lib/auth/diagnostics";
+import { POST_SIGN_IN_DESTINATION } from "@/lib/session/read";
 
 export interface SignInResult {
   ok: boolean;
@@ -75,5 +76,10 @@ export async function signIn(formData: FormData): Promise<{ ok: boolean; error?:
     return { ok: false, error: classifySignInError(error) };
   }
 
-  redirect("/dashboard");
+  // Successful sign-in enters the canonical post-auth bootstrap: the landing
+  // Route Handler resolves memberships, initializes the active-organization
+  // cookie, and routes to /dashboard or /select-organization or
+  // /no-organization. Jumping straight to /dashboard would render before an org
+  // cookie exists on a first login.
+  redirect(POST_SIGN_IN_DESTINATION);
 }

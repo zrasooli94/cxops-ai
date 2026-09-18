@@ -110,6 +110,22 @@ export type ControlCenterBootstrap =
   | "landing"
   | "render";
 
+/**
+ * Where a successful sign-in sends the browser.
+ *
+ * The landing Route Handler is the canonical post-auth bootstrap owner: it
+ * resolves memberships, initializes the active-organization cookie, and routes
+ * to /dashboard (single org), /select-organization (multiple orgs), or
+ * /no-organization (zero memberships).
+ *
+ * Sign-in must NOT jump straight to /dashboard: on a first login there is no
+ * active-organization cookie yet, so the layout would immediately bounce
+ * through the landing handler anyway, and a fresh /dashboard pass before the
+ * cookie existed made Safari sometimes show a transient "This page couldn't
+ * load" at the end of the redirect chain.
+ */
+export const POST_SIGN_IN_DESTINATION = "/api/auth/landing" as const;
+
 export function controlCenterBootstrap(
   state: SessionState,
   memberships: LandingOrganization[],
