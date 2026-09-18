@@ -1,14 +1,4 @@
-import Link from "next/link";
-import { Ticket, Bot, ShieldCheck, BrainCircuit, Workflow, Activity } from "lucide-react";
-
-const navCards = [
-  { href: "/tickets", label: "Tickets", desc: "Customer support workspace", icon: Ticket },
-  { href: "/agent", label: "AI Agent", desc: "LangGraph execution console", icon: Bot },
-  { href: "/approvals", label: "Approvals", desc: "Human-in-the-loop safety", icon: ShieldCheck },
-  { href: "/knowledge", label: "Knowledge", desc: "RAG playground & ingestion", icon: BrainCircuit },
-  { href: "/runs", label: "Runs", desc: "Persistent audit trail", icon: Workflow },
-  { href: "/observability", label: "Observability", desc: "Production telemetry", icon: Activity },
-];
+import DashboardNavCards from "./nav-cards";
 
 export default function DashboardPage() {
   return (
@@ -43,32 +33,7 @@ export default function DashboardPage() {
             </p>
           </section>
 
-          <section className="mb-12 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {navCards.map((card) => {
-              const Icon = card.icon;
-              return (
-                <Link
-                  key={card.href}
-                  href={card.href}
-                  className="rounded-2xl border border-slate-200 bg-white p-6 transition hover:border-violet-300 hover:-translate-y-0.5 hover:shadow-lg"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-50 text-violet-500">
-                      <Icon className="h-5 w-5" strokeWidth={1.7} />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-slate-950">{card.label}</h3>
-                      <p className="text-xs text-slate-400">{card.desc}</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-5 text-sm font-medium text-violet-600">
-                    Open workspace <span aria-hidden="true">→</span>
-                  </div>
-                </Link>
-              );
-            })}
-          </section>
+          <DashboardNavCards />
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 lg:p-8">
             <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">

@@ -42,6 +42,11 @@ export function hasAllCapabilities(
   capabilities: readonly string[],
   required: readonly string[],
 ): boolean {
+  // Fail closed: an empty requirement must never be treated as authorization
+  // success, otherwise a misconfigured empty requirement would unlock a view.
+  if (required.length === 0) {
+    return false;
+  }
   return required.every((capability) => capabilities.includes(capability));
 }
 
@@ -237,11 +242,44 @@ export interface AuthorizationResponse {
 }
 
 /**
+ * Why an authorization load failed.
+ *
+ * - `authentication` — no valid session; existing auth handling applies.
+ * - `membership` — the selected organization is no longer resolvable.
+ * - `unavailable` — the backend could not answer (transport/5xx).
+ * - `malformed` — a 200 without a valid AuthorizationInfo shape.
+ * - `mismatch` — a valid shape for a different organization than requested.
+ */
+export type AuthorizationLoadFailure =
+  | "authentication"
+  | "membership"
+  | "unavailable"
+  | "malformed"
+  | "mismatch";
+
+/**
+ * Typed failure raised by `loadAuthorization` so callers can route to the
+ * correct recovery path without parsing messages. The `reason` is never derived
+ * from untrusted input; it is decided here from the HTTP status and shape.
+ */
+export class AuthorizationLoadError extends Error {
+  readonly reason: AuthorizationLoadFailure;
+
+  constructor(message: string, reason: AuthorizationLoadFailure) {
+    super(message);
+    this.name = "AuthorizationLoadError";
+    this.reason = reason;
+  }
+}
+
+/**
  * Load and validate authorization through an injected fetcher.
  *
  * Kept dependency-injected so the request/validation flow can be tested with the
- * Node built-in runner without importing the server-only backend client. 401
- * behavior mirrors the existing tenant client (session expiry).
+ * Node built-in runner without importing the server-only backend client.
+ *
+ * `GET /me/authorization` requires identity + tenant membership and no
+ * capability, so a 403/409 here is always a membership/tenant failure.
  */
 export async function loadAuthorization(
   fetchAuthorization: (organizationId: number) => Promise<AuthorizationResponse>,
@@ -250,22 +288,47 @@ export async function loadAuthorization(
   const response = await fetchAuthorization(organizationId);
 
   if (response.status === 401) {
-    throw new Error("Authentication required");
+    throw new AuthorizationLoadError("Authentication required", "authentication");
+  }
+  if (response.status === 403 || response.status === 409) {
+    throw new AuthorizationLoadError(
+      "Could not load authorization",
+      "membership",
+    );
   }
   if (!response.ok) {
-    throw new Error("Could not load authorization");
+    throw new AuthorizationLoadError(
+      "Could not load authorization",
+      "unavailable",
+    );
   }
 
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw new Error("Invalid authorization response");
+    throw new AuthorizationLoadError(
+      "Invalid authorization response",
+      "malformed",
+    );
   }
 
   const authorization = parseAuthorizationInfo(payload);
   if (!authorization) {
-    throw new Error("Invalid authorization response");
+    throw new AuthorizationLoadError(
+      "Invalid authorization response",
+      "malformed",
+    );
+  }
+
+  // Defense-in-depth: never mount authorization derived for a different
+  // organization than the one the tenant flow resolved. FastAPI always echoes
+  // the resolved tenant, so a mismatch means something is wrong; fail closed.
+  if (authorization.organization_id !== organizationId) {
+    throw new AuthorizationLoadError(
+      "Invalid authorization response",
+      "mismatch",
+    );
   }
 
   return authorization;

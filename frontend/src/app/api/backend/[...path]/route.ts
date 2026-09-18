@@ -166,10 +166,7 @@ async function proxy(
     // must be preserved. Unknown 403/409 responses are left untouched; a
     // permission failure is never proof that the membership is invalid.
     if (response.status === 403 || response.status === 409) {
-      const detail = readErrorDetail(
-        new TextDecoder().decode(body),
-        response.headers.get("content-type"),
-      );
+      const detail = readErrorDetail(new TextDecoder().decode(body), contentType);
       if (shouldClearOrganizationSelection(response.status, detail)) {
         await clearActiveOrganizationId();
       }

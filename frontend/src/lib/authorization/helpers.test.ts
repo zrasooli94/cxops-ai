@@ -5,6 +5,7 @@ import { TENANT_SELECTOR_HEADER } from "../auth/proxy-headers.ts";
 import { CAPABILITIES } from "./capabilities.ts";
 import {
   AUTHORIZATION_PATH,
+  AuthorizationLoadError,
   classifyAuthorizationFailure,
   createAuthorizationView,
   hasAllCapabilities,
@@ -75,6 +76,11 @@ describe("capability helpers", () => {
     assert.equal(hasCapability([], "ticket.read"), false);
     assert.equal(hasAnyCapability([], ["ticket.read"]), false);
     assert.equal(hasAllCapabilities([], ["ticket.read"]), false);
+  });
+
+  it("6b: an empty requirement fails closed", () => {
+    assert.equal(hasAllCapabilities([], []), false);
+    assert.equal(hasAllCapabilities(["ticket.read"], []), false);
   });
 
   it("7: an unknown capability string cannot accidentally authorize", () => {
@@ -359,6 +365,67 @@ describe("authorization backend contract", () => {
           42,
         ),
       /Authentication required/,
+    );
+  });
+
+  it("32: a mismatched organization id fails closed", async () => {
+    await assert.rejects(
+      () =>
+        loadAuthorization(
+          async () => okResponse({ ...validPayload, organization_id: 99 }),
+          42,
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof AuthorizationLoadError);
+        assert.equal(error.reason, "mismatch");
+        assert.match(error.message, /Invalid authorization response/);
+        return true;
+      },
+    );
+  });
+
+  it("33: a 403 on the authorization endpoint is a membership failure", async () => {
+    await assert.rejects(
+      () =>
+        loadAuthorization(
+          async () => ({ status: 403, ok: false, json: async () => ({}) }),
+          42,
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof AuthorizationLoadError);
+        assert.equal(error.reason, "membership");
+        return true;
+      },
+    );
+  });
+
+  it("34: a backend 5xx is an unavailable failure, not a membership failure", async () => {
+    await assert.rejects(
+      () =>
+        loadAuthorization(
+          async () => ({ status: 503, ok: false, json: async () => ({}) }),
+          42,
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof AuthorizationLoadError);
+        assert.equal(error.reason, "unavailable");
+        return true;
+      },
+    );
+  });
+
+  it("35: a malformed 200 is a malformed failure", async () => {
+    await assert.rejects(
+      () =>
+        loadAuthorization(
+          async () => okResponse({ organization_id: 42, role: "viewer" }),
+          42,
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof AuthorizationLoadError);
+        assert.equal(error.reason, "malformed");
+        return true;
+      },
     );
   });
 });

@@ -1,20 +1,16 @@
 "use client";
 
-import {
-  Activity,
-  Bot,
-  BrainCircuit,
-  Building2,
-  Gauge,
-  LogOut,
-  ShieldCheck,
-  Ticket,
-  Workflow,
-} from "lucide-react";
+import { Building2, LogOut } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
+import NavigationIcon from "@/components/navigation-icon";
 import OrganizationSwitcher from "@/components/organization-switcher";
+import { useAuthorization } from "@/lib/authorization/context";
+import {
+  filterNavigationByCapabilities,
+  PRIMARY_NAVIGATION,
+} from "@/lib/authorization/navigation";
 import { switchOrganization } from "@/lib/tenant/actions";
 
 interface Organization {
@@ -35,16 +31,6 @@ interface ControlCenterShellProps {
   children: React.ReactNode;
 }
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: Gauge },
-  { href: "/tickets", label: "Tickets", icon: Ticket },
-  { href: "/agent", label: "AI Agent", icon: Bot },
-  { href: "/approvals", label: "Approvals", icon: ShieldCheck },
-  { href: "/knowledge", label: "Knowledge", icon: BrainCircuit },
-  { href: "/runs", label: "Runs", icon: Workflow },
-  { href: "/observability", label: "Observability", icon: Activity },
-];
-
 export default function ControlCenterShell({
   session,
   tenantContext,
@@ -52,6 +38,8 @@ export default function ControlCenterShell({
 }: ControlCenterShellProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const { can } = useAuthorization();
+  const visibleNavItems = filterNavigationByCapabilities(PRIMARY_NAVIGATION, can);
 
   return (
     <div className="min-h-screen">
@@ -78,8 +66,7 @@ export default function ControlCenterShell({
         </Link>
 
         <nav className="mt-12 space-y-1.5">
-          {navItems.map((item) => {
-            const Icon = item.icon;
+          {visibleNavItems.map((item) => {
             const selected = pathname === item.href;
 
             return (
@@ -92,7 +79,8 @@ export default function ControlCenterShell({
                     : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"
                 }`}
               >
-                <Icon
+                <NavigationIcon
+                  name={item.icon}
                   className={`h-[17px] w-[17px] ${
                     selected
                       ? "text-[#5f63ff]"
