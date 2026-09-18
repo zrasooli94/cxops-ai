@@ -3,6 +3,7 @@
 import { cookies } from "next/headers";
 import { createServerClient, type NhostClient } from "@nhost/nhost-js";
 import { type SessionStorageBackend, type StoredSession } from "@nhost/nhost-js/session";
+import { NhostConfigurationError, structuredAuthLog } from "@/lib/auth/diagnostics";
 
 const COOKIE_NAME = process.env.NHOST_SESSION_COOKIE ?? "nhostSession";
 const SUBDOMAIN = process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN ?? "";
@@ -45,7 +46,11 @@ function createCookieStorage(cookieStore: Awaited<ReturnType<typeof cookies>>): 
 
 export async function createNhostServerClient(): Promise<NhostClient> {
   if (!SUBDOMAIN || !REGION) {
-    throw new Error("Nhost subdomain/region not configured");
+    structuredAuthLog("auth_nhost_config_missing", {
+      subdomainConfigured: SUBDOMAIN !== "",
+      regionConfigured: REGION !== "",
+    });
+    throw new NhostConfigurationError();
   }
   const cookieStore = await getCookieStore();
   return createServerClient({
