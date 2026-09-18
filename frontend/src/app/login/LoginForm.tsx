@@ -1,19 +1,40 @@
 "use client";
 
-import { useActionState } from "react";
+import { useEffect, useRef, useActionState } from "react";
 import { ShieldCheck, Bot, BrainCircuit, Ticket, Workflow, Activity } from "lucide-react";
 import { signIn } from "@/lib/auth/sign-in";
+import {
+  postSignInNavigation,
+  type PostSignInResult,
+} from "@/lib/auth/sign-in-result";
 
-const initialState = { ok: false, error: undefined };
+const initialState: PostSignInResult = { ok: false, error: "" };
 
-function signInAction(prevState: { ok: boolean; error?: string }, formData: FormData) {
+function signInAction(
+  prevState: PostSignInResult,
+  formData: FormData,
+): Promise<PostSignInResult> {
   return signIn(formData);
 }
 
 export function LoginForm() {
-  const [state, formAction, isPending] = useActionState(signInAction, initialState);
+  const [state, formAction, isPending] = useActionState<
+    PostSignInResult,
+    FormData
+  >(signInAction, initialState);
+
+  const navigatedRef = useRef(false);
+
+  useEffect(() => {
+    const navigation = postSignInNavigation(state);
+    if (!navigation.shouldNavigate) return;
+    if (navigatedRef.current) return;
+    navigatedRef.current = true;
+    window.location.replace(navigation.destination);
+  }, [state]);
 
   const error = !state.ok && state.error ? state.error : null;
+  const navigating = postSignInNavigation(state).shouldNavigate;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50 flex">
@@ -115,7 +136,7 @@ export function LoginForm() {
                 autoComplete="email"
                 required
                 placeholder="you@company.com"
-                disabled={isPending}
+                disabled={isPending || navigating}
                 className="w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50 disabled:opacity-50"
               />
             </div>
@@ -131,14 +152,14 @@ export function LoginForm() {
                 autoComplete="current-password"
                 required
                 placeholder="Enter your password"
-                disabled={isPending}
+                disabled={isPending || navigating}
                 className="w-full rounded-xl border border-slate-200 bg-[#fbfcff] px-4 py-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50 disabled:opacity-50"
               />
             </div>
 
             <button
               type="submit"
-              disabled={isPending}
+              disabled={isPending || navigating}
               className="w-full flex items-center justify-center gap-2 rounded-full bg-[#111827] px-5 py-3.5 text-sm font-medium text-white shadow-[0_12px_30px_rgba(17,24,39,0.15)] transition hover:-translate-y-0.5 hover:bg-gradient-to-r hover:from-[#765cff] hover:to-[#508cff] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isPending ? (
@@ -149,6 +170,8 @@ export function LoginForm() {
                   </svg>
                   Signing in...
                 </>
+              ) : navigating ? (
+                "Redirecting..."
               ) : (
                 <>
                   <ShieldCheck className="h-4 w-4" />

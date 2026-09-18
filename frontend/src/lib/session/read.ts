@@ -111,7 +111,9 @@ export type ControlCenterBootstrap =
   | "render";
 
 /**
- * Where a successful sign-in sends the browser.
+ * Where a successful sign-in sends the browser. Canonically defined in
+ * `lib/auth/sign-in-result.ts` (re-exported here for backward compatibility
+ * with existing session tests).
  *
  * The landing Route Handler is the canonical post-auth bootstrap owner: it
  * resolves memberships, initializes the active-organization cookie, and routes
@@ -124,7 +126,12 @@ export type ControlCenterBootstrap =
  * cookie existed made Safari sometimes show a transient "This page couldn't
  * load" at the end of the redirect chain.
  */
-export const POST_SIGN_IN_DESTINATION = "/api/auth/landing" as const;
+export {
+  POST_SIGN_IN_DESTINATION,
+  type PostSignInSuccess,
+  type PostSignInFailure,
+  type PostSignInResult,
+} from "../auth/sign-in-result.ts";
 
 export function controlCenterBootstrap(
   state: SessionState,
