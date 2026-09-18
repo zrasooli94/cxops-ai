@@ -7,6 +7,10 @@ import {
   buildBackendHeaders,
 } from "@/lib/auth/proxy-headers";
 import {
+  readErrorDetail,
+  shouldClearOrganizationSelection,
+} from "@/lib/authorization/helpers";
+import {
   clearActiveOrganizationId,
   getActiveOrganizationId,
 } from "@/lib/tenant/cookie";
@@ -151,20 +155,30 @@ async function proxy(
       );
     }
 
-    // A stale or invalid active organization selection should not leave the
-    // browser in a retry loop. Clear the cookie and let the UI route the user
-    // back to the organization picker.
-    if (response.status === 403 || response.status === 409) {
-      await clearActiveOrganizationId();
-    }
-
+    const contentType =
+      response.headers.get("content-type") ?? "application/json";
     const body = await response.arrayBuffer();
+
+    // Only clear the active organization selection when the backend reports a
+    // genuine membership/tenant failure or an organization-selection conflict.
+    // A capability denial (403 "Insufficient permissions") means the
+    // organization is valid but the subject lacks permission, so the selection
+    // must be preserved. Unknown 403/409 responses are left untouched; a
+    // permission failure is never proof that the membership is invalid.
+    if (response.status === 403 || response.status === 409) {
+      const detail = readErrorDetail(
+        new TextDecoder().decode(body),
+        response.headers.get("content-type"),
+      );
+      if (shouldClearOrganizationSelection(response.status, detail)) {
+        await clearActiveOrganizationId();
+      }
+    }
 
     return new NextResponse(body, {
       status: response.status,
       headers: {
-        "content-type":
-          response.headers.get("content-type") ?? "application/json",
+        "content-type": contentType,
       },
     });
   } catch {

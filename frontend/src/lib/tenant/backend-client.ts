@@ -1,5 +1,11 @@
 "use server";
 
+import {
+  AUTHORIZATION_PATH,
+  loadAuthorization,
+  tenantSelectorHeaderValue,
+} from "@/lib/authorization/helpers";
+import type { AuthorizationInfo } from "@/lib/authorization/types";
 import { createNhostServerClient } from "@/lib/nhost/server";
 
 const BACKEND_API_URL =
@@ -59,7 +65,10 @@ async function backendFetch(
   headers.set("authorization", authHeader);
   headers.set("content-type", "application/json");
   if (options.organizationId) {
-    headers.set(TENANT_SELECTOR_HEADER, String(options.organizationId));
+    headers.set(
+      TENANT_SELECTOR_HEADER,
+      tenantSelectorHeaderValue(options.organizationId),
+    );
   }
 
   return fetch(`${BACKEND_API_URL}${path}`, {
@@ -85,6 +94,27 @@ export async function getMyOrganizations(): Promise<OrganizationMembership[]> {
   }
 
   return response.json();
+}
+
+/**
+ * Load the authenticated subject's role and capabilities for the supplied
+ * organization.
+ *
+ * The caller passes the already-resolved organization id; this function does NOT
+ * read the organization cookie. FastAPI resolves authorization from the tenant
+ * selector header against the authenticated subject's membership — the result is
+ * never inferred from JWT claims, role names, or client-side selection.
+ */
+export async function getMyAuthorization(
+  organizationId: number,
+): Promise<AuthorizationInfo> {
+  return loadAuthorization(
+    (resolvedOrganizationId) =>
+      backendFetch(AUTHORIZATION_PATH, {
+        organizationId: resolvedOrganizationId,
+      }),
+    organizationId,
+  );
 }
 
 /**
