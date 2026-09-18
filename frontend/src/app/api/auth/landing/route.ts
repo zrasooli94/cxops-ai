@@ -1,6 +1,10 @@
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
-import { landingDestination } from "@/lib/session/read";
+import { NextResponse } from "next/server";
+import {
+  landingDestination,
+  landingMembershipLoadDisposition,
+} from "@/lib/session/read";
 import { SESSION_COOKIE_NAME } from "@/lib/session/helpers";
 import { readSession } from "@/lib/session/read";
 import { getMyOrganizations } from "@/lib/tenant/backend-client";
@@ -17,7 +21,10 @@ import {
  *
  * Server Components redirect here when the session is valid; this handler
  * redirects through /api/auth/session when the session is stale, so exactly
- * one recovery happens before membership resolution.
+ * one recovery happens before membership resolution. When the membership load
+ * itself fails because authentication broke, the handler ALSO redirects
+ * through /api/auth/session (never a 500); any other backend failure answers
+ * with a generic 503 and no body so no internal detail or token leaks.
  */
 export async function GET() {
   const cookieStore = await cookies();
@@ -32,7 +39,15 @@ export async function GET() {
     return redirect("/api/auth/session");
   }
 
-  const memberships = await getMyOrganizations();
+  let memberships;
+  try {
+    memberships = await getMyOrganizations();
+  } catch (error) {
+    if (landingMembershipLoadDisposition(error) === "recover") {
+      return redirect("/api/auth/session");
+    }
+    return new NextResponse(null, { status: 503 });
+  }
   const activeOrganizationId = await getActiveOrganizationId();
 
   if (memberships.length === 0) {

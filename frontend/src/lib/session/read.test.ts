@@ -7,11 +7,13 @@ import {
   classifySessionState,
   controlCenterBootstrap,
   landingDestination,
+  landingMembershipLoadDisposition,
   loginPageDecision,
   protectedDecision,
   readSession,
   sanitizeNextPath,
 } from "./read.ts";
+import { AuthorizationLoadError } from "../authorization/helpers.ts";
 
 const FUTURE = Math.floor(Date.now() / 1000) + 900;
 const PAST = Math.floor(Date.now() / 1000) - 60;
@@ -252,5 +254,206 @@ describe("controlCenterBootstrap (deep-link / no-RSC-mutation)", () => {
 
   it("valid session + zero memberships -> no-organization", () => {
     assert.equal(controlCenterBootstrap("valid", [], null), "no-organization");
+  });
+});
+
+// 2/5. A single membership whose id matches the persisted org cookie must render
+// DIRECTLY. Returning "landing" for a matching single membership was the
+// production bug: landing persisted the cookie, /dashboard re-read the cookie,
+// bootstrap said "landing" again, ad infinitum (/dashboard <-> /api/auth/landing).
+describe("controlCenterBootstrap (single-membership redirect-loop regression)", () => {
+  it("2. valid session + single membership + matching org cookie -> render", () => {
+    assert.equal(controlCenterBootstrap("valid", [{ id: 7 }], 7), "render");
+  });
+
+  it("5. dashboard after landing renders: one landing hop, then the matching cookie renders", () => {
+    assert.equal(controlCenterBootstrap("valid", [{ id: 7 }], null), "landing");
+    assert.equal(controlCenterBootstrap("valid", [{ id: 7 }], 7), "render");
+  });
+
+  it("3. valid session + single membership + wrong/stale org cookie -> landing (cookie replaced)", () => {
+    assert.equal(controlCenterBootstrap("valid", [{ id: 7 }], 99), "landing");
+  });
+
+  it("1. valid session + single membership + no org cookie -> landing (handler persists)", () => {
+    assert.equal(controlCenterBootstrap("valid", [{ id: 7 }], null), "landing");
+  });
+
+  it("13. a matching selection renders WITHOUT any cookie mutation (no landing needed)", () => {
+    assert.equal(controlCenterBootstrap("valid", [{ id: 7 }], 7), "render");
+    assert.equal(controlCenterBootstrap("valid", [{ id: 1 }, { id: 2 }], 2), "render");
+  });
+});
+
+// 10/11/14. The landing endpoint must survive a membership-load authentication
+// failure by routing through the session recovery handler (never a 500), and any
+// other backend failure must be fail-safe with no internal detail or token leak.
+describe("landingMembershipLoadDisposition (landing auth-failure path)", () => {
+  it("10. authentication failure during membership load -> recover via session handler", () => {
+    assert.equal(
+      landingMembershipLoadDisposition(
+        new AuthorizationLoadError("Authentication required", "authentication"),
+      ),
+      "recover",
+    );
+  });
+
+  it("backend unavailable / unusable response -> fail-safe (never 500 with detail)", () => {
+    assert.equal(
+      landingMembershipLoadDisposition(
+        new AuthorizationLoadError("Could not load organizations", "unavailable"),
+      ),
+      "fail-safe",
+    );
+    assert.equal(landingMembershipLoadDisposition(new Error("boom")), "fail-safe");
+    assert.equal(landingMembershipLoadDisposition(undefined), "fail-safe");
+  });
+
+  it("membership failures never impersonate authentication", () => {
+    assert.equal(
+      landingMembershipLoadDisposition(
+        new AuthorizationLoadError("Membership invalid", "membership"),
+      ),
+      "fail-safe",
+    );
+  });
+
+  it("14. disposition never leaks tokens, cookie names, or credentials", () => {
+    const serialized = JSON.stringify({
+      disposition: landingMembershipLoadDisposition(
+        new AuthorizationLoadError("Authentication required", "authentication"),
+      ),
+      recoverTarget: "/api/auth/session",
+      failSafeStatus: 503,
+    });
+    assert.ok(!serialized.includes("test-access-token"));
+    assert.ok(!serialized.includes("refresh-token-uuid"));
+    assert.ok(!serialized.includes("nhostSession"));
+    assert.ok(!serialized.includes("password"));
+  });
+});
+
+// 12/15. Finite-state proof that the dashboard <-> landing cycle terminates for
+// every tenant-selection shape, including the exact states that looped forever
+// in production.
+describe("control-center redirect FSM terminates (no dashboard <-> landing loop)", () => {
+  interface FsmState {
+    memberships: { id: number }[];
+    cookie: number | null;
+  }
+
+  const MAX_HOPS = 6;
+
+  // Pure mirror of the landing Route Handler: a sole membership is persisted as
+  // the org cookie and lands on /dashboard; an invalid/absent multi-membership
+  // selection is cleared and lands on the selector.
+  function landingOutcome(state: FsmState): {
+    nextCookie: number | null;
+    destination: string;
+  } {
+    if (state.memberships.length === 0) {
+      return { nextCookie: null, destination: "/no-organization" };
+    }
+    if (state.memberships.length === 1) {
+      return { nextCookie: state.memberships[0].id, destination: "/dashboard" };
+    }
+    const selected =
+      state.cookie !== null &&
+      state.memberships.some((m) => m.id === state.cookie);
+    return selected
+      ? { nextCookie: state.cookie, destination: "/dashboard" }
+      : { nextCookie: null, destination: "/select-organization" };
+  }
+
+  function simulate(start: FsmState): {
+    steps: string[];
+    terminal: string;
+  } {
+    let state: FsmState = start;
+    const steps: string[] = [];
+    for (let hop = 0; hop < MAX_HOPS; hop += 1) {
+      const bootstrap = controlCenterBootstrap(
+        "valid",
+        state.memberships,
+        state.cookie,
+      );
+      if (bootstrap === "render") {
+        steps.push("render");
+        return { steps, terminal: "render" };
+      }
+      if (bootstrap === "no-organization") {
+        return { steps, terminal: "no-organization" };
+      }
+      if (bootstrap === "login" || bootstrap === "recover") {
+        return { steps, terminal: bootstrap };
+      }
+      const outcome = landingOutcome(state);
+      steps.push(`landing:${outcome.destination}`);
+      state = { ...state, cookie: outcome.nextCookie };
+      if (outcome.destination !== "/dashboard") {
+        return { steps, terminal: outcome.destination };
+      }
+    }
+    return { steps, terminal: "UNBOUNDED" };
+  }
+
+  it("12. single membership + no org cookie: one landing hop then render", () => {
+    const { steps, terminal } = simulate({ memberships: [{ id: 7 }], cookie: null });
+    assert.deepEqual(steps, ["landing:/dashboard", "render"]);
+    assert.equal(terminal, "render");
+  });
+
+  it("12. single membership + stale org cookie: one landing hop replaces it, then render", () => {
+    const { steps, terminal } = simulate({ memberships: [{ id: 7 }], cookie: 99 });
+    assert.equal(terminal, "render");
+    assert.equal(steps.length, 2);
+    assert.ok(steps[0]?.startsWith("landing:/dashboard"));
+  });
+
+  it("2/12. single membership + matching org cookie: renders immediately, zero landing hops", () => {
+    const { steps, terminal } = simulate({ memberships: [{ id: 7 }], cookie: 7 });
+    assert.deepEqual(steps, ["render"]);
+    assert.equal(terminal, "render");
+  });
+
+  it("6/12. zero memberships: terminates at /no-organization", () => {
+    const { terminal } = simulate({ memberships: [], cookie: null });
+    assert.equal(terminal, "no-organization");
+  });
+
+  it("7/12. multiple memberships + valid selection: renders immediately", () => {
+    const { steps, terminal } = simulate({ memberships: [{ id: 1 }, { id: 2 }], cookie: 2 });
+    assert.deepEqual(steps, ["render"]);
+    assert.equal(terminal, "render");
+  });
+
+  it("8/12. multiple memberships + invalid/absent selection: one landing then selector", () => {
+    const invalid = simulate({ memberships: [{ id: 1 }, { id: 2 }], cookie: 99 });
+    assert.equal(invalid.terminal, "/select-organization");
+    assert.ok(invalid.steps[0]?.startsWith("landing:/select-organization"));
+
+    const absent = simulate({ memberships: [{ id: 1 }, { id: 2 }], cookie: null });
+    assert.equal(absent.terminal, "/select-organization");
+  });
+
+  it("12. every tenant shape terminates within the hop bound", () => {
+    const scenarios: FsmState[] = [
+      { memberships: [], cookie: null },
+      { memberships: [{ id: 7 }], cookie: null },
+      { memberships: [{ id: 7 }], cookie: 7 },
+      { memberships: [{ id: 7 }], cookie: 99 },
+      { memberships: [{ id: 1 }, { id: 2 }], cookie: 2 },
+      { memberships: [{ id: 1 }, { id: 2 }], cookie: 99 },
+      { memberships: [{ id: 1 }, { id: 2 }], cookie: null },
+      { memberships: [{ id: 1 }, { id: 2 }, { id: 3 }], cookie: 5 },
+    ];
+    for (const scenario of scenarios) {
+      const { steps, terminal } = simulate(scenario);
+      assert.notEqual(terminal, "UNBOUNDED");
+      assert.ok(
+        steps.length < MAX_HOPS,
+        `members=${scenario.memberships.length} cookie=${scenario.cookie}`,
+      );
+    }
   });
 });

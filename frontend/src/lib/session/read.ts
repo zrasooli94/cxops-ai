@@ -1,5 +1,6 @@
 import type { StoredSession } from "@nhost/nhost-js/session";
 import { deserializeSession } from "./helpers.ts";
+import { AuthorizationLoadError } from "../authorization/helpers.ts";
 
 /**
  * Read-only session classification. This module MUST stay free of Next.js
@@ -124,12 +125,46 @@ export function controlCenterBootstrap(
     activeOrganizationId !== null &&
     memberships.some((m) => m.id === activeOrganizationId);
 
-  // A single membership or an invalid/absent selection may require persisting
-  // or clearing the org cookie - the landing Route Handler owns that.
-  if (memberships.length === 1) return "landing";
+  // A single membership whose id matches the active-org cookie renders here
+  // directly; only an absent or incompatible single selection needs the landing
+  // Route Handler to persist/replace the org cookie. Returning "landing" for a
+  // matching single membership is the pre-fix bug that caused the production
+  // /dashboard <-> /api/auth/landing infinite redirect loop.
+  if (memberships.length === 1) return selected ? "render" : "landing";
+
+  // An invalid/absent multi-membership selection needs the landing handler to
+  // clear the org cookie and route to the selector.
   if (!selected) return "landing";
 
   return "render";
+}
+
+/**
+ * How the landing Route Handler should react when loading memberships fails.
+ *
+ * The mutable membership load can fail either because authentication broke
+ * (refresh failed or the backend rejected the token) or because the backend is
+ * down / returned an unusable response. Distinguishing these is what stops the
+ * landing endpoint from 500-ing with internal detail.
+ *
+ * - "recover" -> run the session recovery handler: exactly one refresh, and on
+ *   failure it clears the session and org cookies and goes to /login.
+ * - "fail-safe" -> any other failure: answer generically, never throw. Only the
+ *   typed `AuthorizationLoadError` with reason `authentication` is trusted to
+ *   mean recovery; everything else is treated as an outage.
+ */
+export type LandingMembershipLoadDisposition = "recover" | "fail-safe";
+
+export function landingMembershipLoadDisposition(
+  error: unknown,
+): LandingMembershipLoadDisposition {
+  if (
+    error instanceof AuthorizationLoadError &&
+    error.reason === "authentication"
+  ) {
+    return "recover";
+  }
+  return "fail-safe";
 }
 
 /**

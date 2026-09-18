@@ -65,7 +65,7 @@ async function backendFetch(
 ): Promise<Response> {
   const authHeader = await getAuthorizationHeader();
   if (!authHeader) {
-    throw new Error("Authentication required");
+    throw new AuthorizationLoadError("Authentication required", "authentication");
   }
 
   const headers = new Headers(options.headers);
@@ -138,19 +138,44 @@ function membershipFromJson(payload: unknown): OrganizationMembership[] {
 /**
  * List organizations the authenticated subject is a member of.
  *
- * This is used by the organization picker before a tenant has been selected.
+ * This is used by the organization picker before a tenant has been selected
+ * and by the landing Route Handler. Failures are raised as typed
+ * `AuthorizationLoadError`s so the landing handler can route an authentication
+ * failure through the session-recovery Route Handler instead of 500-ing.
  */
 export async function getMyOrganizations(): Promise<OrganizationMembership[]> {
-  const response = await backendFetch("/me/organizations");
+  let response: Response;
+  try {
+    response = await backendFetch("/me/organizations");
+  } catch (error) {
+    if (error instanceof AuthorizationLoadError) throw error;
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
+  }
 
   if (response.status === 401) {
-    throw new Error("Authentication required");
+    throw new AuthorizationLoadError("Authentication required", "authentication");
   }
   if (!response.ok) {
-    throw new Error("Could not load organizations");
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
   }
 
-  return response.json();
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new AuthorizationLoadError(
+      "Could not load organizations",
+      "unavailable",
+    );
+  }
+
+  return membershipFromJson(payload);
 }
 
 /**
