@@ -20,13 +20,56 @@ export type NavigationIconName =
   | "workflow"
   | "activity";
 
+/** Every control-center destination that carries a capability requirement. */
+export type ControlCenterRoute =
+  | "/dashboard"
+  | "/tickets"
+  | "/tickets/new"
+  | "/agent"
+  | "/approvals"
+  | "/knowledge"
+  | "/runs"
+  | "/observability";
+
+/**
+ * Single source of truth for what each route requires. Sidebar visibility
+ * (below), dashboard quick links and the direct-route UX guards all read this
+ * same map, so navigation and route protection cannot drift apart.
+ *
+ * `null` means authentication + tenant context is sufficient.
+ */
+export const ROUTE_REQUIREMENTS: Readonly<
+  Record<ControlCenterRoute, Capability | null>
+> = {
+  "/dashboard": null,
+  "/tickets": CAPABILITIES.TICKET_READ,
+  "/tickets/new": CAPABILITIES.TICKET_WRITE,
+  "/agent": CAPABILITIES.AGENT_RUN,
+  "/approvals": CAPABILITIES.AGENT_RUN,
+  "/knowledge": CAPABILITIES.KNOWLEDGE_READ,
+  "/runs": CAPABILITIES.AGENT_RUN,
+  "/observability": CAPABILITIES.OBSERVABILITY_READ,
+};
+
 export interface NavigationItem {
-  href: string;
+  href: ControlCenterRoute;
   label: string;
   description: string;
   icon: NavigationIconName;
   /** Capability required to see this destination, or null for always-visible. */
   requiredCapability: Capability | null;
+}
+
+/**
+ * Shared visibility predicate: a `null` requirement is always satisfied,
+ * otherwise the capability must be present. Used by navigation rendering and by
+ * the client route guard so both apply identical rules.
+ */
+export function isCapabilityRequirementSatisfied(
+  requiredCapability: Capability | null,
+  can: (capability: Capability) => boolean,
+): boolean {
+  return requiredCapability === null || can(requiredCapability);
 }
 
 /**
@@ -39,21 +82,21 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     label: "Dashboard",
     description: "Operations overview",
     icon: "gauge",
-    requiredCapability: null,
+    requiredCapability: ROUTE_REQUIREMENTS["/dashboard"],
   },
   {
     href: "/tickets",
     label: "Tickets",
     description: "Customer support workspace",
     icon: "ticket",
-    requiredCapability: CAPABILITIES.TICKET_READ,
+    requiredCapability: ROUTE_REQUIREMENTS["/tickets"],
   },
   {
     href: "/agent",
     label: "AI Agent",
     description: "LangGraph execution console",
     icon: "bot",
-    requiredCapability: CAPABILITIES.AGENT_RUN,
+    requiredCapability: ROUTE_REQUIREMENTS["/agent"],
   },
   {
     href: "/approvals",
@@ -62,28 +105,28 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     icon: "shield",
     // Read visibility only; approve/execute actions require their own
     // capabilities in a later slice.
-    requiredCapability: CAPABILITIES.AGENT_RUN,
+    requiredCapability: ROUTE_REQUIREMENTS["/approvals"],
   },
   {
     href: "/knowledge",
     label: "Knowledge",
     description: "RAG playground & ingestion",
     icon: "brain",
-    requiredCapability: CAPABILITIES.KNOWLEDGE_READ,
+    requiredCapability: ROUTE_REQUIREMENTS["/knowledge"],
   },
   {
     href: "/runs",
     label: "Runs",
     description: "Persistent audit trail",
     icon: "workflow",
-    requiredCapability: CAPABILITIES.AGENT_RUN,
+    requiredCapability: ROUTE_REQUIREMENTS["/runs"],
   },
   {
     href: "/observability",
     label: "Observability",
     description: "Production telemetry",
     icon: "activity",
-    requiredCapability: CAPABILITIES.OBSERVABILITY_READ,
+    requiredCapability: ROUTE_REQUIREMENTS["/observability"],
   },
 ];
 
@@ -95,7 +138,7 @@ export function isNavigationItemVisible(
   item: NavigationItem,
   can: (capability: Capability) => boolean,
 ): boolean {
-  return item.requiredCapability === null || can(item.requiredCapability);
+  return isCapabilityRequirementSatisfied(item.requiredCapability, can);
 }
 
 /**

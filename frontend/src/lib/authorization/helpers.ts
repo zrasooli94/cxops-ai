@@ -8,6 +8,7 @@
  *
  * Frontend authorization is UX only. FastAPI remains the sole authority.
  */
+import { CAPABILITIES, type Capability } from "./capabilities.ts";
 import type { AuthorizationInfo } from "./types";
 
 /** FastAPI detail returned by `RequireCapability` when the role lacks a capability. */
@@ -127,6 +128,80 @@ export function shouldClearOrganizationSelection(
 }
 
 /**
+ * Client-facing meaning of a failed backend response.
+ *
+ * - `capability-denied` — the operation needs a capability this subject lacks.
+ * - `membership-invalid` — the selected organization is no longer valid.
+ * - `other` — not an authorization failure; existing error handling applies.
+ */
+export type ClientAuthorizationUx =
+  | "capability-denied"
+  | "membership-invalid"
+  | "other";
+
+/**
+ * What the UI should do about a failed response. Deliberately contains no
+ * "retry" signal: authorized mutations are never replayed automatically, so a
+ * capability denial can only refresh authorization, never resend the write.
+ */
+export interface ClientAuthorizationPlan {
+  readonly kind: ClientAuthorizationUx;
+  /** Send the subject back through the existing tenant-recovery flow. */
+  readonly recoverTenant: boolean;
+  /** Re-read authorization once so the UI catches up to a downgrade. */
+  readonly refreshAuthorization: boolean;
+}
+
+export function classifyClientAuthorizationUx(
+  status: number,
+  detail: unknown,
+): ClientAuthorizationUx {
+  switch (classifyAuthorizationFailure(status, detail)) {
+    case "capability":
+      return "capability-denied";
+    case "membership":
+    case "organization-selection":
+      return "membership-invalid";
+    default:
+      return "other";
+  }
+}
+
+export function planClientAuthorizationResponse(
+  status: number,
+  detail: unknown,
+): ClientAuthorizationPlan {
+  const kind = classifyClientAuthorizationUx(status, detail);
+  return {
+    kind,
+    recoverTenant: kind === "membership-invalid",
+    refreshAuthorization: kind === "capability-denied",
+  };
+}
+
+/** Friendly, non-leaky feedback for a client authorization plan. */
+export const PERMISSION_DENIED_FEEDBACK =
+  "You don't have permission to perform this action in this organization.";
+export const ORGANIZATION_CHANGED_FEEDBACK =
+  "Your organization access changed. Refreshing the workspace…";
+
+/**
+ * Human-readable feedback for a plan, or null when the failure is unrelated to
+ * authorization and should use the caller's normal error path.
+ */
+export function authorizationFeedback(
+  plan: ClientAuthorizationPlan,
+): string | null {
+  if (plan.kind === "capability-denied") {
+    return PERMISSION_DENIED_FEEDBACK;
+  }
+  if (plan.kind === "membership-invalid") {
+    return ORGANIZATION_CHANGED_FEEDBACK;
+  }
+  return null;
+}
+
+/**
  * Safely extract a backend `{ "detail": string }` message from a response body.
  * Returns null for non-JSON, malformed, or non-string details.
  */
@@ -232,6 +307,42 @@ export function createAuthorizationView(
     canAny: (required) => hasAnyCapability(capabilities, required),
     canAll: (required) => hasAllCapabilities(capabilities, required),
   };
+}
+
+/**
+ * Ticket screen shape derived from capabilities only. `readOnly` means the
+ * subject can see tickets but must not be shown any write affordance.
+ */
+export interface TicketExperience {
+  readonly canRead: boolean;
+  readonly canWrite: boolean;
+  readonly readOnly: boolean;
+}
+
+export function deriveTicketExperience(
+  can: (capability: Capability) => boolean,
+): TicketExperience {
+  const canRead = can(CAPABILITIES.TICKET_READ);
+  const canWrite = can(CAPABILITIES.TICKET_WRITE);
+  return { canRead, canWrite, readOnly: canRead && !canWrite };
+}
+
+/**
+ * Knowledge screen shape derived from capabilities only. `readOnly` means the
+ * subject can query the knowledge base but must not be shown management forms.
+ */
+export interface KnowledgeExperience {
+  readonly canRead: boolean;
+  readonly canManage: boolean;
+  readonly readOnly: boolean;
+}
+
+export function deriveKnowledgeExperience(
+  can: (capability: Capability) => boolean,
+): KnowledgeExperience {
+  const canRead = can(CAPABILITIES.KNOWLEDGE_READ);
+  const canManage = can(CAPABILITIES.KNOWLEDGE_MANAGE);
+  return { canRead, canManage, readOnly: canRead && !canManage };
 }
 
 /** Minimal fetch response surface required to load authorization. */

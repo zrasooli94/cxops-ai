@@ -6,8 +6,12 @@ import { CAPABILITIES } from "./capabilities.ts";
 import {
   AUTHORIZATION_PATH,
   AuthorizationLoadError,
+  authorizationFeedback,
   classifyAuthorizationFailure,
+  classifyClientAuthorizationUx,
   createAuthorizationView,
+  deriveKnowledgeExperience,
+  deriveTicketExperience,
   hasAllCapabilities,
   hasAnyCapability,
   hasCapability,
@@ -15,7 +19,10 @@ import {
   isMembershipAuthorizationError,
   isOrganizationSelectionConflict,
   loadAuthorization,
+  ORGANIZATION_CHANGED_FEEDBACK,
   parseAuthorizationInfo,
+  PERMISSION_DENIED_FEEDBACK,
+  planClientAuthorizationResponse,
   readErrorDetail,
   shouldClearOrganizationSelection,
   tenantSelectorHeaderValue,
@@ -427,5 +434,159 @@ describe("authorization backend contract", () => {
         return true;
       },
     );
+  });
+});
+
+describe("client authorization response planning", () => {
+  const forbidden = "Insufficient permissions";
+  const membership = "Organization membership not found";
+  const selector =
+    "Multiple organization memberships configured; select one via X-CXOps-Organization-ID";
+
+  it("36: a capability 403 maps to capability-denied", () => {
+    assert.equal(classifyClientAuthorizationUx(403, forbidden), "capability-denied");
+  });
+
+  it("37: a capability 403 refreshes authorization but never recovers the tenant", () => {
+    const plan = planClientAuthorizationResponse(403, forbidden);
+    assert.equal(plan.kind, "capability-denied");
+    assert.equal(plan.refreshAuthorization, true);
+    assert.equal(plan.recoverTenant, false);
+  });
+
+  it("38: a membership 403 maps to membership-invalid", () => {
+    assert.equal(
+      classifyClientAuthorizationUx(403, membership),
+      "membership-invalid",
+    );
+  });
+
+  it("39: a membership 403 recovers the tenant instead of refreshing capabilities", () => {
+    const plan = planClientAuthorizationResponse(403, membership);
+    assert.equal(plan.kind, "membership-invalid");
+    assert.equal(plan.recoverTenant, true);
+    assert.equal(plan.refreshAuthorization, false);
+  });
+
+  it("40: a selector 409 maps to membership-invalid and recovers the tenant", () => {
+    const plan = planClientAuthorizationResponse(409, selector);
+    assert.equal(plan.kind, "membership-invalid");
+    assert.equal(plan.recoverTenant, true);
+  });
+
+  it("41: an unknown 403 maps to other and triggers no authorization recovery", () => {
+    const plan = planClientAuthorizationResponse(403, "Unexpected backend detail");
+    assert.equal(plan.kind, "other");
+    assert.equal(plan.recoverTenant, false);
+    assert.equal(plan.refreshAuthorization, false);
+  });
+
+  it("42: an unrelated 409 stays other, not a membership recovery", () => {
+    const plan = planClientAuthorizationResponse(
+      409,
+      "Agent run has already been executed.",
+    );
+    assert.equal(plan.kind, "other");
+    assert.equal(plan.recoverTenant, false);
+  });
+
+  it("43: a plan never carries an automatic-retry signal", () => {
+    const plan = planClientAuthorizationResponse(403, forbidden);
+    assert.deepEqual(Object.keys(plan).sort(), [
+      "kind",
+      "recoverTenant",
+      "refreshAuthorization",
+    ]);
+    assert.equal("retry" in (plan as unknown as Record<string, unknown>), false);
+  });
+
+  it("44: capability denial uses friendly, non-leaky feedback", () => {
+    const feedback = authorizationFeedback(
+      planClientAuthorizationResponse(403, forbidden),
+    );
+    assert.equal(feedback, PERMISSION_DENIED_FEEDBACK);
+    assert.notEqual(feedback, forbidden);
+  });
+
+  it("45: membership invalidation uses friendly, non-leaky feedback", () => {
+    const feedback = authorizationFeedback(
+      planClientAuthorizationResponse(403, membership),
+    );
+    assert.equal(feedback, ORGANIZATION_CHANGED_FEEDBACK);
+    assert.notEqual(feedback, membership);
+  });
+
+  it("46: a non-authorization failure has no authorization feedback", () => {
+    assert.equal(
+      authorizationFeedback(
+        planClientAuthorizationResponse(500, "Internal Server Error"),
+      ),
+      null,
+    );
+  });
+});
+
+describe("ticket and knowledge experience derivation", () => {
+  it("47: ticket.read without ticket.write is read-only", () => {
+    const view = createAuthorizationView({
+      organization_id: 1,
+      role: "viewer",
+      capabilities: [CAPABILITIES.TICKET_READ],
+    });
+    const experience = deriveTicketExperience(view.can);
+    assert.equal(experience.canRead, true);
+    assert.equal(experience.canWrite, false);
+    assert.equal(experience.readOnly, true);
+  });
+
+  it("48: ticket.write enables write affordances", () => {
+    const view = createAuthorizationView({
+      organization_id: 1,
+      role: "supervisor",
+      capabilities: [CAPABILITIES.TICKET_READ, CAPABILITIES.TICKET_WRITE],
+    });
+    const experience = deriveTicketExperience(view.can);
+    assert.equal(experience.canWrite, true);
+    assert.equal(experience.readOnly, false);
+  });
+
+  it("49: a role name alone never grants ticket.write", () => {
+    const view = createAuthorizationView({
+      organization_id: 1,
+      role: "owner",
+      capabilities: [CAPABILITIES.TICKET_READ],
+    });
+    assert.equal(deriveTicketExperience(view.can).canWrite, false);
+  });
+
+  it("50: knowledge.read without knowledge.manage is read-only", () => {
+    const view = createAuthorizationView({
+      organization_id: 1,
+      role: "viewer",
+      capabilities: [CAPABILITIES.KNOWLEDGE_READ],
+    });
+    const experience = deriveKnowledgeExperience(view.can);
+    assert.equal(experience.canManage, false);
+    assert.equal(experience.readOnly, true);
+  });
+
+  it("51: knowledge.manage enables management controls", () => {
+    const view = createAuthorizationView({
+      organization_id: 1,
+      role: "admin",
+      capabilities: [CAPABILITIES.KNOWLEDGE_READ, CAPABILITIES.KNOWLEDGE_MANAGE],
+    });
+    const experience = deriveKnowledgeExperience(view.can);
+    assert.equal(experience.canManage, true);
+    assert.equal(experience.readOnly, false);
+  });
+
+  it("52: a role name alone never grants knowledge.manage", () => {
+    const view = createAuthorizationView({
+      organization_id: 1,
+      role: "admin",
+      capabilities: [CAPABILITIES.KNOWLEDGE_READ],
+    });
+    assert.equal(deriveKnowledgeExperience(view.can).canManage, false);
   });
 });

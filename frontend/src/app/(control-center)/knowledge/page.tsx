@@ -22,6 +22,14 @@ import {
   useState,
 } from "react";
 
+import InsufficientPermission from "@/components/insufficient-permission";
+import { useAuthorization } from "@/lib/authorization/context";
+import {
+  authorizationFeedback,
+  deriveKnowledgeExperience,
+  planClientAuthorizationResponse,
+} from "@/lib/authorization/helpers";
+
 
 type RAGSource = {
   source_id: string;
@@ -178,6 +186,9 @@ function FieldLabel({
 }
 
 export default function KnowledgePage() {
+  const { can, refresh } = useAuthorization();
+  const { canManage } = deriveKnowledgeExperience(can);
+
   const [tab, setTab] =
     useState<Tab>("rag");
 
@@ -438,6 +449,20 @@ export default function KnowledgePage() {
         await response.json();
 
       if (!response.ok) {
+        const plan =
+          planClientAuthorizationResponse(
+            response.status,
+            body?.detail,
+          );
+        const feedback =
+          authorizationFeedback(plan);
+
+        if (feedback) {
+          setIngestError(feedback);
+          refresh();
+          return;
+        }
+
         throw new Error(
           body?.detail ??
             `Ingestion API returned ${response.status}`,
@@ -504,6 +529,20 @@ export default function KnowledgePage() {
         await response.json();
 
       if (!response.ok) {
+        const plan =
+          planClientAuthorizationResponse(
+            response.status,
+            body?.detail,
+          );
+        const feedback =
+          authorizationFeedback(plan);
+
+        if (feedback) {
+          setUploadError(feedback);
+          refresh();
+          return;
+        }
+
         throw new Error(
           body?.detail ??
             `Upload API returned ${response.status}`,
@@ -1281,7 +1320,15 @@ export default function KnowledgePage() {
             </div>
           )}
 
-          {tab === "ingest" && (
+          {tab === "ingest" && !canManage && (
+            <InsufficientPermission
+              variant="inline"
+              title="Knowledge management is read-only"
+              description="You can query and search the knowledge base, but adding or uploading documents requires additional permission in this organization."
+            />
+          )}
+
+          {tab === "ingest" && canManage && (
             <div className="grid gap-6 xl:grid-cols-2">
               <section className="app-panel rounded-[22px] p-6 md:p-7">
                 <div className="flex items-center gap-3">

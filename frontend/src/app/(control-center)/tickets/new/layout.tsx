@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import CapabilityRouteGuard from "@/components/capability-route-guard";
+import { ROUTE_REQUIREMENTS } from "@/lib/authorization/navigation";
+
 export const metadata: Metadata = {
   title: {
     absolute: "Create Test Support Case | CXOps AI",
@@ -25,5 +28,9 @@ export default function RouteLayout({
 }: {
   children: ReactNode;
 }) {
-  return <>{children}</>;
+  return (
+    <CapabilityRouteGuard requiredCapability={ROUTE_REQUIREMENTS["/tickets/new"]}>
+      {children}
+    </CapabilityRouteGuard>
+  );
 }

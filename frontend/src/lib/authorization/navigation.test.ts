@@ -4,9 +4,12 @@ import assert from "node:assert/strict";
 import { CAPABILITIES } from "./capabilities.ts";
 import { createAuthorizationView } from "./helpers.ts";
 import {
+  type ControlCenterRoute,
   DASHBOARD_NAVIGATION,
   filterNavigationByCapabilities,
+  isCapabilityRequirementSatisfied,
   PRIMARY_NAVIGATION,
+  ROUTE_REQUIREMENTS,
 } from "./navigation.ts";
 
 function visibleHrefs(capabilities: readonly string[]): string[] {
@@ -120,5 +123,62 @@ describe("capability-driven navigation", () => {
         `${item.href} has an unknown requirement`,
       );
     }
+  });
+});
+
+describe("control-center route requirements", () => {
+  const expected: ReadonlyArray<[ControlCenterRoute, string | null]> = [
+    ["/dashboard", null],
+    ["/tickets", CAPABILITIES.TICKET_READ],
+    ["/tickets/new", CAPABILITIES.TICKET_WRITE],
+    ["/agent", CAPABILITIES.AGENT_RUN],
+    ["/approvals", CAPABILITIES.AGENT_RUN],
+    ["/knowledge", CAPABILITIES.KNOWLEDGE_READ],
+    ["/runs", CAPABILITIES.AGENT_RUN],
+    ["/observability", CAPABILITIES.OBSERVABILITY_READ],
+  ];
+
+  for (const [route, requirement] of expected) {
+    it(`route ${route} requires ${requirement ?? "authentication only"}`, () => {
+      assert.equal(ROUTE_REQUIREMENTS[route], requirement);
+    });
+  }
+
+  it("every route requirement is a known capability or an explicit null", () => {
+    const known = new Set<string>(Object.values(CAPABILITIES));
+    for (const requirement of Object.values(ROUTE_REQUIREMENTS)) {
+      assert.ok(requirement === null || known.has(requirement));
+    }
+  });
+
+  it("sidebar visibility and route guards share the same requirement", () => {
+    for (const item of PRIMARY_NAVIGATION) {
+      assert.equal(item.requiredCapability, ROUTE_REQUIREMENTS[item.href]);
+    }
+  });
+
+  it("a null requirement is satisfied with no capabilities at all", () => {
+    assert.equal(isCapabilityRequirementSatisfied(null, () => false), true);
+  });
+
+  it("a capability requirement is satisfied only when the capability is present", () => {
+    const can = (capability: string) =>
+      capability === CAPABILITIES.TICKET_READ;
+    assert.equal(
+      isCapabilityRequirementSatisfied(CAPABILITIES.TICKET_READ, can),
+      true,
+    );
+    assert.equal(
+      isCapabilityRequirementSatisfied(CAPABILITIES.TICKET_WRITE, can),
+      false,
+    );
+  });
+
+  it("an unknown capability never authorizes a guarded route", () => {
+    const can = (capability: string) => capability === "ticket.read.everything";
+    assert.equal(
+      isCapabilityRequirementSatisfied(CAPABILITIES.TICKET_READ, can),
+      false,
+    );
   });
 });

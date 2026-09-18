@@ -24,6 +24,12 @@ import {
   useState,
 } from "react";
 
+import { useAuthorization } from "@/lib/authorization/context";
+import {
+  authorizationFeedback,
+  planClientAuthorizationResponse,
+} from "@/lib/authorization/helpers";
+
 
 type Priority =
   | "low"
@@ -218,6 +224,8 @@ function InfoValue({
 }
 
 export default function NewTicketPage() {
+  const { refresh } = useAuthorization();
+
   const [subject, setSubject] =
     useState("");
 
@@ -287,6 +295,19 @@ export default function NewTicketPage() {
       await response.json();
 
     if (!response.ok) {
+      const plan =
+        planClientAuthorizationResponse(
+          response.status,
+          body?.detail,
+        );
+      const feedback =
+        authorizationFeedback(plan);
+
+      if (feedback) {
+        refresh();
+        throw new Error(feedback);
+      }
+
       throw new Error(
         body?.detail ??
           `Agent API returned ${response.status}`,
@@ -383,6 +404,19 @@ export default function NewTicketPage() {
         await response.json();
 
       if (!response.ok) {
+        const plan =
+          planClientAuthorizationResponse(
+            response.status,
+            body?.detail,
+          );
+        const feedback =
+          authorizationFeedback(plan);
+
+        if (feedback) {
+          refresh();
+          throw new Error(feedback);
+        }
+
         throw new Error(
           body?.detail
             ? typeof body.detail ===

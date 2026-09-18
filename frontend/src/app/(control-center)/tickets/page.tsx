@@ -28,6 +28,13 @@ import {
   useState,
 } from "react";
 
+import { useAuthorization } from "@/lib/authorization/context";
+import {
+  authorizationFeedback,
+  deriveTicketExperience,
+  planClientAuthorizationResponse,
+} from "@/lib/authorization/helpers";
+
 type Ticket = {
   id: number;
   external_id: string | null;
@@ -265,6 +272,9 @@ function InfoRow({
 }
 
 export default function TicketsPage() {
+  const { can, refresh } = useAuthorization();
+  const { canWrite } = deriveTicketExperience(can);
+
   const [tickets, setTickets] = useState<
     Ticket[]
   >([]);
@@ -394,6 +404,20 @@ export default function TicketsPage() {
         await response.json();
 
       if (!response.ok) {
+        const plan =
+          planClientAuthorizationResponse(
+            response.status,
+            body?.detail,
+          );
+        const feedback =
+          authorizationFeedback(plan);
+
+        if (feedback) {
+          setAnalysisError(feedback);
+          refresh();
+          return;
+        }
+
         throw new Error(
           body?.detail ??
             `Agent API returned ${response.status}`,
@@ -506,13 +530,15 @@ export default function TicketsPage() {
                 />
               </button>
 
-              <Link
-                href="/tickets/new"
-                className="inline-flex items-center gap-2 rounded-full bg-[#111827] px-5 py-2.5 text-xs font-medium text-white shadow-[0_9px_24px_rgba(17,24,39,0.14)] transition hover:-translate-y-0.5"
-              >
-                <Plus className="h-4 w-4" />
-                New ticket
-              </Link>
+              {canWrite && (
+                <Link
+                  href="/tickets/new"
+                  className="inline-flex items-center gap-2 rounded-full bg-[#111827] px-5 py-2.5 text-xs font-medium text-white shadow-[0_9px_24px_rgba(17,24,39,0.14)] transition hover:-translate-y-0.5"
+                >
+                  <Plus className="h-4 w-4" />
+                  New ticket
+                </Link>
+              )}
             </div>
           </div>
         </header>
