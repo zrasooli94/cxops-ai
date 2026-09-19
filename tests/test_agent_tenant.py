@@ -252,12 +252,14 @@ async def two_orgs(db):
         subject: str,
         description: str = "Customer support case.",
         external_id: str | None = None,
+        source: str | None = None,
     ) -> Ticket:
         ticket = Ticket(
             organization_id=organization_id,
             subject=subject,
             description=description,
             external_id=external_id,
+            source=source,
         )
         db.add(ticket)
         await db.commit()
@@ -612,7 +614,10 @@ async def test_g_cannot_execute_foreign_run(db, client, two_orgs):
     org_b = two_orgs["org_b"]
 
     ticket_b = await two_orgs["make_ticket"](
-        org_b.id, subject="Beta ticket", external_id="900000777"
+        org_b.id,
+        subject="Beta ticket",
+        external_id="900000777",
+        source="zendesk",
     )
     run_b = await two_orgs["make_run"](
         org_b.id,
@@ -721,10 +726,16 @@ async def test_i_own_execution_scoped_to_own_ticket_org(
     org_b = two_orgs["org_b"]
 
     ticket_a = await two_orgs["make_ticket"](
-        org_a.id, subject="Alpha ticket", external_id="1001"
+        org_a.id,
+        subject="Alpha ticket",
+        external_id="1001",
+        source="zendesk",
     )
     ticket_b = await two_orgs["make_ticket"](
-        org_b.id, subject="Beta ticket", external_id="2002"
+        org_b.id,
+        subject="Beta ticket",
+        external_id="2002",
+        source="zendesk",
     )
 
     run_a_id = uuid.uuid4().hex
@@ -1013,7 +1024,10 @@ async def test_p_zendesk_execution_selects_tenant_connection(
     org_b = two_orgs["org_b"]
 
     ticket_b = await two_orgs["make_ticket"](
-        org_b.id, subject="Beta ticket", external_id="2002"
+        org_b.id,
+        subject="Beta ticket",
+        external_id="2002",
+        source="zendesk",
     )
     run_b_id = uuid.uuid4().hex
     run_b_meta = _authorized_internal_note_run(
@@ -1164,6 +1178,7 @@ async def test_cross_tenant_execution_side_effect_blocked(
         subject="Beta ticket",
         description="Beta description.",
         external_id="2002",
+        source="zendesk",
     )
     run_b = await two_orgs["make_run"](
         org_b.id,
@@ -1249,7 +1264,10 @@ async def test_own_run_full_cycle_analyze_approve_execute(
     org_a = two_orgs["org_a"]
 
     ticket_a = await two_orgs["make_ticket"](
-        org_a.id, subject="Alpha ticket", external_id="1001"
+        org_a.id,
+        subject="Alpha ticket",
+        external_id="1001",
+        source="zendesk",
     )
     plan = [
         {
@@ -2122,3 +2140,411 @@ async def test_real_postgresql_lock_released_after_llm_failure(
         )
     ticket_runs = [run for run in runs if run.ticket_id == ticket.id]
     assert len(ticket_runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_external_execution_available_uses_zendesk_allowlist(
+    client,
+    two_orgs,
+):
+    """Serialize run advertises external execution only for Zendesk-linked tickets."""
+    org_a = two_orgs["org_a"]
+
+    zendesk_linked_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Zendesk linked ticket",
+        external_id="123",
+        source="zendesk",
+    )
+    zendesk_missing_external_id_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Zendesk missing external id",
+        external_id=None,
+        source="zendesk",
+    )
+    zendesk_non_numeric_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Zendesk non-numeric external id",
+        external_id="not-a-number",
+        source="zendesk",
+    )
+    local_demo_no_id_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Local demo ticket without id",
+        external_id=None,
+        source="control-center-test",
+    )
+    local_demo_with_id_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Local demo ticket with id",
+        external_id="demo-123",
+        source="control-center-test",
+    )
+    api_with_external_id_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="API ticket with external id",
+        external_id="456",
+        source="api",
+    )
+    future_source_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Future source ticket",
+        external_id="future-789",
+        source="future-integration",
+    )
+
+    zendesk_linked_run = await two_orgs["make_run"](
+        org_a.id,
+        zendesk_linked_ticket.id,
+        status="approved",
+        action="respond",
+    )
+    zendesk_missing_external_id_run = await two_orgs["make_run"](
+        org_a.id,
+        zendesk_missing_external_id_ticket.id,
+        status="approved",
+        action="respond",
+    )
+    zendesk_non_numeric_run = await two_orgs["make_run"](
+        org_a.id,
+        zendesk_non_numeric_ticket.id,
+        status="approved",
+        action="respond",
+    )
+    local_demo_no_id_run = await two_orgs["make_run"](
+        org_a.id,
+        local_demo_no_id_ticket.id,
+        status="approved",
+        action="respond",
+    )
+    local_demo_with_id_run = await two_orgs["make_run"](
+        org_a.id,
+        local_demo_with_id_ticket.id,
+        status="approved",
+        action="respond",
+    )
+    api_with_external_id_run = await two_orgs["make_run"](
+        org_a.id,
+        api_with_external_id_ticket.id,
+        status="approved",
+        action="respond",
+    )
+    future_source_run = await two_orgs["make_run"](
+        org_a.id,
+        future_source_ticket.id,
+        status="approved",
+        action="respond",
+    )
+
+    headers = _auth_headers(USER_ALPHA, tenant_id=org_a.id)
+
+    response = await client.get("/agent/runs", headers=headers)
+    assert response.status_code == 200
+    runs = {run["run_id"]: run for run in response.json()}
+
+    assert (
+        runs[zendesk_linked_run.run_id]["external_execution_available"] is True
+    )
+    assert (
+        runs[zendesk_missing_external_id_run.run_id][
+            "external_execution_available"
+        ]
+        is False
+    )
+    assert (
+        runs[zendesk_non_numeric_run.run_id]["external_execution_available"]
+        is False
+    )
+    assert (
+        runs[local_demo_no_id_run.run_id]["external_execution_available"]
+        is False
+    )
+    assert (
+        runs[local_demo_with_id_run.run_id]["external_execution_available"]
+        is False
+    )
+    assert (
+        runs[api_with_external_id_run.run_id]["external_execution_available"]
+        is False
+    )
+    assert (
+        runs[future_source_run.run_id]["external_execution_available"] is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_execution_available_is_tenant_scoped(
+    client,
+    two_orgs,
+):
+    """A foreign tenant cannot see or influence another tenant's eligibility flag."""
+    org_a = two_orgs["org_a"]
+    org_b = two_orgs["org_b"]
+
+    ticket_a = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Org A Zendesk ticket",
+        external_id="111",
+        source="zendesk",
+    )
+    ticket_b = await two_orgs["make_ticket"](
+        org_b.id,
+        subject="Org B Zendesk ticket",
+        external_id="222",
+        source="zendesk",
+    )
+
+    run_a = await two_orgs["make_run"](
+        org_a.id,
+        ticket_a.id,
+        status="approved",
+        action="respond",
+    )
+    run_b = await two_orgs["make_run"](
+        org_b.id,
+        ticket_b.id,
+        status="approved",
+        action="respond",
+    )
+
+    headers_a = _auth_headers(USER_ALPHA, tenant_id=org_a.id)
+    headers_b = _auth_headers(USER_BETA, tenant_id=org_b.id)
+
+    response_a = await client.get("/agent/runs", headers=headers_a)
+    response_b = await client.get("/agent/runs", headers=headers_b)
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+
+    runs_a = {run["run_id"]: run for run in response_a.json()}
+    runs_b = {run["run_id"]: run for run in response_b.json()}
+
+    assert run_a.run_id in runs_a
+    assert run_b.run_id not in runs_a
+    assert runs_a[run_a.run_id]["external_execution_available"] is True
+
+    assert run_b.run_id in runs_b
+    assert run_a.run_id not in runs_b
+    assert runs_b[run_b.run_id]["external_execution_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_runs_includes_external_execution_available(
+    client,
+    two_orgs,
+):
+    """The list endpoint also returns the execution availability flag."""
+    org_a = two_orgs["org_a"]
+
+    external_ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="External ticket",
+        external_id="789",
+        source="zendesk",
+    )
+    await two_orgs["make_run"](
+        org_a.id,
+        external_ticket.id,
+        status="approved",
+        action="respond",
+    )
+
+    headers = _auth_headers(USER_ALPHA, tenant_id=org_a.id)
+    response = await client.get("/agent/runs", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) >= 1
+    assert all(
+        "external_execution_available" in run
+        for run in body
+    )
+    assert any(
+        run["external_execution_available"] is True
+        for run in body
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source,external_id",
+    [
+        ("zendesk", None),
+        ("zendesk", "not-a-number"),
+        ("control-center-test", "demo-123"),
+        ("api", "456"),
+        ("future-integration", "future-789"),
+    ],
+)
+async def test_execution_preflight_rejects_unsupported_target(
+    db,
+    two_orgs,
+    monkeypatch,
+    source,
+    external_id,
+):
+    """Unsupported execution targets are rejected before claiming or calling Zendesk."""
+    from app.integrations.zendesk.client import ZendeskClient
+    from app.services.agent_execution_service import AgentExecutionStateError
+
+    org_a = two_orgs["org_a"]
+
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject=f"Target test ticket ({source})",
+        external_id=external_id,
+        source=source,
+    )
+
+    run_id = uuid.uuid4().hex
+    run_meta = _authorized_internal_note_run(
+        run_id,
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        reason="Target validation note.",
+    )
+    run = await two_orgs["make_run"](
+        org_a.id,
+        ticket.id,
+        run_id=run_id,
+        status="approved",
+        action="internal_note",
+        plan=run_meta["plan"],
+        tool_policy_version=run_meta["tool_policy_version"],
+        authorization_source=run_meta["authorization_source"],
+        authorized_by_subject=run_meta["authorized_by_subject"],
+        authorization_digest=run_meta["authorization_digest"],
+    )
+
+    captured_calls: list = []
+
+    async def fake_request(_self, _db, _method, _path, **_kwargs):
+        captured_calls.append((_method, _path))
+        return {"comments": []}
+
+    monkeypatch.setattr(ZendeskClient, "request", fake_request)
+
+    with pytest.raises(AgentExecutionStateError):
+        await agent_execution_service.execute(
+            db=db,
+            run_id=run.run_id,
+            organization_id=org_a.id,
+        )
+
+    assert not captured_calls
+
+    reloaded = await AgentRunRepository.get_by_run_id_unscoped(db, run.run_id)
+    assert reloaded.status in {"approved", "execution_failed"}
+
+
+@pytest.mark.asyncio
+async def test_execution_preflight_rejects_non_positive_zendesk_id(
+    db,
+    two_orgs,
+    monkeypatch,
+):
+    """Zendesk external ids that are not positive integers are rejected."""
+    from app.integrations.zendesk.client import ZendeskClient
+    from app.services.agent_execution_service import AgentExecutionStateError
+
+    org_a = two_orgs["org_a"]
+
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Non-positive Zendesk ticket",
+        external_id="0",
+        source="zendesk",
+    )
+
+    run_id = uuid.uuid4().hex
+    run_meta = _authorized_internal_note_run(
+        run_id,
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        reason="Non-positive id note.",
+    )
+    run = await two_orgs["make_run"](
+        org_a.id,
+        ticket.id,
+        run_id=run_id,
+        status="approved",
+        action="internal_note",
+        plan=run_meta["plan"],
+        tool_policy_version=run_meta["tool_policy_version"],
+        authorization_source=run_meta["authorization_source"],
+        authorized_by_subject=run_meta["authorized_by_subject"],
+        authorization_digest=run_meta["authorization_digest"],
+    )
+
+    captured_calls: list = []
+
+    async def fake_request(_self, _db, _method, _path, **_kwargs):
+        captured_calls.append((_method, _path))
+        return {"comments": []}
+
+    monkeypatch.setattr(ZendeskClient, "request", fake_request)
+
+    with pytest.raises(AgentExecutionStateError):
+        await agent_execution_service.execute(
+            db=db,
+            run_id=run.run_id,
+            organization_id=org_a.id,
+        )
+
+    assert not captured_calls
+
+
+@pytest.mark.asyncio
+async def test_serialization_and_worker_target_agree(
+    client,
+    two_orgs,
+):
+    """The response flag and the worker helper always agree for the same ticket."""
+    from app.services.zendesk_target_service import (
+        resolve_zendesk_execution_target,
+    )
+
+    org_a = two_orgs["org_a"]
+
+    tickets = [
+        await two_orgs["make_ticket"](
+            org_a.id,
+            subject="Zendesk numeric",
+            external_id="123",
+            source="zendesk",
+        ),
+        await two_orgs["make_ticket"](
+            org_a.id,
+            subject="Zendesk missing id",
+            external_id=None,
+            source="zendesk",
+        ),
+        await two_orgs["make_ticket"](
+            org_a.id,
+            subject="API with id",
+            external_id="456",
+            source="api",
+        ),
+    ]
+
+    runs = []
+    for ticket in tickets:
+        run = await two_orgs["make_run"](
+            org_a.id,
+            ticket.id,
+            status="approved",
+            action="respond",
+        )
+        runs.append(run)
+
+    headers = _auth_headers(USER_ALPHA, tenant_id=org_a.id)
+    response = await client.get("/agent/runs", headers=headers)
+    assert response.status_code == 200
+
+    run_map = {item["run_id"]: item for item in response.json()}
+
+    for ticket, run in zip(tickets, runs):
+        target = resolve_zendesk_execution_target(ticket)
+        assert (
+            run_map[run.run_id]["external_execution_available"]
+            == (target is not None)
+        )

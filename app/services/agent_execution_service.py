@@ -22,6 +22,9 @@ from app.services.tool_authorization_service import (
 from app.services.zendesk_sync_service import (
     ZendeskSyncService,
 )
+from app.services.zendesk_target_service import (
+    resolve_zendesk_execution_target,
+)
 
 
 class AgentExecutionError(Exception):
@@ -405,6 +408,35 @@ class AgentExecutionService:
             )
 
         # -----------------------------------------
+        # Load local ticket and canonical Zendesk target before claiming
+        # -----------------------------------------
+
+        ticket = await self._get_ticket(
+            db,
+            existing_run.ticket_id,
+            organization_id,
+        )
+
+        if ticket is None:
+            raise AgentExecutionStateError(
+                "External execution is unavailable because this ticket is not "
+                "linked to a supported Zendesk target."
+            )
+
+        if ticket.organization_id != existing_run.organization_id:
+            raise AgentExecutionStateError(
+                "Agent run and ticket tenant ownership mismatch."
+            )
+
+        zendesk_ticket_id = resolve_zendesk_execution_target(ticket)
+
+        if zendesk_ticket_id is None:
+            raise AgentExecutionStateError(
+                "External execution is unavailable because this ticket is not "
+                "linked to a supported Zendesk target."
+            )
+
+        # -----------------------------------------
         # Retry previously failed execution
         # -----------------------------------------
 
@@ -423,40 +455,6 @@ class AgentExecutionService:
             raise AgentExecutionStateError(
                 "Agent run could not be claimed for execution."
             )
-
-        # -----------------------------------------
-        # Load local ticket
-        # -----------------------------------------
-
-        ticket = await self._get_ticket(
-            db,
-            run.ticket_id,
-            organization_id,
-        )
-
-        if ticket is None:
-            await AgentRunRepository.mark_execution_failed(
-                db,
-                run,
-                ("Local ticket was not found."),
-            )
-            record_agent_execution_failure(
-                action=str(run.action),
-            )
-            raise AgentExecutionError("Local ticket was not found.")
-
-        if not ticket.external_id:
-            await AgentRunRepository.mark_execution_failed(
-                db,
-                run,
-                ("Ticket has no Zendesk external_id."),
-            )
-            record_agent_execution_failure(
-                action=str(run.action),
-            )
-            raise AgentExecutionError("Ticket is not linked to Zendesk.")
-
-        zendesk_ticket_id = int(ticket.external_id)
 
         tool_plan = run.tool_plan or []
 
@@ -487,36 +485,8 @@ class AgentExecutionService:
 
         # External writes are scoped to the tenant already persisted on the
         # run, which the database guarantees equals the ticket's organization
-        # (composite FK ``fk_agent_runs_ticket_organization``). The run is the
-        # direct tenant source for agent executions because it is the object
-        # the job claims; the cross-checks below fail closed even if an
-        # internal caller ever attempts a mismatch. Unowned runs can never
-        # reach a Zendesk credential.
-        resolved_organization_id = run.organization_id
-
-        if resolved_organization_id is None:
-            await AgentRunRepository.mark_execution_failed(
-                db,
-                run,
-                ("Agent run is not owned by an organization."),
-            )
-            record_agent_execution_failure(
-                action=str(run.action),
-            )
-            raise AgentExecutionError("Agent run is not owned by an organization.")
-
-        if ticket.organization_id != resolved_organization_id:
-            await AgentRunRepository.mark_execution_failed(
-                db,
-                run,
-                ("Agent run and ticket tenant ownership mismatch."),
-            )
-            record_agent_execution_failure(
-                action=str(run.action),
-            )
-            raise AgentExecutionError(
-                "Agent run and ticket tenant ownership mismatch."
-            )
+        # (composite FK ``fk_agent_runs_ticket_organization``). The Zendesk
+        # target was validated before the run was claimed.
 
         try:
             # -------------------------------------
@@ -654,7 +624,7 @@ class AgentExecutionService:
             if (
                 fresh_run is not None
                 and fresh_run.organization_id == organization_id
-                and fresh_run.status != "executed"
+                and fresh_run.status == "executing"
             ):
                 await AgentRunRepository.mark_execution_failed(
                     db,

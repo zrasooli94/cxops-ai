@@ -38,6 +38,9 @@ from app.services.integration_job_service import (
 from app.services.tool_authorization_service import (
     ToolAuthorizationService,
 )
+from app.services.zendesk_target_service import (
+    resolve_zendesk_execution_target,
+)
 
 router = APIRouter(
     prefix="/agent",
@@ -68,6 +71,10 @@ def serialize_run(
     run,
 ) -> dict:
 
+    external_execution_available = (
+        resolve_zendesk_execution_target(run.ticket) is not None
+    )
+
     return {
         "run_id": run.run_id,
         "ticket_id": run.ticket_id,
@@ -83,6 +90,7 @@ def serialize_run(
         "workflow_path": (run.workflow_path or []),
         "tool_plan": (run.tool_plan or []),
         "sources": (run.sources or []),
+        "external_execution_available": external_execution_available,
     }
 
 

@@ -58,6 +58,7 @@ type AgentRun = {
   reviewer_note: string | null;
   workflow_path: string[];
   tool_plan: ToolPlanItem[];
+  external_execution_available: boolean;
 };
 
 type TicketRecord = {
@@ -1145,7 +1146,8 @@ export default function ApprovalsPage() {
                           description="You can review runs in this queue, but approving or rejecting requires additional permission."
                         />
                       </div>
-                    ) : (
+                    ) : selectedRun.status ===
+                      "review_required" ? (
                       <>
                         <textarea
                           value={reviewNote}
@@ -1163,9 +1165,57 @@ export default function ApprovalsPage() {
                           <button
                             type="button"
                             onClick={() =>
+                              void reviewSelectedRun()
+                            }
+                            disabled={
+                              actionLoading ||
+                              !selectedActions?.canReviewRun
+                            }
+                            className="flex flex-1 items-center justify-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-5 py-3.5 text-sm font-medium text-blue-700 transition hover:-translate-y-0.5 hover:bg-blue-100 disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                            Mark reviewed
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <textarea
+                          value={reviewNote}
+                          onChange={(event) =>
+                            setReviewNote(
+                              event.target.value,
+                            )
+                          }
+                          rows={4}
+                          placeholder="Reviewer note..."
+                          className="mt-6 w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50"
+                        />
+
+                        {selectedRun.external_execution_available ===
+                          false &&
+                          selectedRun.action !==
+                            "human_review" && (
+                            <div className="mt-4 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+                              <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+
+                              <p className="text-xs leading-6 text-slate-600">
+                                External execution is
+                                unavailable for this ticket.
+                              </p>
+                            </div>
+                          )}
+
+                        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                          <button
+                            type="button"
+                            onClick={() =>
                               void approveSelectedRun()
                             }
-                            disabled={actionLoading}
+                            disabled={
+                              actionLoading ||
+                              !selectedActions?.canApproveRun
+                            }
                             className="flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-3.5 text-sm font-medium text-white shadow-[0_10px_25px_rgba(16,185,129,0.18)] transition hover:-translate-y-0.5 disabled:opacity-50"
                           >
                             {actionLoading ? (
@@ -1192,27 +1242,15 @@ export default function ApprovalsPage() {
                             onClick={() =>
                               void rejectRun()
                             }
-                            disabled={actionLoading}
+                            disabled={
+                              actionLoading ||
+                              !selectedActions?.canRejectRun
+                            }
                             className="flex flex-1 items-center justify-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-5 py-3.5 text-sm font-medium text-rose-700 transition hover:-translate-y-0.5 hover:bg-rose-100 disabled:opacity-50"
                           >
                             <X className="h-4 w-4" />
                             Reject
                           </button>
-
-                          {selectedRun.status ===
-                            "review_required" && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void reviewSelectedRun()
-                              }
-                              disabled={actionLoading}
-                              className="flex flex-1 items-center justify-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-5 py-3.5 text-sm font-medium text-blue-700 transition hover:-translate-y-0.5 hover:bg-blue-100 disabled:opacity-50"
-                            >
-                              <CheckCircle2 className="h-4 w-4" />
-                              Mark reviewed
-                            </button>
-                          )}
                         </div>
                       </>
                     )}

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.agent_action_event import (
     AgentActionEvent,
@@ -139,10 +140,12 @@ class AgentRunRepository:
         from missing runs (non-enumerating 404)."""
 
         result = await db.execute(
-            select(AgentRun).where(
+            select(AgentRun)
+            .where(
                 AgentRun.run_id == run_id,
                 AgentRun.organization_id == organization_id,
             )
+            .options(selectinload(AgentRun.ticket))
         )
 
         return result.scalar_one_or_none()
@@ -156,11 +159,13 @@ class AgentRunRepository:
         """Tenant-scoped pending-approval lookup."""
 
         result = await db.execute(
-            select(AgentRun).where(
+            select(AgentRun)
+            .where(
                 AgentRun.run_id == run_id,
                 AgentRun.organization_id == organization_id,
                 AgentRun.status == "pending_approval",
             )
+            .options(selectinload(AgentRun.ticket))
         )
 
         return result.scalar_one_or_none()
@@ -196,6 +201,7 @@ class AgentRunRepository:
             .where(AgentRun.organization_id == organization_id)
             .order_by(AgentRun.created_at.desc())
             .limit(limit)
+            .options(selectinload(AgentRun.ticket))
         )
 
         if run_status is not None:
@@ -228,6 +234,7 @@ class AgentRunRepository:
             .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
             .offset(offset)
             .limit(limit)
+            .options(selectinload(AgentRun.ticket))
         )
 
         return list(result.scalars().all())

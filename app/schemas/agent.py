@@ -140,6 +140,8 @@ class AgentRunResponse(BaseModel):
 
     sources: list[Any] = Field(default_factory=list)
 
+    external_execution_available: bool = False
+
     model_config = {"extra": "forbid"}
 
 

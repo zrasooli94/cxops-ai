@@ -71,6 +71,7 @@ type AgentRun = {
   workflow_path: string[];
   tool_plan: ToolPlanItem[];
   sources: KnowledgeSource[];
+  external_execution_available: boolean;
 };
 
 type TicketRecord = {
@@ -1407,7 +1408,7 @@ export default function RunsPage() {
                   )}
                 </section>
 
-                {selectedActions?.canExecuteRun && (
+                {selectedActions?.canExecuteRun ? (
                   <section className="app-panel rounded-[22px] p-6 md:p-7">
                     <div className="flex flex-col justify-between gap-5 md:flex-row md:items-center">
                       <div className="flex items-start gap-3">
@@ -1465,7 +1466,29 @@ export default function RunsPage() {
                       </button>
                     </div>
                   </section>
-                )}
+                ) : agent.canExecute &&
+                  (selectedRun.status === "approved" ||
+                    selectedRun.status ===
+                      "execution_failed") &&
+                  selectedRun.external_execution_available ===
+                    false ? (
+                  <section className="rounded-[22px] border border-amber-200 bg-amber-50/60 p-6 md:p-7">
+                    <div className="flex items-start gap-3">
+                      <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+
+                      <div>
+                        <h2 className="font-medium text-slate-900">
+                          Execution unavailable
+                        </h2>
+
+                        <p className="mt-1 max-w-xl text-xs leading-6 text-slate-500">
+                          External execution is disabled
+                          for this ticket.
+                        </p>
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
 
                 {selectedRun.status ===
                   "superseded" && (

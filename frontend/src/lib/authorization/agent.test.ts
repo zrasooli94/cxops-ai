@@ -30,10 +30,41 @@ function canFrom(capabilities: readonly string[]) {
   return view.can;
 }
 
-const RUN_APPROVED = { action: "respond", status: "approved" };
-const RUN_FAILED = { action: "respond", status: "execution_failed" };
-const RUN_HUMAN_REVIEW = { action: "human_review", status: "approved" };
-const RUN_PENDING = { action: "respond", status: "pending_approval" };
+const RUN_APPROVED = {
+  action: "respond",
+  status: "approved",
+  external_execution_available: true,
+};
+const RUN_FAILED = {
+  action: "respond",
+  status: "execution_failed",
+  external_execution_available: true,
+};
+const RUN_HUMAN_REVIEW_APPROVED = {
+  action: "human_review",
+  status: "approved",
+  external_execution_available: true,
+};
+const RUN_PENDING = {
+  action: "respond",
+  status: "pending_approval",
+  external_execution_available: true,
+};
+const RUN_PENDING_HUMAN_REVIEW = {
+  action: "human_review",
+  status: "pending_approval",
+  external_execution_available: true,
+};
+const RUN_REVIEW_REQUIRED = {
+  action: "respond",
+  status: "review_required",
+  external_execution_available: true,
+};
+const RUN_PENDING_LOCAL_DEMO = {
+  action: "respond",
+  status: "pending_approval",
+  external_execution_available: false,
+};
 
 describe("agent experience derivation", () => {
   it("1: agent.run only yields canRun, with no approve or execute", () => {
@@ -146,10 +177,41 @@ describe("approval UX derivation", () => {
         CAPABILITIES.AGENT_EXECUTE,
       ]),
     );
-    const plan = deriveAgentRunActions(RUN_HUMAN_REVIEW, agent);
-    assert.equal(plan.canApproveRun, true);
+    const plan = deriveAgentRunActions(RUN_HUMAN_REVIEW_APPROVED, agent);
+    assert.equal(plan.canApproveRun, false);
     assert.equal(plan.canApproveAndExecute, false);
     assert.equal(plan.canExecuteRun, false);
+  });
+
+  it("11b: pending human_review can be approved (sent for review)", () => {
+    const agent = deriveAgentExperience(
+      canFrom([CAPABILITIES.AGENT_RUN, CAPABILITIES.AGENT_APPROVE]),
+    );
+    const plan = deriveAgentRunActions(RUN_PENDING_HUMAN_REVIEW, agent);
+    assert.equal(plan.canApproveRun, true);
+    assert.equal(plan.canRejectRun, true);
+    assert.equal(plan.canApproveAndExecute, false);
+    assert.equal(plan.canExecuteRun, false);
+  });
+
+  it("11c: review_required runs can only be marked reviewed", () => {
+    const agent = deriveAgentExperience(
+      canFrom([CAPABILITIES.AGENT_RUN, CAPABILITIES.AGENT_APPROVE]),
+    );
+    const plan = deriveAgentRunActions(RUN_REVIEW_REQUIRED, agent);
+    assert.equal(plan.canApproveRun, false);
+    assert.equal(plan.canRejectRun, false);
+    assert.equal(plan.canReviewRun, true);
+    assert.equal(plan.canApproveAndExecute, false);
+    assert.equal(plan.canExecuteRun, false);
+  });
+
+  it("11d: review_required without agent.approve is read-only", () => {
+    const plan = deriveAgentRunActions(
+      RUN_REVIEW_REQUIRED,
+      deriveAgentExperience(canFrom([CAPABILITIES.AGENT_RUN])),
+    );
+    assert.equal(plan.canReviewRun, false);
   });
 
   it("12: missing agent.approve never enables reject", () => {
@@ -174,6 +236,39 @@ describe("execution UX derivation", () => {
         .canExecuteRun,
       false,
     );
+  });
+
+  it("13b: external_execution_available=false hides execute/retry", () => {
+    const localDemoApproved = {
+      ...RUN_APPROVED,
+      external_execution_available: false,
+    };
+    const localDemoFailed = {
+      ...RUN_FAILED,
+      external_execution_available: false,
+    };
+    assert.equal(
+      deriveAgentRunActions(localDemoApproved, executor).canExecuteRun,
+      false,
+    );
+    assert.equal(
+      deriveAgentRunActions(localDemoFailed, executor).canExecuteRun,
+      false,
+    );
+  });
+
+  it("13c: local/demo pending approval cannot approve-and-execute", () => {
+    const agent = deriveAgentExperience(
+      canFrom([
+        CAPABILITIES.AGENT_RUN,
+        CAPABILITIES.AGENT_APPROVE,
+        CAPABILITIES.AGENT_EXECUTE,
+      ]),
+    );
+    const plan = deriveAgentRunActions(RUN_PENDING_LOCAL_DEMO, agent);
+    assert.equal(plan.canApproveRun, true);
+    assert.equal(plan.canApproveAndExecute, false);
+    assert.equal(plan.canExecuteRun, false);
   });
 
   it("14: absence of agent.execute disables the execution action", () => {

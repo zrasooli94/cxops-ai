@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -12,9 +15,12 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.ticket import Ticket
 
 
 class AgentRun(Base):
@@ -68,6 +74,11 @@ class AgentRun(Base):
         Integer,
         nullable=False,
         index=True,
+    )
+
+    ticket: Mapped[Ticket] = relationship(
+        "Ticket",
+        foreign_keys=[ticket_id],
     )
 
     action: Mapped[str] = mapped_column(

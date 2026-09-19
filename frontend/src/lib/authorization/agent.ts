@@ -56,6 +56,7 @@ export const NON_EXECUTABLE_RUN_ACTIONS: readonly string[] = [
 export interface AgentRunShape {
   readonly action: string;
   readonly status: string;
+  readonly external_execution_available?: boolean;
 }
 
 /** Whether the backend execute endpoint accepts this run's action. */
@@ -78,6 +79,8 @@ export function isRunExecutableStatus(status: string): boolean {
 export interface AgentRunActionPlan {
   readonly canApproveRun: boolean;
   readonly canRejectRun: boolean;
+  /** User may mark a review_required run as reviewed. */
+  readonly canReviewRun: boolean;
   /** Approving should also attempt to queue external execution. */
   readonly canApproveAndExecute: boolean;
   /** An independent execution/retry control may be offered for this run. */
@@ -88,15 +91,52 @@ export function deriveAgentRunActions(
   run: AgentRunShape,
   agent: AgentExperience,
 ): AgentRunActionPlan {
+  const status = run.status;
+  const externalExecutionAvailable = run.external_execution_available ?? false;
+
+  if (status === "review_required") {
+    return {
+      canApproveRun: false,
+      canRejectRun: false,
+      canReviewRun: agent.canApprove,
+      canApproveAndExecute: false,
+      canExecuteRun: false,
+    };
+  }
+
+  if (
+    status === "reviewed" ||
+    status === "rejected" ||
+    status === "superseded" ||
+    status === "executed"
+  ) {
+    return {
+      canApproveRun: false,
+      canRejectRun: false,
+      canReviewRun: false,
+      canApproveAndExecute: false,
+      canExecuteRun: false,
+    };
+  }
+
   const externallyExecutable = isRunExternallyExecutable(run);
   const executableNow =
-    externallyExecutable && isRunExecutableStatus(run.status);
+    externallyExecutable &&
+    isRunExecutableStatus(status) &&
+    externalExecutionAvailable;
+
+  const canApproveAndExecute =
+    agent.canApprove &&
+    agent.canExecute &&
+    status === "pending_approval" &&
+    externallyExecutable &&
+    externalExecutionAvailable;
 
   return {
-    canApproveRun: agent.canApprove,
-    canRejectRun: agent.canApprove,
-    canApproveAndExecute:
-      agent.canApprove && agent.canExecute && externallyExecutable,
+    canApproveRun: agent.canApprove && status === "pending_approval",
+    canRejectRun: agent.canApprove && status === "pending_approval",
+    canReviewRun: false,
+    canApproveAndExecute,
     canExecuteRun: agent.canExecute && executableNow,
   };
 }

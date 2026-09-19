@@ -107,6 +107,7 @@ type AgentRun = {
   reviewer_note: string | null;
   workflow_path: string[];
   tool_plan: ToolPlanItem[];
+  external_execution_available: boolean;
 };
 
 type BadgeVariant =
