@@ -2,13 +2,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.zendesk.client import zendesk_client
-from app.models.customer import Customer
 from app.models.ticket import Ticket
-from app.repositories.customer_repository import (
-    CustomerRepository,
-)
 from app.repositories.ticket_repository import (
     TicketRepository,
+)
+from app.services.customer_identity_service import (
+    CustomerIdentityConflictError,
+    CustomerIdentityService,
 )
 
 
@@ -31,7 +31,7 @@ class ZendeskSyncService:
 
         This is the ONLY Zendesk ingestion path. The credential resolution and
         every CXOps read/write are scoped to ``organization_id``:
-        - customer lookup/creation is tenant-scoped (org + email)
+        - customer lookup uses the trusted Zendesk requester identity first
         - ticket lookup by external_id is tenant-scoped (org + external_id)
         - the ticket row is always created with ``organization_id``
 
@@ -69,37 +69,35 @@ class ZendeskSyncService:
                 zendesk_user.get("name") or requester_email or "Zendesk Customer"
             )
 
-            if requester_email:
-                # Resolve the customer within the current tenant only. A match
-                # in another organization must never be attached to this tenant.
-                customer = await CustomerRepository.get_by_email_for_tenant(
-                    db=db,
-                    email=requester_email,
+            try:
+                customer, _identity = (
+                    await CustomerIdentityService.resolve_or_create_customer_by_provider_identity(
+                        db,
+                        organization_id=organization_id,
+                        provider="zendesk",
+                        identity_type="user_id",
+                        identifier=str(requester_id),
+                        display_name=requester_name,
+                        email=requester_email,
+                    )
+                )
+
+                # Apply any safe email change now that the authoritative
+                # customer is known through the stable provider identity.
+                customer = await CustomerIdentityService.safe_update_customer_email(
+                    db,
+                    customer=customer,
+                    new_email=requester_email,
                     organization_id=organization_id,
                 )
 
-                if customer is None:
-                    try:
-                        customer = Customer(
-                            external_id=str(requester_id),
-                            name=requester_name,
-                            email=requester_email,
-                            organization_id=organization_id,
-                        )
-
-                        customer = await CustomerRepository.create(
-                            db=db,
-                            customer=customer,
-                        )
-                    except IntegrityError:
-                        # The requester email is already owned by another
-                        # tenant's customer. Do not reach into that row.
-                        await db.rollback()
-                        raise ZendeskSyncConflictError(
-                            "Zendesk ticket is already linked to an existing record"
-                        ) from None
-
                 customer_id = customer.id
+
+            except CustomerIdentityConflictError as exc:
+                await db.rollback()
+                raise ZendeskSyncConflictError(
+                    "Zendesk requester identity conflicts with existing customer data"
+                ) from exc
 
         external_id = str(zendesk_ticket["id"])
 
@@ -157,8 +155,8 @@ class ZendeskSyncService:
                 ticket=ticket,
             )
         except IntegrityError:
-            # The Zendesk id (or requester email) is already taken by another
-            # tenant's row. Do not reach into that row; fail closed.
+            # The Zendesk id is already taken by another tenant's row. Do not
+            # reach into that row; fail closed.
             await db.rollback()
             raise ZendeskSyncConflictError(
                 "Zendesk ticket is already linked to an existing record"

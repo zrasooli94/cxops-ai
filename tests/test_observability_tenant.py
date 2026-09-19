@@ -13,6 +13,10 @@ Tenant resolution semantics reused from Phase 1C.1/1C.2/1C.3C:
 - valid selector -> exactly that tenant's rows
 """
 
+# ruff: noqa: E402  # app imports below are intentionally delayed until after
+# the AUTH_* environment bootstrap + filterwarnings; moving them up could
+# change settings/auth initialization.
+
 import os
 import uuid
 import warnings

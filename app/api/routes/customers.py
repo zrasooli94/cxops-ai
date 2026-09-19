@@ -12,6 +12,9 @@ from app.api.deps import (
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.rbac import AuthorizationContext, Capability
+from app.repositories.customer_identity_repository import (
+    CustomerIdentityRepository,
+)
 from app.schemas.customer import (
     CustomerCreate,
     CustomerListResponse,
@@ -20,8 +23,14 @@ from app.schemas.customer import (
     CustomerTicketListResponse,
     CustomerUpdate,
 )
+from app.schemas.customer_context import CustomerContextResponse
+from app.schemas.customer_identity import (
+    CustomerIdentityListResponse,
+    CustomerIdentityRead,
+)
 from app.schemas.customer_timeline import CustomerTimelineResponse
 from app.services.customer_360_service import Customer360Service
+from app.services.customer_context_service import CustomerContextService
 from app.services.customer_service import CustomerService
 from app.services.customer_timeline_service import CustomerTimelineService
 
@@ -72,7 +81,7 @@ async def create_customer(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Customer resource conflict.",
-        )
+        ) from None
 
 
 @router.get(
@@ -240,6 +249,80 @@ async def get_customer_timeline(
     )
 
 
+@router.get(
+    "/{customer_id}/identities",
+    response_model=CustomerIdentityListResponse,
+)
+async def list_customer_identities(
+    customer_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    customer = await Customer360Service.get_for_tenant(
+        db, customer_id, tenant.organization_id
+    )
+
+    if customer is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found",
+        )
+
+    items = await CustomerIdentityRepository.list_for_customer_for_tenant(
+        db,
+        organization_id=tenant.organization_id,
+        customer_id=customer_id,
+        limit=limit,
+    )
+
+    total = await CustomerIdentityRepository.count_for_customer_for_tenant(
+        db,
+        organization_id=tenant.organization_id,
+        customer_id=customer_id,
+    )
+
+    return CustomerIdentityListResponse(
+        items=[CustomerIdentityRead.model_validate(item) for item in items],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/{customer_id}/context",
+    response_model=CustomerContextResponse,
+)
+async def get_customer_context(
+    customer_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: CustomerReadAuthz,
+):
+    customer = await Customer360Service.get_for_tenant(
+        db, customer_id, tenant.organization_id
+    )
+
+    if customer is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found",
+        )
+
+    context = await CustomerContextService.build_for_customer(
+        db,
+        organization_id=tenant.organization_id,
+        customer=customer,
+    )
+
+    return CustomerContextResponse.model_validate(context.model_dump())
+
+
 @router.patch(
     "/{customer_id}",
     response_model=CustomerRead,
@@ -280,7 +363,7 @@ async def update_customer(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Customer resource conflict.",
-        )
+        ) from None
     await db.refresh(customer)
 
     return customer

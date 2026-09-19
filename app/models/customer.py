@@ -88,3 +88,9 @@ class Customer(Base):
         back_populates="customer",
         foreign_keys="Ticket.customer_id",
     )
+
+    identities = relationship(
+        "CustomerIdentity",
+        back_populates="customer",
+        foreign_keys="CustomerIdentity.customer_id",
+    )

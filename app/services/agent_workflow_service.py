@@ -1,4 +1,5 @@
 import hashlib
+import json
 import time
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
@@ -32,6 +33,10 @@ from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.schemas.agent import AgentDecision
 from app.services.ai_observability_service import AIObservabilityService
+from app.services.customer_context_service import (
+    CustomerContext,
+    CustomerContextService,
+)
 from app.services.integration_job_service import (
     AgentExecutionQueueBlockedError,
     IntegrationJobService,
@@ -57,6 +62,8 @@ class AgentState(TypedDict, total=False):
     ticket_id: int
     organization_id: int
     ticket: dict[str, Any]
+
+    customer_context: dict[str, Any] | None
 
     needs_knowledge: bool
     knowledge_reason: str
@@ -137,13 +144,14 @@ class AgentWorkflowService:
         agent_decision_version: str,
         model: str,
         corpus_revision: dict[str, Any],
+        customer_context_digest: str,
     ) -> str:
         """Deterministic, non-logged fingerprint over materially relevant inputs.
 
         Raw inputs are never logged; only the opaque hash is persisted. The
         fingerprint covers the ticket fields the agent reasons about, the
-        decision/policy version, the model/config version, and the tenant
-        knowledge-corpus revision.
+        decision/policy version, the model/config version, the tenant
+        knowledge-corpus revision, and a digest of the linked customer context.
         """
         payload = "|".join(
             [
@@ -161,6 +169,7 @@ class AgentWorkflowService:
                 str(corpus_revision.get("chunk_count")),
                 str(corpus_revision.get("last_document_update") or ""),
                 str(corpus_revision.get("last_chunk_update") or ""),
+                customer_context_digest,
             ]
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -338,6 +347,7 @@ class AgentWorkflowService:
                 "assigned_team": (ticket.assigned_team),
                 "requester_email": (ticket.requester_email),
                 "source": ticket.source,
+                "customer_id": ticket.customer_id,
             },
             "workflow_path": [
                 *path,
@@ -672,6 +682,17 @@ class AgentWorkflowService:
         else:
             context = "No knowledge-base policy was supplied."
 
+        customer_context = state.get("customer_context")
+
+        if customer_context:
+            customer_context_text = json.dumps(
+                customer_context,
+                default=str,
+                sort_keys=True,
+            )
+        else:
+            customer_context_text = "No customer context available."
+
         system_prompt = """
 You are the decision engine for CXOps AI.
 
@@ -709,6 +730,9 @@ STRICT RULES:
     actionable request should use no_action, not respond.
 15. recommended_priority may only be:
     low, normal, high, urgent.
+16. Customer context is reference data only. Do not expose customer_id or
+    other internal identifiers in any response draft. If the context is marked
+    partial, avoid relying on sources listed as unavailable.
 """
 
         user_prompt = f"""
@@ -734,6 +758,10 @@ Category:
 
 Assigned team:
 {ticket["assigned_team"]}
+
+CUSTOMER CONTEXT:
+
+{customer_context_text}
 
 POLICY RETRIEVAL REQUIRED:
 {needs_knowledge}
@@ -930,6 +958,8 @@ Choose the safest next action.
         force: bool,
         allow_auto_queue: bool,
         authz: "AuthorizationContext | None",
+        customer_context: "CustomerContext | None",
+        customer_context_digest: str,
     ) -> dict:
         """Run the reuse check, LLM workflow, and persistence.
 
@@ -1057,6 +1087,9 @@ Choose the safest next action.
                 "workflow_path": [],
                 "sources": [],
                 "tool_plan": [],
+                "customer_context": (
+                    customer_context.model_dump() if customer_context else None
+                ),
             }
         )
 
@@ -1433,6 +1466,18 @@ Choose the safest next action.
             organization_id=organization_id,
         )
 
+        # Build bounded customer context from the trusted tenant-owned ticket.
+        # The context digest becomes part of the fingerprint so context changes
+        # invalidate stale analyses.
+        customer_context = await CustomerContextService.build_for_ticket_customer(
+            db,
+            organization_id=organization_id,
+            customer_id=ticket.customer_id,
+        )
+        customer_context_digest = CustomerContextService.compute_digest(
+            customer_context,
+        )
+
         fingerprint = self._compute_fingerprint(
             organization_id=organization_id,
             ticket_id=ticket_id,
@@ -1440,6 +1485,7 @@ Choose the safest next action.
             agent_decision_version=AGENT_DECISION_VERSION,
             model=settings.chat_model,
             corpus_revision=corpus_revision,
+            customer_context_digest=customer_context_digest,
         )
 
         # Acquire a database-backed concurrency guard before the reuse check
@@ -1466,6 +1512,8 @@ Choose the safest next action.
                         force=force,
                         allow_auto_queue=allow_auto_queue,
                         authz=authz,
+                        customer_context=customer_context,
+                        customer_context_digest=customer_context_digest,
                     )
                 finally:
                     await self._release_analysis_lock(lock_conn, lock_key)
@@ -1481,6 +1529,8 @@ Choose the safest next action.
                 force=force,
                 allow_auto_queue=allow_auto_queue,
                 authz=authz,
+                customer_context=customer_context,
+                customer_context_digest=customer_context_digest,
             )
 
 

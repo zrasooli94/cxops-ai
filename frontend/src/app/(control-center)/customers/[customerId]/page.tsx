@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleDot,
+  Fingerprint,
+  Layers,
   LoaderCircle,
   Mail,
   Pencil,
@@ -81,6 +83,54 @@ type TimelineEvent = {
 type TimelineResponse = {
   items: TimelineEvent[];
   total: number;
+  partial: boolean;
+  unavailable_sources: string[];
+};
+
+type CustomerIdentity = {
+  id: number;
+  provider: string;
+  identity_type: string;
+  identifier: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ContextTicket = {
+  id: number;
+  subject: string;
+  status: string;
+  priority: string;
+  category: string | null;
+  source: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ContextActivity = {
+  id: string;
+  type: string;
+  source: string;
+  occurred_at: string;
+  title: string;
+};
+
+type ContextSummary = {
+  total_tickets: number;
+  open_tickets: number;
+  resolved_tickets: number;
+  common_category: string | null;
+  last_ticket_at: string | null;
+  last_interaction_at: string | null;
+};
+
+type CustomerContextResponse = {
+  customer_id: number;
+  display_name: string;
+  known_channels: string[];
+  summary: ContextSummary;
+  recent_tickets: ContextTicket[];
+  recent_activity: ContextActivity[];
   partial: boolean;
   unavailable_sources: string[];
 };
@@ -229,6 +279,8 @@ export default function CustomerDetailPage() {
   const [summary, setSummary] = useState<CustomerSummary | null>(null);
   const [tickets, setTickets] = useState<CustomerTicket[]>([]);
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
+  const [identities, setIdentities] = useState<CustomerIdentity[]>([]);
+  const [context, setContext] = useState<CustomerContextResponse | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -316,6 +368,26 @@ export default function CustomerDetailPage() {
         if (timelineResult.response.ok) {
           setTimeline(timelineResult.body as TimelineResponse);
         }
+      }
+
+      const identitiesResult = await fetchJson(
+        `/customers/${customerId}/identities?limit=50`,
+      );
+      if (identitiesResult.response.ok) {
+        setIdentities(
+          (
+            identitiesResult.body as {
+              items: CustomerIdentity[];
+            }
+          ).items,
+        );
+      }
+
+      const contextResult = await fetchJson(
+        `/customers/${customerId}/context`,
+      );
+      if (contextResult.response.ok) {
+        setContext(contextResult.body as CustomerContextResponse);
       }
     } catch (err) {
       setError(
@@ -907,6 +979,196 @@ export default function CustomerDetailPage() {
                     }
                   />
                 </div>
+              </section>
+
+              <section className="app-panel rounded-[22px] p-6 md:p-7">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-500">
+                    <Fingerprint className="h-5 w-5" />
+                  </div>
+
+                  <div>
+                    <h2 className="font-medium text-slate-900">
+                      Linked identities
+                    </h2>
+
+                    <p className="text-xs text-slate-400">
+                      Provider-matched customer identities
+                    </p>
+                  </div>
+                </div>
+
+                {identities.length === 0 ? (
+                  <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 text-sm text-slate-500">
+                    No provider identities linked yet.
+                  </div>
+                ) : (
+                  <ul className="mt-6 space-y-3">
+                    {identities.map((identity) => (
+                      <li
+                        key={identity.id}
+                        className="rounded-2xl border border-slate-200/80 bg-[#fbfcff] p-4"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="info">
+                            {identity.provider}
+                          </Badge>
+
+                          <span className="text-[11px] text-slate-400">
+                            {formatAction(identity.identity_type)}
+                          </span>
+                        </div>
+
+                        <p className="mt-2 text-sm font-medium text-slate-800">
+                          {identity.identifier}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="app-panel rounded-[22px] p-6 md:p-7">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-500">
+                      <Layers className="h-5 w-5" />
+                    </div>
+
+                    <div>
+                      <h2 className="font-medium text-slate-900">
+                        Customer context
+                      </h2>
+
+                      <p className="text-xs text-slate-400">
+                        Agent-facing omnichannel summary
+                      </p>
+                    </div>
+                  </div>
+
+                  {context && context.known_channels.length > 0 && (
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      {context.known_channels.map((channel) => (
+                        <Badge key={channel} variant="info">
+                          {channel}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {context?.partial && (
+                  <div className="mt-5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-700">
+                    <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                    Some context sources are temporarily unavailable
+                    {context.unavailable_sources.length > 0
+                      ? ` (${context.unavailable_sources.join(", ")})`
+                      : ""}
+                    .
+                  </div>
+                )}
+
+                {!context ? (
+                  <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 text-sm text-slate-500">
+                    Customer context could not be loaded.
+                  </div>
+                ) : (
+                  <>
+                    <div className="mt-5 grid grid-cols-3 gap-3">
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff]/80 p-3 text-center">
+                        <p className="text-lg font-medium text-slate-800">
+                          {context.summary.total_tickets}
+                        </p>
+                        <p className="text-[10px] text-slate-400">Total</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff]/80 p-3 text-center">
+                        <p className="text-lg font-medium text-slate-800">
+                          {context.summary.open_tickets}
+                        </p>
+                        <p className="text-[10px] text-slate-400">Open</p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff]/80 p-3 text-center">
+                        <p className="text-lg font-medium text-slate-800">
+                          {context.summary.resolved_tickets}
+                        </p>
+                        <p className="text-[10px] text-slate-400">Resolved</p>
+                      </div>
+                    </div>
+
+                    {context.recent_tickets.length > 0 && (
+                      <div className="mt-5">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-400">
+                          Recent tickets
+                        </p>
+
+                        <ul className="mt-3 space-y-2">
+                          {context.recent_tickets.map((ticket) => (
+                            <li
+                              key={ticket.id}
+                              className="rounded-xl border border-slate-200/80 bg-[#fbfcff] p-3"
+                            >
+                              <p className="truncate text-sm font-medium text-slate-800">
+                                {ticket.subject}
+                              </p>
+
+                              <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                                <Badge>{ticket.status}</Badge>
+
+                                <Badge
+                                  variant={priorityVariant(
+                                    ticket.priority,
+                                  )}
+                                >
+                                  {ticket.priority}
+                                </Badge>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {context.recent_activity.length > 0 && (
+                      <div className="mt-5">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-slate-400">
+                          Recent activity
+                        </p>
+
+                        <ul className="mt-3 space-y-2">
+                          {context.recent_activity.map((activity) => (
+                            <li
+                              key={activity.id}
+                              className="flex items-center gap-3 rounded-xl border border-slate-200/80 bg-[#fbfcff] p-3"
+                            >
+                              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-400">
+                                {activity.source === "agent" ? (
+                                  <Bot className="h-3.5 w-3.5" />
+                                ) : (
+                                  <TicketIcon className="h-3.5 w-3.5" />
+                                )}
+                              </div>
+
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium text-slate-800">
+                                  {activity.title}
+                                </p>
+
+                                <p className="text-[10px] text-slate-400">
+                                  {formatAction(activity.type)} ·{" "}
+                                  {new Date(
+                                    activity.occurred_at,
+                                  ).toLocaleString()}
+                                </p>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                )}
               </section>
             </div>
           </div>
