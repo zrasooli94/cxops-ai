@@ -1906,6 +1906,7 @@ async def test_historical_runs_preserved_after_reuse(
 
     assert third_body["run_id"] == second_body["run_id"]
     assert third_body["reused"] is True
+    assert first_body["run_id"] != second_body["run_id"]
 
     async with AsyncSessionLocal() as session:
         runs = await AgentRunRepository.list_runs_for_tenant(
