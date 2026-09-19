@@ -4,6 +4,7 @@ from app.models.ticket import Ticket
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.schemas.ticket import TicketCreate, TicketUpdate
+from app.services.customer_service import CustomerService
 
 
 class TicketService:
@@ -14,24 +15,43 @@ class TicketService:
         organization_id: int,
     ) -> Ticket:
 
-        # Validate customer belongs to same tenant if customer_id provided
-        if data.customer_id is not None:
+        customer_id = data.customer_id
+
+        # CASE A: explicit customer_id takes precedence and is validated
+        # against the resolved tenant. No email-based rematching occurs.
+        if customer_id is not None:
             customer = await CustomerRepository.get_by_id_for_tenant(
-                db, data.customer_id, organization_id
+                db, customer_id, organization_id
             )
             if customer is None:
                 raise ValueError("Customer not found in this organization")
+
+        # CASE B: no explicit customer but a requester email is present:
+        # resolve or create a tenant-scoped customer by normalized email.
+        elif data.requester_email is not None:
+            customer = await CustomerService.resolve_or_create_by_email_for_tenant(
+                db,
+                email=str(data.requester_email),
+                organization_id=organization_id,
+            )
+            customer_id = customer.id
+
+        # CASE C: no customer_id and no email leaves customer_id NULL.
+
+        requester_email = (
+            CustomerService._normalize_email(str(data.requester_email))
+            if data.requester_email is not None
+            else None
+        )
 
         ticket = Ticket(
             external_id=data.external_id,
             subject=data.subject,
             description=data.description,
-            requester_email=(
-                str(data.requester_email) if data.requester_email else None
-            ),
+            requester_email=requester_email,
             priority=data.priority,
             source=data.source,
-            customer_id=data.customer_id,
+            customer_id=customer_id,
             organization_id=organization_id,
         )
 
@@ -59,13 +79,21 @@ class TicketService:
         organization_id: int,
         offset: int = 0,
         limit: int = 100,
+        customer_id: int | None = None,
     ) -> list[Ticket]:
+        if customer_id is not None:
+            customer = await CustomerRepository.get_by_id_for_tenant(
+                db, customer_id, organization_id
+            )
+            if customer is None:
+                raise ValueError("Customer not found in this organization")
 
         return await TicketRepository.list_for_tenant(
             db=db,
             organization_id=organization_id,
             offset=offset,
             limit=limit,
+            customer_id=customer_id,
         )
 
     @staticmethod

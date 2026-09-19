@@ -83,13 +83,24 @@ async def list_tickets(
         ge=1,
         le=100,
     ),
+    customer_id: int | None = Query(
+        default=None,
+        ge=1,
+    ),
 ):
-    return await TicketService.list_tickets_for_tenant(
-        db=db,
-        organization_id=tenant.organization_id,
-        offset=offset,
-        limit=limit,
-    )
+    try:
+        return await TicketService.list_tickets_for_tenant(
+            db=db,
+            organization_id=tenant.organization_id,
+            offset=offset,
+            limit=limit,
+            customer_id=customer_id,
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found in this organization",
+        )
 
 
 @router.get(

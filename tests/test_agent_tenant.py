@@ -20,6 +20,7 @@ Tests A–R + the cross-tenant side-effect regression map 1:1 onto the Phase
 tenant-consistency gate for AgentRun/Ticket ownership.
 """
 
+import asyncio
 import inspect
 import os
 import pathlib
@@ -31,7 +32,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 os.environ["AUTH_MODE"] = "hs256"
@@ -44,7 +45,7 @@ os.environ["ENVIRONMENT"] = "development"
 
 from app.api.routes import agent as agent_route_module
 from app.core.config import reset_settings_cache
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, engine
 from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.agent_run import AgentRun
@@ -1309,3 +1310,814 @@ async def test_own_run_full_cycle_analyze_approve_execute(
     assert result["status"] == "executed"
     assert captured["orgs"]
     assert all(organization_id == org_a.id for organization_id in captured["orgs"])
+
+# ===================================================================
+# Phase 1E.3.1: analysis idempotency concurrency guard
+# ===================================================================
+
+
+class _MockAdvisoryLocks:
+    """In-memory per-key asyncio locks used to unit-test the concurrency guard.
+
+    This replaces the Postgres advisory-lock primitives so tests prove the
+    critical-section logic without depending on connection-pool sizing or DB
+    timing. Keys are still scoped exactly like production, so different
+    tickets/orgs/fingerprints remain independent.
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[int, asyncio.Lock] = {}
+
+    def _lock_for(self, lock_key: int) -> asyncio.Lock:
+        return self._locks.setdefault(lock_key, asyncio.Lock())
+
+    async def acquire(self, _db, lock_key: int) -> None:
+        await self._lock_for(lock_key).acquire()
+
+    async def release(self, _db, lock_key: int) -> None:
+        lock = self._lock_for(lock_key)
+        if lock.locked():
+            lock.release()
+
+
+@pytest.fixture
+def advisory_lock_mock(monkeypatch):
+    """Patch advisory-lock helpers with deterministic per-key asyncio locks."""
+    mock = _MockAdvisoryLocks()
+    monkeypatch.setattr(
+        agent_workflow_service,
+        "_acquire_analysis_lock",
+        mock.acquire,
+    )
+    monkeypatch.setattr(
+        agent_workflow_service,
+        "_release_analysis_lock",
+        mock.release,
+    )
+    return mock
+
+
+class _CountingFakeDecisionLLM:
+    """Deterministic LLM that tracks how many times it was invoked."""
+
+    def __init__(self, decision: AgentDecision) -> None:
+        self._decision = decision
+        self.invocation_count = 0
+
+    async def ainvoke(self, _messages: list) -> dict:
+        self.invocation_count += 1
+        raw = types.SimpleNamespace(usage_metadata=None)
+        return {
+            "raw": raw,
+            "parsed": self._decision,
+            "parsing_error": None,
+        }
+
+
+@pytest.fixture
+def counting_llm(monkeypatch):
+    """Install a counting fake decision model and return its counter."""
+
+    def _install(decision: AgentDecision) -> _CountingFakeDecisionLLM:
+        fake = _CountingFakeDecisionLLM(decision)
+        monkeypatch.setattr(
+            agent_workflow_service,
+            "decision_llm",
+            fake,
+        )
+        return fake
+
+    return _install
+
+
+async def _analyze_ticket_directly(
+    ticket_id: int,
+    organization_id: int,
+    *,
+    force: bool = False,
+) -> dict:
+    """Call the workflow service directly with a fresh database session."""
+    async with AsyncSessionLocal() as session:
+        return await agent_workflow_service.analyze(
+            session,
+            ticket_id=ticket_id,
+            organization_id=organization_id,
+            authz=None,
+            force=force,
+        )
+
+
+@pytest.mark.asyncio
+async def test_analysis_lock_key_is_tenant_and_ticket_scoped():
+    """The advisory-lock key changes when tenant, ticket, or fingerprint change."""
+    key_same_1 = agent_workflow_service._analysis_lock_key(
+        organization_id=1,
+        ticket_id=10,
+        fingerprint="abc",
+    )
+    key_same_2 = agent_workflow_service._analysis_lock_key(
+        organization_id=1,
+        ticket_id=10,
+        fingerprint="abc",
+    )
+    key_diff_org = agent_workflow_service._analysis_lock_key(
+        organization_id=2,
+        ticket_id=10,
+        fingerprint="abc",
+    )
+    key_diff_ticket = agent_workflow_service._analysis_lock_key(
+        organization_id=1,
+        ticket_id=11,
+        fingerprint="abc",
+    )
+    key_diff_fingerprint = agent_workflow_service._analysis_lock_key(
+        organization_id=1,
+        ticket_id=10,
+        fingerprint="def",
+    )
+
+    assert key_same_1 == key_same_2
+    assert key_diff_org != key_same_1
+    assert key_diff_ticket != key_same_1
+    assert key_diff_fingerprint != key_same_1
+    assert -(2**63) <= key_same_1 <= 2**63 - 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_non_force_analysis_reuses_one_run(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Two simultaneous identical analyses yield one LLM call and one run."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Concurrency test response.",
+        requires_human_approval=True,
+        response_draft="Draft for concurrency test.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Concurrency test ticket",
+        description="Please help with this issue.",
+    )
+
+    results = await asyncio.gather(
+        _analyze_ticket_directly(ticket.id, org_a.id),
+        _analyze_ticket_directly(ticket.id, org_a.id),
+    )
+
+    assert fake.invocation_count == 1
+    run_ids = {result["run_id"] for result in results}
+    assert len(run_ids) == 1
+    assert sum(1 for r in results if r["reused"]) == 1
+    assert sum(1 for r in results if not r["reused"]) == 1
+
+    async with AsyncSessionLocal() as session:
+        runs = await AgentRunRepository.list_runs_for_tenant(
+            session,
+            organization_id=org_a.id,
+        )
+    ticket_runs = [run for run in runs if run.ticket_id == ticket.id]
+    assert len(ticket_runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_three_plus_requests_coalesce(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Three+ concurrent identical analyses coalesce into a single run."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Three-way concurrency test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Three-way concurrency ticket",
+        description="Help needed.",
+    )
+
+    results = await asyncio.gather(
+        _analyze_ticket_directly(ticket.id, org_a.id),
+        _analyze_ticket_directly(ticket.id, org_a.id),
+        _analyze_ticket_directly(ticket.id, org_a.id),
+    )
+
+    assert fake.invocation_count == 1
+    run_ids = {result["run_id"] for result in results}
+    assert len(run_ids) == 1
+    assert sum(1 for r in results if r["reused"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_different_tickets_do_not_block(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Different tickets are independent; locks do not serialize them."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Different ticket test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket_a = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Ticket A",
+        description="Help A.",
+    )
+    ticket_b = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Ticket B",
+        description="Help B.",
+    )
+
+    results = await asyncio.gather(
+        _analyze_ticket_directly(ticket_a.id, org_a.id),
+        _analyze_ticket_directly(ticket_b.id, org_a.id),
+    )
+
+    assert fake.invocation_count == 2
+    assert results[0]["run_id"] != results[1]["run_id"]
+    assert results[0]["reused"] is False
+    assert results[1]["reused"] is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_ticket_different_orgs_do_not_share(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Tenant boundary in the lock key prevents cross-tenant serialization."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Cross-tenant concurrency test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    org_b = two_orgs["org_b"]
+
+    ticket_a = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Shared content ticket",
+        description="Same issue.",
+    )
+    ticket_b = await two_orgs["make_ticket"](
+        org_b.id,
+        subject="Shared content ticket",
+        description="Same issue.",
+    )
+
+    results = await asyncio.gather(
+        _analyze_ticket_directly(ticket_a.id, org_a.id),
+        _analyze_ticket_directly(ticket_b.id, org_b.id),
+    )
+
+    assert fake.invocation_count == 2
+    assert results[0]["run_id"] != results[1]["run_id"]
+    assert results[0]["reused"] is False
+    assert results[1]["reused"] is False
+
+
+@pytest.mark.asyncio
+async def test_changed_fingerprint_gets_fresh_analysis(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """A changed ticket context produces a new analysis, not a reuse."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Fingerprint change test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Original subject",
+        description="Original description.",
+    )
+
+    first_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+    assert first_body["reused"] is False
+
+    async with AsyncSessionLocal() as session:
+        ticket_to_update = await session.get(Ticket, ticket.id)
+        ticket_to_update.subject = "Changed subject"
+        ticket_to_update.description = "Changed description."
+        await session.commit()
+
+    second_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+
+    assert fake.invocation_count == 2
+    assert second_body["run_id"] != first_body["run_id"]
+    assert second_body["reused"] is False
+
+
+@pytest.mark.asyncio
+async def test_force_reanalysis_creates_fresh_run(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """force=true bypasses reuse and creates a new analysis run."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Force re-analysis test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Force test ticket",
+        description="Help.",
+    )
+
+    first_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+
+    second_body = await _analyze_ticket_directly(
+        ticket.id, org_a.id, force=True
+    )
+
+    assert fake.invocation_count == 2
+    assert second_body["run_id"] != first_body["run_id"]
+    assert first_body["reused"] is False
+    assert second_body["reused"] is False
+
+    async with AsyncSessionLocal() as session:
+        first_run = await AgentRunRepository.get_by_run_id_for_tenant(
+            session,
+            first_body["run_id"],
+            org_a.id,
+        )
+        assert first_run is not None
+        await session.refresh(first_run)
+        assert first_run.status == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_releases_lock_and_allows_retry(
+    advisory_lock_mock,
+    two_orgs,
+    monkeypatch,
+):
+    """A failed LLM call under the lock does not leave a stale reusable run."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    class _FailingThenSucceedingLLM:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def ainvoke(self, _messages: list) -> dict:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("Simulated LLM failure")
+            decision = AgentDecision(
+                action="respond",
+                reason="Retry success.",
+                requires_human_approval=True,
+                response_draft="Draft.",
+            )
+            raw = types.SimpleNamespace(usage_metadata=None)
+            return {
+                "raw": raw,
+                "parsed": decision,
+                "parsing_error": None,
+            }
+
+    monkeypatch.setattr(
+        agent_workflow_service,
+        "decision_llm",
+        _FailingThenSucceedingLLM(),
+    )
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="LLM failure retry ticket",
+        description="Help.",
+    )
+
+    with pytest.raises(RuntimeError):
+        await _analyze_ticket_directly(ticket.id, org_a.id)
+
+    second_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+    assert second_body["reused"] is False
+
+    async with AsyncSessionLocal() as session:
+        runs = await AgentRunRepository.list_runs_for_tenant(
+            session,
+            organization_id=org_a.id,
+        )
+    ticket_runs = [run for run in runs if run.ticket_id == ticket.id]
+    assert len(ticket_runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_coalesced_request_does_not_duplicate_telemetry(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """A coalesced concurrent request creates a single AI observability row."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Telemetry test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Telemetry concurrency ticket",
+        description="Help.",
+    )
+
+    await asyncio.gather(
+        _analyze_ticket_directly(ticket.id, org_a.id),
+        _analyze_ticket_directly(ticket.id, org_a.id),
+    )
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(AIRequestLog).where(
+                AIRequestLog.organization_id == org_a.id,
+                AIRequestLog.feature == "agent_decision",
+            )
+        )
+        logs = result.scalars().all()
+    ticket_logs = [
+        log
+        for log in logs
+        if log.question and "Telemetry concurrency ticket" in log.question
+    ]
+    assert len(ticket_logs) == 1
+
+
+@pytest.mark.asyncio
+async def test_historical_runs_preserved_after_reuse(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Reusing a current run does not delete historical superseded runs."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Historical preservation test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Historical preservation ticket",
+        description="Help.",
+    )
+
+    first_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+    second_body = await _analyze_ticket_directly(
+        ticket.id, org_a.id, force=True
+    )
+    third_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+
+    assert third_body["run_id"] == second_body["run_id"]
+    assert third_body["reused"] is True
+
+    async with AsyncSessionLocal() as session:
+        runs = await AgentRunRepository.list_runs_for_tenant(
+            session,
+            organization_id=org_a.id,
+        )
+    ticket_runs = [run for run in runs if run.ticket_id == ticket.id]
+    assert len(ticket_runs) == 2
+    statuses = {run.status for run in ticket_runs}
+    assert statuses == {"superseded", "pending_approval"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_force_requests_each_create_run(
+    advisory_lock_mock,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Concurrent force=true requests intentionally each create a fresh run."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Concurrent force test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Concurrent force ticket",
+        description="Help.",
+    )
+
+    results = await asyncio.gather(
+        _analyze_ticket_directly(ticket.id, org_a.id, force=True),
+        _analyze_ticket_directly(ticket.id, org_a.id, force=True),
+    )
+
+    assert fake.invocation_count == 2
+    assert results[0]["run_id"] != results[1]["run_id"]
+    assert results[0]["reused"] is False
+    assert results[1]["reused"] is False
+
+
+# ===================================================================
+# Phase 1E.3.1: real PostgreSQL advisory-lock connection-safety tests
+# ===================================================================
+
+
+@pytest.fixture
+def fixed_fingerprint(monkeypatch):
+    """Make the analysis fingerprint deterministic for lock-key tests."""
+    monkeypatch.setattr(
+        agent_workflow_service,
+        "_compute_fingerprint",
+        lambda **_: "test-fingerprint-fixed",
+    )
+
+
+async def _try_acquire_advisory_lock(lock_key: int) -> bool:
+    """Try to acquire the same advisory key on a fresh DB connection."""
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text("SELECT pg_try_advisory_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+        acquired = result.scalar()
+        if acquired:
+            # Release immediately so we don't leak it in the test process.
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+        return bool(acquired)
+
+
+@pytest.mark.asyncio
+async def test_real_postgresql_concurrent_non_force_analysis_reuses_one_run(
+    fixed_fingerprint,
+    two_orgs,
+    counting_llm,
+    monkeypatch,
+):
+    """Real advisory locks serialize two concurrent analyses into one run."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    decision = AgentDecision(
+        action="respond",
+        reason="Real lock concurrency test.",
+        requires_human_approval=True,
+        response_draft="Draft.",
+    )
+    fake = counting_llm(decision)
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Real lock ticket",
+        description="Help.",
+    )
+
+    results = await asyncio.gather(
+        _analyze_ticket_directly(ticket.id, org_a.id),
+        _analyze_ticket_directly(ticket.id, org_a.id),
+    )
+
+    assert fake.invocation_count == 1
+    run_ids = {result["run_id"] for result in results}
+    assert len(run_ids) == 1
+    assert sum(1 for r in results if r["reused"]) == 1
+
+    lock_key = agent_workflow_service._analysis_lock_key(
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        fingerprint="test-fingerprint-fixed",
+    )
+    assert await _try_acquire_advisory_lock(lock_key) is True
+
+
+@pytest.mark.asyncio
+async def test_real_postgresql_lock_released_after_llm_failure(
+    fixed_fingerprint,
+    two_orgs,
+    monkeypatch,
+):
+    """Real advisory lock is released after an LLM failure inside the section."""
+
+    async def _fake_search(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        KnowledgeSearchService,
+        "search",
+        _fake_search,
+    )
+
+    class _FailingThenSucceedingLLM:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def ainvoke(self, _messages: list) -> dict:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("Simulated LLM failure")
+            decision = AgentDecision(
+                action="respond",
+                reason="Retry success.",
+                requires_human_approval=True,
+                response_draft="Draft.",
+            )
+            raw = types.SimpleNamespace(usage_metadata=None)
+            return {
+                "raw": raw,
+                "parsed": decision,
+                "parsing_error": None,
+            }
+
+    monkeypatch.setattr(
+        agent_workflow_service,
+        "decision_llm",
+        _FailingThenSucceedingLLM(),
+    )
+
+    org_a = two_orgs["org_a"]
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Real lock failure ticket",
+        description="Help.",
+    )
+
+    lock_key = agent_workflow_service._analysis_lock_key(
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        fingerprint="test-fingerprint-fixed",
+    )
+
+    with pytest.raises(RuntimeError):
+        await _analyze_ticket_directly(ticket.id, org_a.id)
+
+    # Lock must be released even though the first call raised.
+    assert await _try_acquire_advisory_lock(lock_key) is True
+
+    second_body = await _analyze_ticket_directly(ticket.id, org_a.id)
+    assert second_body["reused"] is False
+
+    # Lock released again after successful retry.
+    assert await _try_acquire_advisory_lock(lock_key) is True
+
+    async with AsyncSessionLocal() as session:
+        runs = await AgentRunRepository.list_runs_for_tenant(
+            session,
+            organization_id=org_a.id,
+        )
+    ticket_runs = [run for run in runs if run.ticket_id == ticket.id]
+    assert len(ticket_runs) == 1

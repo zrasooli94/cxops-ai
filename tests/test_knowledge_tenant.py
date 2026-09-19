@@ -1186,3 +1186,47 @@ async def test_document_chunk_mismatch_never_becomes_own_rag_evidence(
     assert source_document_ids == {result_a["document_id"]}
     assert doc_b_id not in source_document_ids
     assert all("Beta secret document" not in source["content"] for source in body["sources"])
+
+
+# ===================================================================
+# Phase 1E.3.1: knowledge corpus summary is tenant-scoped
+# ===================================================================
+
+
+@pytest.mark.asyncio
+async def test_summary_endpoint_returns_tenant_scoped_counts(
+    client, two_orgs, _fake_embeddings
+):
+    """GET /knowledge/summary returns counts scoped to the resolved tenant."""
+    org_a = two_orgs["org_a"]
+    org_b = two_orgs["org_b"]
+
+    await two_orgs["ingest"](
+        org_a.id,
+        title="Alpha policy",
+        content="Alpha organization policy content.",
+    )
+    await two_orgs["ingest"](
+        org_b.id,
+        title="Beta policy",
+        content="Beta organization policy content.",
+    )
+
+    r_alpha = await client.get(
+        "/knowledge/summary",
+        headers=_auth_headers(USER_ALPHA),
+    )
+    assert r_alpha.status_code == 200
+    summary_alpha = r_alpha.json()
+    assert summary_alpha["document_count"] >= 1
+    assert summary_alpha["chunk_count"] >= 1
+
+    r_beta = await client.get(
+        "/knowledge/summary",
+        headers=_auth_headers(USER_BETA),
+    )
+    assert r_beta.status_code == 200
+    summary_beta = r_beta.json()
+
+    # Each tenant only sees their own corpus counts.
+    assert summary_alpha["document_count"] == summary_beta["document_count"]

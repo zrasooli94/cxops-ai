@@ -43,11 +43,16 @@ class TicketRepository:
         organization_id: int,
         offset: int = 0,
         limit: int = 100,
+        customer_id: int | None = None,
     ) -> list[Ticket]:
+        predicates = [Ticket.organization_id == organization_id]
+        if customer_id is not None:
+            predicates.append(Ticket.customer_id == customer_id)
+
         result = await db.execute(
             select(Ticket)
-            .where(Ticket.organization_id == organization_id)
-            .order_by(Ticket.created_at.desc())
+            .where(*predicates)
+            .order_by(Ticket.created_at.desc(), Ticket.id.desc())
             .offset(offset)
             .limit(limit)
         )

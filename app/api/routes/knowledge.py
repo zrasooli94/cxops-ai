@@ -18,6 +18,7 @@ from app.repositories.knowledge_repository import (
     KnowledgeRepository,
 )
 from app.schemas.knowledge import (
+    KnowledgeCorpusSummary,
     KnowledgeDocumentCreate,
     KnowledgeDocumentSummary,
     KnowledgeFileIngestionResult,
@@ -123,6 +124,21 @@ async def list_documents(
     )
 
     return [serialize_document(document) for document in documents]
+
+
+@router.get(
+    "/summary",
+    response_model=KnowledgeCorpusSummary,
+)
+async def knowledge_summary(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    authz: KnowledgeReadAuthz,
+):
+    return await KnowledgeRepository.summary_for_tenant(
+        db,
+        organization_id=tenant.organization_id,
+    )
 
 
 @router.get(

@@ -727,4 +727,36 @@ async def test_aggregation_leak_regression_roi(client, seeded):
     roi = await _roi(client, _auth_headers(USER_ALPHA))
     assert roi["total_runs"] == 2  # global would be 5
     assert roi["instrumented_runs"] == 1  # global would be 3
+
+
+@pytest.mark.asyncio
+async def test_agent_summary_truthful_operational_metrics(client, seeded):
+    """Phase 1E.3.1: agent summary exposes truthful operational metrics."""
+    alpha = await _agent_summary(client, _auth_headers(USER_ALPHA))
+    beta = await _agent_summary(client, _auth_headers(USER_BETA))
+
+    for key in (
+        "unique_tickets_analyzed",
+        "re_analysis_count",
+        "pending_approvals",
+        "current_human_reviews",
+        "reviewed_runs",
+        "autonomous_executed_runs",
+    ):
+        assert key in alpha, key
+        assert key in beta, key
+
+    # Each tenant only sees their own runs (Org A: 2 runs, Org B: 2 runs).
+    assert alpha["total_runs"] == 2
+    assert beta["total_runs"] == 2
+    assert alpha["unique_tickets_analyzed"] == 2
+    assert beta["unique_tickets_analyzed"] == 2
+
+    # Org A has no pending approvals or human reviews; Org B has one pending
+    # approval run routed to human_review.
+    assert alpha["pending_approvals"] == 0
+    assert beta["pending_approvals"] == 1
+
+    # Agent AI cost is exposed on the dedicated ROI endpoint and stays scoped.
+    roi = await _roi(client, _auth_headers(USER_ALPHA))
     assert roi["agent_ai_cost_usd"] == pytest.approx(0.001, abs=1e-9)

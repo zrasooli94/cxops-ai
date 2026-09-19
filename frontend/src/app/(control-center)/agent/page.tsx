@@ -29,6 +29,7 @@ import {
   useState,
 } from "react";
 
+import { RagEvidenceEmptyState } from "@/lib/rag/evidence-empty-state";
 
 type TicketRecord = {
   id: number;
@@ -89,6 +90,8 @@ type AgentAnalysis = {
   tool_plan: ToolPlanItem[];
   auto_queued: boolean;
   job_id: number | null;
+  reused: boolean;
+  fingerprint: string | null;
 };
 
 type AgentRun = {
@@ -1075,12 +1078,11 @@ export default function AgentPage() {
 
                       {analysis.sources.length ===
                       0 ? (
-                        <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
-                          <p className="text-sm text-slate-500">
-                            Knowledge retrieval was
-                            not required for this
-                            workflow.
-                          </p>
+                        <div className="mt-6">
+                          <RagEvidenceEmptyState
+                            workflowPath={analysis.workflow_path}
+                            sources={analysis.sources}
+                          />
                         </div>
                       ) : (
                         <div className="mt-6 space-y-4">

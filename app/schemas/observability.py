@@ -32,6 +32,8 @@ class AgentObservabilitySummary(BaseModel):
     generated_at: datetime
 
     total_runs: int
+    unique_tickets_analyzed: int
+    re_analysis_count: int
 
     actions: dict[str, int]
     statuses: dict[str, int]
@@ -39,6 +41,9 @@ class AgentObservabilitySummary(BaseModel):
     human_approval_required: int
     human_approval_rate: float
 
+    pending_approvals: int
+    current_human_reviews: int
+    historical_human_review_runs: int
     reviewed_runs: int
     review_rate: float
 
@@ -48,6 +53,8 @@ class AgentObservabilitySummary(BaseModel):
 
     auto_execution_eligible_runs: int
     auto_execution_eligible_rate: float
+    autonomous_executed_runs: int
+    autonomous_execution_rate: float
 
     tool_usage: dict[str, int]
     tool_risk_levels: dict[str, int]
@@ -86,6 +93,8 @@ class AIObservabilityBreakdown(BaseModel):
 
 class AgentOperationalKPIs(BaseModel):
     total_runs: int
+    unique_tickets_analyzed: int
+    re_analysis_count: int
 
     escalation_rate: float
     human_review_rate: float
@@ -93,6 +102,10 @@ class AgentOperationalKPIs(BaseModel):
 
     approval_required_rate: float
     pending_approval_rate: float
+
+    pending_approvals: int
+    current_human_reviews: int
+    reviewed_runs: int
 
     auto_approved_runs: int
     autonomous_execution_rate: float

@@ -173,6 +173,54 @@ class AgentApprovalService:
         return run
 
     @staticmethod
+    async def review(
+        db: AsyncSession,
+        *,
+        run_id: str,
+        organization_id: int,
+        note: str | None,
+        authz: AuthorizationContext,
+    ) -> AgentRun:
+
+        require_capability(authz, Capability.AGENT_APPROVE)
+
+        run = await AgentRunRepository.get_by_run_id_for_tenant(
+            db,
+            run_id,
+            organization_id,
+        )
+
+        if run is None:
+            raise AgentRunNotFoundError(f"Agent run {run_id} was not found")
+
+        if run.status != "review_required":
+            raise InvalidAgentRunStateError(
+                f"Human review can only be completed from status review_required, "
+                f"not {run.status}"
+            )
+
+        run = await AgentRunRepository.mark_reviewed(
+            db,
+            run,
+            note,
+        )
+
+        await AgentRunRepository.add_event(
+            db,
+            agent_run_id=run.id,
+            event_type="reviewed",
+            actor=authz.subject,
+            note=note,
+            event_data={
+                "action": run.action,
+            },
+        )
+        record_agent_approval(
+            result="reviewed",
+        )
+        return run
+
+    @staticmethod
     async def reject(
         db: AsyncSession,
         *,

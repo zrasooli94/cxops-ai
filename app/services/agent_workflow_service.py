@@ -1,3 +1,4 @@
+import hashlib
 import time
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
@@ -14,15 +15,19 @@ from langgraph.graph import (
     StateGraph,
 )
 from pydantic import BaseModel, SecretStr
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.core.config import settings
+from app.core.database import engine
+from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_auto_approval,
     record_agent_decision,
 )
 from app.core.rbac import AuthorizationContext, Capability
+from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.knowledge_document import KnowledgeDocument
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
 from app.schemas.agent import AgentDecision
@@ -38,6 +43,14 @@ from app.services.tool_authorization_service import ToolAuthorizationService
 
 class TicketNotFoundError(Exception):
     pass
+
+
+# Bump this when the agent's decision semantics change materially (prompt,
+# available actions, or normalization rules). A version mismatch forces a
+# fresh analysis instead of reusing a stale fingerprinted run.
+AGENT_DECISION_VERSION = "1"
+
+logger = get_logger(__name__)
 
 
 class AgentState(TypedDict, total=False):
@@ -73,6 +86,189 @@ class AgentWorkflowService:
             AgentDecision,
             include_raw=True,
         )
+
+    @staticmethod
+    async def _knowledge_corpus_revision(
+        db: AsyncSession,
+        organization_id: int,
+    ) -> dict[str, Any]:
+        """Tenant-scoped summary of the knowledge corpus for fingerprinting.
+
+        Returns counts and the latest update timestamp without exposing raw
+        document content. A document/chunk change invalidates reusable analyses.
+        """
+        doc_result = await db.execute(
+            select(
+                func.count(KnowledgeDocument.id).label("document_count"),
+                func.max(KnowledgeDocument.updated_at).label("last_document_update"),
+            ).where(KnowledgeDocument.organization_id == organization_id)
+        )
+        doc_row = doc_result.mappings().one()
+
+        chunk_result = await db.execute(
+            select(
+                func.count(KnowledgeChunk.id).label("chunk_count"),
+                func.max(KnowledgeChunk.created_at).label("last_chunk_update"),
+            ).where(KnowledgeChunk.organization_id == organization_id)
+        )
+        chunk_row = chunk_result.mappings().one()
+
+        return {
+            "document_count": int(doc_row["document_count"] or 0),
+            "chunk_count": int(chunk_row["chunk_count"] or 0),
+            "last_document_update": (
+                doc_row["last_document_update"].isoformat()
+                if doc_row["last_document_update"]
+                else None
+            ),
+            "last_chunk_update": (
+                chunk_row["last_chunk_update"].isoformat()
+                if chunk_row["last_chunk_update"]
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _compute_fingerprint(
+        *,
+        organization_id: int,
+        ticket_id: int,
+        ticket: dict[str, Any],
+        agent_decision_version: str,
+        model: str,
+        corpus_revision: dict[str, Any],
+    ) -> str:
+        """Deterministic, non-logged fingerprint over materially relevant inputs.
+
+        Raw inputs are never logged; only the opaque hash is persisted. The
+        fingerprint covers the ticket fields the agent reasons about, the
+        decision/policy version, the model/config version, and the tenant
+        knowledge-corpus revision.
+        """
+        payload = "|".join(
+            [
+                str(organization_id),
+                str(ticket_id),
+                str(ticket.get("subject", "")),
+                str(ticket.get("description", "")),
+                str(ticket.get("status", "")),
+                str(ticket.get("priority", "")),
+                str(ticket.get("category") or ""),
+                str(ticket.get("assigned_team") or ""),
+                agent_decision_version,
+                model,
+                str(corpus_revision.get("document_count")),
+                str(corpus_revision.get("chunk_count")),
+                str(corpus_revision.get("last_document_update") or ""),
+                str(corpus_revision.get("last_chunk_update") or ""),
+            ]
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _analysis_lock_key(
+        *,
+        organization_id: int,
+        ticket_id: int,
+        fingerprint: str,
+    ) -> int:
+        """Deterministic, tenant-scoped Postgres advisory-lock key.
+
+        The key covers the organization boundary, ticket id, and analysis
+        fingerprint. It is derived from a cryptographic digest and fits in a
+        signed 64-bit integer so it can be passed directly to
+        ``pg_advisory_lock`` / ``pg_advisory_unlock``.
+        """
+        payload = f"{organization_id}:{ticket_id}:{fingerprint}"
+        digest = hashlib.sha256(payload.encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "big", signed=True)
+
+    @staticmethod
+    async def _acquire_analysis_lock(
+        lock_conn: AsyncConnection,
+        lock_key: int,
+    ) -> None:
+        """Acquire a session-scoped Postgres advisory lock on a dedicated connection.
+
+        The lock is held on a dedicated physical connection that is NOT the
+        same connection used by the analysis AsyncSession. This guarantees
+        that any commit/rollback inside the analysis critical section cannot
+        return the lock-owning connection to the pool or otherwise transfer
+        lock ownership. The dedicated connection is held open for the entire
+        critical section and then unlocked and closed.
+        """
+        await lock_conn.execute(
+            text("SELECT pg_advisory_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+
+    @staticmethod
+    async def _release_analysis_lock(
+        lock_conn: AsyncConnection,
+        lock_key: int,
+    ) -> None:
+        """Release the advisory lock on the same dedicated connection.
+
+        ``pg_advisory_unlock`` returns ``true`` when it actually released a
+        lock and ``false`` when no lock was held. A false result means our
+        lock ownership assumption was violated, so we raise rather than hide
+        the bug.
+        """
+        result = await lock_conn.execute(
+            text("SELECT pg_advisory_unlock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+        released: bool | None = result.scalar()
+        if not released:
+            raise RuntimeError(
+                f"Advisory lock release returned {released!r} for key {lock_key}; "
+                "lock ownership may have leaked across connections."
+            )
+
+    @staticmethod
+    def _normalize_decision(decision: dict[str, Any]) -> dict[str, Any]:
+        """Deterministic post-LLM normalization of decision fields.
+
+        Clears fields that are irrelevant for the chosen action so the same
+        ticket cannot yield inconsistent recommended_priority values depending
+        on how the LLM phrased its output.
+        """
+        action = decision.get("action")
+        normalized: dict[str, Any] = {
+            "action": action,
+            "reason": decision.get("reason", ""),
+            "requires_human_approval": decision.get("requires_human_approval", True),
+        }
+
+        if action in {"human_review", "no_action"}:
+            normalized["recommended_team"] = None
+            normalized["recommended_priority"] = None
+            normalized["response_draft"] = None
+
+        elif action == "internal_note":
+            # Internal notes should not invent team/priority reassignment.
+            normalized["recommended_team"] = None
+            normalized["recommended_priority"] = None
+            normalized["response_draft"] = decision.get("response_draft")
+
+        elif action == "respond":
+            # Customer-facing response should not carry irrelevant reassignment.
+            normalized["recommended_team"] = None
+            normalized["recommended_priority"] = None
+            normalized["response_draft"] = decision.get("response_draft")
+
+        elif action in {"route", "escalate"}:
+            normalized["recommended_team"] = decision.get("recommended_team")
+            normalized["recommended_priority"] = decision.get("recommended_priority")
+            normalized["response_draft"] = None
+
+        else:
+            normalized["recommended_team"] = decision.get("recommended_team")
+            normalized["recommended_priority"] = decision.get("recommended_priority")
+            normalized["response_draft"] = decision.get("response_draft")
+
+        return normalized
+
 
     @staticmethod
     def _as_model(
@@ -720,18 +916,58 @@ Choose the safest next action.
     # Execute LangGraph analysis
     # -------------------------------------------------
 
-    async def analyze(
+
+    async def _analyze_critical_section(
         self,
         db: AsyncSession,
         *,
         ticket_id: int,
         organization_id: int,
-        allow_auto_queue: bool = True,
-        persist_run: bool = True,
-        authz: "AuthorizationContext | None" = None,
+        ticket_data: dict[str, Any],
+        fingerprint: str,
+        run_id: str,
+        persist_run: bool,
+        force: bool,
+        allow_auto_queue: bool,
+        authz: "AuthorizationContext | None",
     ) -> dict:
+        """Run the reuse check, LLM workflow, and persistence.
 
-        run_id = uuid4().hex
+        This must only be called while the caller holds the advisory lock for
+        ``(organization_id, ticket_id, fingerprint)`` on a dedicated lock
+        connection.
+        """
+        # If the ticket has a current analysis for the exact same
+        # fingerprint, reuse it instead of making a new LLM request. A
+        # forced re-analysis bypasses this check so reviewers can obtain a
+        # fresh decision.
+        if persist_run and not force:
+            existing_run = await AgentRunRepository.find_current_run_by_fingerprint(
+                db=db,
+                ticket_id=ticket_id,
+                organization_id=organization_id,
+                fingerprint=fingerprint,
+            )
+            if existing_run is not None:
+                return {
+                    "run_id": existing_run.run_id,
+                    "ticket_id": ticket_id,
+                    "decision": {
+                        "action": existing_run.action,
+                        "reason": existing_run.reason,
+                        "recommended_team": existing_run.recommended_team,
+                        "recommended_priority": existing_run.recommended_priority,
+                        "response_draft": existing_run.response_draft,
+                        "requires_human_approval": existing_run.requires_human_approval,
+                    },
+                    "sources": existing_run.sources or [],
+                    "workflow_path": existing_run.workflow_path or [],
+                    "tool_plan": existing_run.tool_plan or [],
+                    "auto_queued": False,
+                    "job_id": None,
+                    "reused": True,
+                    "fingerprint": existing_run.fingerprint,
+                }
 
         async def load_ticket_node(
             state: AgentState,
@@ -824,7 +1060,8 @@ Choose the safest next action.
             }
         )
 
-        decision = result["decision"]
+        raw_decision = result["decision"]
+        decision = self._normalize_decision(raw_decision)
 
         sources = result.get(
             "sources",
@@ -846,26 +1083,19 @@ Choose the safest next action.
             {},
         )
 
+        # Cross-check: the workflow-loaded ticket must belong to the same org
+        # as the pre-loaded ticket used for the fingerprint.
+        persisted_ticket_org = ticket_data.get("organization_id")
+
+        if persisted_ticket_org != organization_id:
+            raise ValueError(
+                "Refusing to create an agent run: the ticket does not "
+                "belong to the resolved organization."
+            )
+
         run = None
 
         if persist_run:
-            ticket_data = result.get(
-                "ticket",
-                {},
-            )
-
-            # The run inherits its tenant from the trusted persisted ticket.
-            # ``_load_ticket`` already proved the ticket belongs to
-            # ``organization_id``, so this is a cross-check, never the source
-            # of authority: the client cannot choose the ownership.
-            persisted_ticket_org = ticket_data.get("organization_id")
-
-            if persisted_ticket_org != organization_id:
-                raise ValueError(
-                    "Refusing to create an agent run: the ticket does not "
-                    "belong to the resolved organization."
-                )
-
             run = await AgentRunRepository.create(
                 db=db,
                 run_id=run_id,
@@ -875,6 +1105,7 @@ Choose the safest next action.
                 sources=sources,
                 workflow_path=workflow_path,
                 tool_plan=tool_plan,
+                fingerprint=fingerprint,
             )
 
             await AgentRunRepository.add_event(
@@ -887,6 +1118,7 @@ Choose the safest next action.
                     "sources": sources,
                     "workflow_path": workflow_path,
                     "tool_plan": tool_plan,
+                    "fingerprint": fingerprint,
                 },
             )
 
@@ -914,7 +1146,7 @@ Choose the safest next action.
                 run = await AgentRunRepository.mark_review_required(
                     db=db,
                     run=run,
-                    note=(decision.get("reason")),
+                    note=None,
                 )
 
                 await AgentRunRepository.add_event(
@@ -1144,7 +1376,7 @@ Choose the safest next action.
             )
 
         return {
-            "run_id": run_id,
+            "run_id": run.run_id if run is not None else run_id,
             "ticket_id": ticket_id,
             "decision": decision,
             "sources": sources,
@@ -1152,7 +1384,104 @@ Choose the safest next action.
             "tool_plan": tool_plan,
             "auto_queued": auto_queued,
             "job_id": auto_job_id,
+            "reused": False,
+            "fingerprint": fingerprint if persist_run else None,
         }
+
+    async def analyze(
+        self,
+        db: AsyncSession,
+        *,
+        ticket_id: int,
+        organization_id: int,
+        allow_auto_queue: bool = True,
+        persist_run: bool = True,
+        authz: "AuthorizationContext | None" = None,
+        force: bool = False,
+    ) -> dict:
+
+        run_id = uuid4().hex
+
+        # Load the trusted tenant-owned ticket early so we can compute a
+        # deterministic fingerprint before invoking the LLM. This keeps the
+        # idempotency check cheap and prevents paying for a duplicate analysis.
+        ticket_result = await db.execute(
+            select(Ticket).where(
+                Ticket.id == ticket_id,
+                Ticket.organization_id == organization_id,
+            )
+        )
+        ticket = ticket_result.scalar_one_or_none()
+        if ticket is None:
+            raise TicketNotFoundError(f"Ticket {ticket_id} was not found.")
+
+        ticket_data = {
+            "id": ticket.id,
+            "organization_id": ticket.organization_id,
+            "subject": ticket.subject,
+            "description": ticket.description or "",
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "category": ticket.category,
+            "assigned_team": ticket.assigned_team,
+            "requester_email": ticket.requester_email,
+            "source": ticket.source,
+        }
+
+        corpus_revision = await self._knowledge_corpus_revision(
+            db,
+            organization_id=organization_id,
+        )
+
+        fingerprint = self._compute_fingerprint(
+            organization_id=organization_id,
+            ticket_id=ticket_id,
+            ticket=ticket_data,
+            agent_decision_version=AGENT_DECISION_VERSION,
+            model=settings.chat_model,
+            corpus_revision=corpus_revision,
+        )
+
+        # Acquire a database-backed concurrency guard before the reuse check
+        # and before any LLM work. The lock key is scoped to the tenant,
+        # ticket, and fingerprint so unrelated analyses never serialize.
+        lock_key: int | None = None
+        if persist_run:
+            lock_key = self._analysis_lock_key(
+                organization_id=organization_id,
+                ticket_id=ticket_id,
+                fingerprint=fingerprint,
+            )
+            async with engine.connect() as lock_conn:
+                await self._acquire_analysis_lock(lock_conn, lock_key)
+                try:
+                    return await self._analyze_critical_section(
+                        db,
+                        ticket_id=ticket_id,
+                        organization_id=organization_id,
+                        ticket_data=ticket_data,
+                        fingerprint=fingerprint,
+                        run_id=run_id,
+                        persist_run=persist_run,
+                        force=force,
+                        allow_auto_queue=allow_auto_queue,
+                        authz=authz,
+                    )
+                finally:
+                    await self._release_analysis_lock(lock_conn, lock_key)
+        else:
+            return await self._analyze_critical_section(
+                db,
+                ticket_id=ticket_id,
+                organization_id=organization_id,
+                ticket_data=ticket_data,
+                fingerprint=fingerprint,
+                run_id=run_id,
+                persist_run=persist_run,
+                force=force,
+                allow_auto_queue=allow_auto_queue,
+                authz=authz,
+            )
 
 
 agent_workflow_service = AgentWorkflowService()

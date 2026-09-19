@@ -26,6 +26,34 @@ class AgentRunRepository:
             raise ValueError("Cannot mutate an unowned (NULL-org) agent run.")
 
     @staticmethod
+    async def find_current_run_by_fingerprint(
+        db: AsyncSession,
+        *,
+        ticket_id: int,
+        organization_id: int,
+        fingerprint: str,
+    ) -> AgentRun | None:
+        """Return the newest non-superseded run matching the fingerprint.
+
+        A matching fingerprint means the materially relevant inputs have not
+        changed, so the existing analysis can be reused without a new LLM call.
+        Superseded and rejected runs are ignored; they are audit history, not
+        current decisions.
+        """
+        result = await db.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.ticket_id == ticket_id,
+                AgentRun.organization_id == organization_id,
+                AgentRun.fingerprint == fingerprint,
+                AgentRun.status.notin_({"superseded", "rejected"}),
+            )
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def create(
         db: AsyncSession,
         *,
@@ -36,6 +64,7 @@ class AgentRunRepository:
         sources: list[dict],
         workflow_path: list[str],
         tool_plan: list[dict],
+        fingerprint: str | None = None,
     ) -> AgentRun:
         # Serialize AgentRun persistence per ticket so two
         # simultaneous analyses cannot leave two active approvals.
@@ -89,6 +118,7 @@ class AgentRunRepository:
             sources=sources,
             workflow_path=workflow_path,
             tool_plan=tool_plan,
+            fingerprint=fingerprint,
         )
 
         db.add(run)
@@ -366,8 +396,28 @@ class AgentRunRepository:
         AgentRunRepository._assert_tenant_owned(run)
 
         run.status = "review_required"
-        run.reviewer_note = note
+        # Do NOT populate reviewer_note or reviewed_at for a new review_required
+        # run. The agent explanation belongs in ``reason``; human review metadata
+        # is only set when an authorized reviewer explicitly completes the case.
+        run.reviewer_note = None
+        run.reviewed_at = None
 
+        await db.commit()
+        await db.refresh(run)
+
+        return run
+
+    @staticmethod
+    async def mark_reviewed(
+        db: AsyncSession,
+        run: AgentRun,
+        note: str | None,
+    ) -> AgentRun:
+
+        AgentRunRepository._assert_tenant_owned(run)
+
+        run.status = "reviewed"
+        run.reviewer_note = note
         run.reviewed_at = datetime.now(timezone.utc)
 
         await db.commit()

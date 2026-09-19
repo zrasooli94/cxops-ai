@@ -5,6 +5,7 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Query,
     status,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,6 +82,7 @@ def serialize_run(
         "reviewer_note": (run.reviewer_note),
         "workflow_path": (run.workflow_path or []),
         "tool_plan": (run.tool_plan or []),
+        "sources": (run.sources or []),
     }
 
 
@@ -93,6 +95,7 @@ async def analyze_ticket(
     tenant: CurrentTenant,
     db: DatabaseSession,
     authz: AgentRunAuthz,
+    force: bool = Query(default=False),
 ):
 
     try:
@@ -101,6 +104,7 @@ async def analyze_ticket(
             ticket_id=ticket_id,
             organization_id=tenant.organization_id,
             authz=authz,
+            force=force,
         )
 
     except TicketNotFoundError as exc:
@@ -186,6 +190,42 @@ async def reject_agent_run(
 
     try:
         run = await AgentApprovalService.reject(
+            db=db,
+            run_id=run_id,
+            organization_id=tenant.organization_id,
+            note=data.note,
+            authz=authz,
+        )
+
+        return serialize_run(run)
+
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(
+            status_code=(status.HTTP_404_NOT_FOUND),
+            detail=str(exc),
+        ) from exc
+
+    except InvalidAgentRunStateError as exc:
+        raise HTTPException(
+            status_code=(status.HTTP_409_CONFLICT),
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/runs/{run_id}/review",
+    response_model=AgentRunResponse,
+)
+async def review_agent_run(
+    run_id: str,
+    data: AgentReviewRequest,
+    tenant: CurrentTenant,
+    db: DatabaseSession,
+    authz: AgentApproveAuthz,
+):
+
+    try:
+        run = await AgentApprovalService.review(
             db=db,
             run_id=run_id,
             organization_id=tenant.organization_id,

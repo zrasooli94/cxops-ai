@@ -165,7 +165,7 @@ async def tenant360(db):
     )
     await db.commit()
 
-    unique_alpha = f"alpha{uuid.uuid4().hex[:8]}@example.com"
+    unique_alpha = f"alpha1{uuid.uuid4().hex[:8]}@example.com"
     unique_alpha2 = f"alpha2{uuid.uuid4().hex[:8]}@example.com"
     unique_beta = f"beta{uuid.uuid4().hex[:8]}@example.com"
 
@@ -362,7 +362,7 @@ async def test_3_search_by_email_partial(make_client, tenant360):
 
 
 @pytest.mark.asyncio
-async def test_4_search_by_external_id_is_exact(make_client, tenant360):
+async def test_4_search_by_external_id_partial(make_client, tenant360):
     async with make_client() as client:
         r = await client.get(
             "/customers", headers=_h_alpha(), params={"search": "ext-10001"}
@@ -377,8 +377,9 @@ async def test_4_search_by_external_id_is_exact(make_client, tenant360):
             "/customers", headers=_h_alpha(), params={"search": "10001"}
         )
     assert r2.status_code == 200
-    _, total2 = _envelope(r2.json())
-    assert total2 == 0
+    items2, total2 = _envelope(r2.json())
+    assert total2 == 1
+    assert items2[0]["external_id"] == "ext-10001"
 
 
 @pytest.mark.asyncio
@@ -578,6 +579,34 @@ async def test_15_customer_without_tickets_returns_empty(make_client, tenant360)
     items, total = _envelope(r.json())
     assert items == []
     assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_15b_tickets_filtered_by_customer_id(make_client, tenant360):
+    # The tickets workspace can be pre-filtered to a single customer.
+    async with make_client() as client:
+        r = await client.get(
+            "/tickets",
+            headers=_h_alpha(),
+            params={"customer_id": tenant360["cust_a_id"]},
+        )
+    assert r.status_code == 200
+    data = r.json()
+    rows = data if isinstance(data, list) else data.get("items", [])
+    total = len(rows) if isinstance(data, list) else data.get("total", len(rows))
+    assert total == 2
+    subjects = {item["subject"] for item in rows}
+    assert subjects == {"Open Billing Question", "Resolved Refund"}
+
+    # Filtering by a foreign customer is rejected (the customer lookup is
+    # scoped to the tenant, so the request resolves as 404).
+    async with make_client() as client:
+        r_foreign = await client.get(
+            "/tickets",
+            headers=_h_alpha(),
+            params={"customer_id": tenant360["cust_b_id"]},
+        )
+    assert r_foreign.status_code == 404
 
 
 # ===================================================================

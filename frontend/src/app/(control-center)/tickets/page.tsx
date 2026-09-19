@@ -21,6 +21,7 @@ import {
   XCircle,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -35,6 +36,7 @@ import {
   deriveTicketExperience,
   planClientAuthorizationResponse,
 } from "@/lib/authorization/helpers";
+import { RagEvidenceEmptyState } from "@/lib/rag/evidence-empty-state";
 
 type Ticket = {
   id: number;
@@ -98,6 +100,8 @@ type AgentAnalysis = {
   tool_plan: ToolPlanItem[];
   auto_queued: boolean;
   job_id: number | null;
+  reused: boolean;
+  fingerprint: string | null;
 };
 
 type BadgeVariant =
@@ -308,18 +312,48 @@ export default function TicketsPage() {
     setAnalysisError,
   ] = useState("");
 
+  const [
+    customerIdFilter,
+    setCustomerIdFilter,
+  ] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    return new URLSearchParams(
+      window.location.search,
+    ).get("customer_id");
+  });
+
+  const [
+    filterCustomer,
+    setFilterCustomer,
+  ] = useState<{
+    id: number;
+    name: string;
+    email: string;
+  } | null>(null);
+
+  const [
+    filterCustomerLoading,
+    setFilterCustomerLoading,
+  ] = useState(false);
+
+  const router = useRouter();
+
   const loadTickets =
     useCallback(async () => {
       setLoading(true);
       setError("");
 
       try {
-        const response = await fetch(
-          "/api/backend/tickets",
-          {
-            cache: "no-store",
-          },
-        );
+        const url = customerIdFilter
+          ? `/api/backend/tickets?customer_id=${encodeURIComponent(customerIdFilter)}`
+          : "/api/backend/tickets";
+
+        const response = await fetch(url, {
+          cache: "no-store",
+        });
 
         if (!response.ok) {
           throw new Error(
@@ -366,7 +400,7 @@ export default function TicketsPage() {
       } finally {
         setLoading(false);
       }
-    }, []);
+    }, [customerIdFilter]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -378,13 +412,65 @@ export default function TicketsPage() {
     };
   }, [loadTickets]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCustomer() {
+      if (!customerIdFilter) {
+        if (!cancelled) {
+          setFilterCustomer(null);
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        setFilterCustomerLoading(true);
+      }
+
+      try {
+        const response = await fetch(
+          `/api/backend/customers/${encodeURIComponent(customerIdFilter)}`,
+          { cache: "no-store" },
+        );
+
+        if (!cancelled) {
+          if (response.ok) {
+            const body = await response.json();
+            const loaded = body as {
+              id: number;
+              name: string;
+              email: string;
+            };
+            setFilterCustomer(loaded);
+          } else {
+            setFilterCustomer(null);
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setFilterCustomer(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setFilterCustomerLoading(false);
+        }
+      }
+    }
+
+    void loadCustomer();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [customerIdFilter]);
+
   function selectTicket(ticket: Ticket) {
     setSelectedTicket(ticket);
     setAnalysis(null);
     setAnalysisError("");
   }
 
-  async function analyzeTicket() {
+  async function analyzeTicket(force = false) {
     if (!selectedTicket) {
       return;
     }
@@ -394,13 +480,14 @@ export default function TicketsPage() {
     setAnalysisError("");
 
     try {
-      const response = await fetch(
-        `/api/backend/agent/tickets/${selectedTicket.id}/analyze`,
-        {
-          method: "POST",
-          cache: "no-store",
-        },
-      );
+      const url = force
+        ? `/api/backend/agent/tickets/${selectedTicket.id}/analyze?force=true`
+        : `/api/backend/agent/tickets/${selectedTicket.id}/analyze`;
+
+      const response = await fetch(url, {
+        method: "POST",
+        cache: "no-store",
+      });
 
       const body =
         await response.json();
@@ -576,6 +663,49 @@ export default function TicketsPage() {
             <div className="mb-7 flex items-start gap-3 rounded-[18px] border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
               <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0" />
               {error}
+            </div>
+          )}
+
+          {customerIdFilter && (
+            <div className="mb-7 flex items-start justify-between gap-4 rounded-[18px] border border-blue-200 bg-blue-50/80 p-4 text-sm text-blue-700">
+              <div className="flex items-center gap-3">
+                <User className="mt-0.5 h-5 w-5 shrink-0" />
+
+                <div>
+                  {filterCustomerLoading ? (
+                    <span>Loading customer filter…</span>
+                  ) : filterCustomer ? (
+                    <>
+                      <span className="font-medium">
+                        Showing tickets for customer:{" "}
+                        {filterCustomer.name}
+                      </span>
+                      {filterCustomer.email && (
+                        <span className="ml-1 text-blue-600">
+                          ({filterCustomer.email})
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span>
+                      Showing tickets filtered by customer{" "}
+                      #{customerIdFilter}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomerIdFilter(null);
+                  setFilterCustomer(null);
+                  router.replace("/tickets", { scroll: false });
+                }}
+                className="shrink-0 rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+              >
+                Clear filter
+              </button>
             </div>
           )}
 
@@ -815,24 +945,40 @@ export default function TicketsPage() {
                         </div>
 
                         {canRun && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void analyzeTicket()
-                            }
-                            disabled={analyzing}
-                            className="group flex shrink-0 items-center justify-center gap-2.5 rounded-full bg-gradient-to-r from-[#765cff] to-[#508cff] px-5 py-3 text-sm font-medium text-white shadow-[0_12px_30px_rgba(104,86,255,0.22)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {analyzing ? (
-                              <LoaderCircle className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Sparkles className="h-4 w-4" />
-                            )}
+                          <div className="flex shrink-0 flex-col gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void analyzeTicket()
+                              }
+                              disabled={analyzing}
+                              className="group flex items-center justify-center gap-2.5 rounded-full bg-gradient-to-r from-[#765cff] to-[#508cff] px-5 py-3 text-sm font-medium text-white shadow-[0_12px_30px_rgba(104,86,255,0.22)] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {analyzing ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-4 w-4" />
+                              )}
 
-                            {analyzing
-                              ? "Analyzing..."
-                              : "Analyze with AI"}
-                          </button>
+                              {analyzing
+                                ? "Analyzing..."
+                                : "Analyze with AI"}
+                            </button>
+
+                            {analysis && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void analyzeTicket(true)
+                                }
+                                disabled={analyzing}
+                                className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-2.5 text-xs font-medium text-slate-600 transition hover:border-violet-300 hover:text-violet-600 disabled:opacity-50"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                Re-analyze
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
 
@@ -1073,6 +1219,13 @@ export default function TicketsPage() {
                                   required
                                 </Badge>
                               )}
+
+                              {analysis.reused && (
+                                <Badge variant="info">
+                                  Current analysis ·
+                                  reused
+                                </Badge>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1266,10 +1419,11 @@ export default function TicketsPage() {
 
                         {analysis.sources.length ===
                         0 ? (
-                          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 text-sm text-slate-500">
-                            No knowledge retrieval
-                            was required for this
-                            decision.
+                          <div className="mt-6">
+                            <RagEvidenceEmptyState
+                              workflowPath={analysis.workflow_path}
+                              sources={analysis.sources}
+                            />
                           </div>
                         ) : (
                           <div className="mt-6 space-y-4">

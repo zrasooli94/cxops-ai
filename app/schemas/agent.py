@@ -102,6 +102,10 @@ class AgentAnalysisResponse(BaseModel):
 
     job_id: int | None = None
 
+    reused: bool = False
+
+    fingerprint: str | None = None
+
 
 class AgentReviewRequest(BaseModel):
     note: str | None = Field(
@@ -133,6 +137,8 @@ class AgentRunResponse(BaseModel):
     workflow_path: list[str] = Field(default_factory=list)
 
     tool_plan: list[AgentToolCall] = Field(default_factory=list)
+
+    sources: list[Any] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 

@@ -313,10 +313,15 @@ export default function ApprovalsPage() {
         setReviewRuns(reviewData);
         setTickets(ticketRows);
 
+        const combined = [
+          ...actionable,
+          ...reviewData,
+        ];
+
         setSelectedRun((current) => {
           if (
             current &&
-            actionable.some(
+            combined.some(
               (run) =>
                 run.run_id ===
                 current.run_id,
@@ -325,7 +330,7 @@ export default function ApprovalsPage() {
             return current;
           }
 
-          return actionable[0] ?? null;
+          return combined[0] ?? null;
         });
       } catch (err) {
         setError(
@@ -363,6 +368,11 @@ export default function ApprovalsPage() {
       ]),
     );
   }, [tickets]);
+
+  const queueRuns = useMemo(
+    () => [...runs, ...reviewRuns],
+    [runs, reviewRuns],
+  );
 
   const highRiskCount = useMemo(
     () =>
@@ -556,6 +566,79 @@ export default function ApprovalsPage() {
     }
   }
 
+  async function reviewSelectedRun() {
+    if (!selectedRun || !agent.canApprove) {
+      return;
+    }
+
+    if (selectedRun.status !== "review_required") {
+      setError(
+        "This run is not awaiting review.",
+      );
+      return;
+    }
+
+    setActionLoading(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const response = await fetch(
+        `/api/backend/agent/runs/${selectedRun.run_id}/review`,
+        {
+          method: "POST",
+          headers: {
+            "content-type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            note:
+              reviewNote.trim() ||
+              "Reviewed from CXOps Control Center",
+          }),
+        },
+      );
+
+      const body =
+        await response.json();
+
+      if (!response.ok) {
+        const plan = planClientAuthorizationResponse(
+          response.status,
+          body?.detail,
+        );
+        const feedback =
+          authorizationFeedback(plan);
+
+        if (feedback) {
+          setError(feedback);
+          refresh();
+          return;
+        }
+
+        throw new Error(
+          body?.detail ??
+            "Mark reviewed failed.",
+        );
+      }
+
+      setSuccess(
+        "Run marked as reviewed.",
+      );
+
+      setReviewNote("");
+      await loadData();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Mark reviewed failed.",
+      );
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   const selectedTicket =
     selectedRun
       ? ticketMap.get(
@@ -688,16 +771,16 @@ export default function ApprovalsPage() {
               <div className="flex items-center justify-between border-b border-slate-200/70 p-5">
                 <div>
                   <h2 className="font-medium text-slate-900">
-                    Pending Decisions
+                    Review Queue
                   </h2>
 
                   <p className="mt-1 text-xs text-slate-400">
-                    Actions awaiting review
+                    Pending approvals and human-review cases
                   </p>
                 </div>
 
                 <Badge variant="warning">
-                  {runs.length}
+                  {queueRuns.length}
                 </Badge>
               </div>
 
@@ -709,7 +792,7 @@ export default function ApprovalsPage() {
                   <div className="flex h-48 items-center justify-center">
                     <LoaderCircle className="h-6 w-6 animate-spin text-violet-500" />
                   </div>
-                ) : runs.length === 0 ? (
+                ) : queueRuns.length === 0 ? (
                   <div className="p-10 text-center">
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-500">
                       <CheckCircle2 className="h-6 w-6" />
@@ -725,7 +808,7 @@ export default function ApprovalsPage() {
                     </p>
                   </div>
                 ) : (
-                  runs.map((run) => {
+                  queueRuns.map((run) => {
                     const ticket =
                       ticketMap.get(
                         run.ticket_id,
@@ -1115,6 +1198,21 @@ export default function ApprovalsPage() {
                             <X className="h-4 w-4" />
                             Reject
                           </button>
+
+                          {selectedRun.status ===
+                            "review_required" && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void reviewSelectedRun()
+                              }
+                              disabled={actionLoading}
+                              className="flex flex-1 items-center justify-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-5 py-3.5 text-sm font-medium text-blue-700 transition hover:-translate-y-0.5 hover:bg-blue-100 disabled:opacity-50"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              Mark reviewed
+                            </button>
+                          )}
                         </div>
                       </>
                     )}

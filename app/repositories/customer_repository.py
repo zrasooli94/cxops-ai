@@ -82,7 +82,7 @@ class CustomerRepository:
                         Customer.name.ilike(pattern, escape="\\"),
                         Customer.email.ilike(pattern, escape="\\"),
                         Customer.phone.ilike(pattern, escape="\\"),
-                        Customer.external_id == term,
+                        Customer.external_id.ilike(pattern, escape="\\"),
                     )
                 )
 

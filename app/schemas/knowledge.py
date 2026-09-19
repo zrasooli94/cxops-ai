@@ -90,3 +90,11 @@ class RAGAnswerResponse(BaseModel):
     sources: list[RAGSource]
     retrieval_count: int = 0
     best_similarity: float | None = None
+
+
+class KnowledgeCorpusSummary(BaseModel):
+    document_count: int
+    chunk_count: int
+    last_ingestion_at: datetime | None
+    embedding_model: str
+    corpus_revision: str

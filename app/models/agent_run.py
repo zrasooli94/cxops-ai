@@ -152,6 +152,12 @@ class AgentRun(Base):
         nullable=True,
     )
 
+    fingerprint: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+
     # --- Phase 1D.3 authorization metadata (nullable, staged) ---
     # These columns are populated during authorization; legacy runs with NULL
     # values must not be silently upgraded and require fresh analysis.

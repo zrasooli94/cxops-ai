@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   type FormEvent,
+  useEffect,
   useState,
 } from "react";
 
@@ -73,10 +74,29 @@ type UploadResult = {
   duplicate: boolean;
 };
 
+type KnowledgeCorpusSummary = {
+  document_count: number;
+  chunk_count: number;
+  last_ingestion_at: string | null;
+  embedding_model: string;
+  corpus_revision: string;
+};
+
+type KnowledgeDocumentSummary = {
+  document_id: number;
+  title: string;
+  source: string;
+  source_uri: string | null;
+  checksum: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
 type Tab =
   | "rag"
   | "search"
-  | "ingest";
+  | "ingest"
+  | "summary";
 
 type BadgeVariant =
   | "default"
@@ -297,6 +317,28 @@ export default function KnowledgePage() {
   const [
     uploadError,
     setUploadError,
+  ] = useState("");
+
+  const [
+    summary,
+    setSummary,
+  ] = useState<KnowledgeCorpusSummary | null>(
+    null,
+  );
+
+  const [
+    summaryDocuments,
+    setSummaryDocuments,
+  ] = useState<KnowledgeDocumentSummary[]>([]);
+
+  const [
+    summaryLoading,
+    setSummaryLoading,
+  ] = useState(false);
+
+  const [
+    summaryError,
+    setSummaryError,
   ] = useState("");
 
   async function askKnowledge(
@@ -570,6 +612,80 @@ export default function KnowledgePage() {
     "What is the company vacation policy?",
   ];
 
+  useEffect(() => {
+    if (tab !== "summary") {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadSummary() {
+      if (!cancelled) {
+        setSummaryLoading(true);
+        setSummaryError("");
+      }
+
+      try {
+        const [summaryResponse, documentsResponse] =
+          await Promise.all([
+            fetch(
+              "/api/backend/knowledge/summary",
+              { cache: "no-store" },
+            ),
+            fetch(
+              "/api/backend/knowledge/documents?limit=5",
+              { cache: "no-store" },
+            ),
+          ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!summaryResponse.ok) {
+          const body =
+            await summaryResponse.json().catch(() => null);
+          throw new Error(
+            body?.detail ??
+              `Summary API returned ${summaryResponse.status}`,
+          );
+        }
+
+        setSummary(
+          (await summaryResponse.json()) as KnowledgeCorpusSummary,
+        );
+
+        if (documentsResponse.ok) {
+          const documentData =
+            (await documentsResponse.json()) as KnowledgeDocumentSummary[];
+          setSummaryDocuments(
+            Array.isArray(documentData) ? documentData : [],
+          );
+        } else {
+          setSummaryDocuments([]);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSummaryError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load knowledge summary.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setSummaryLoading(false);
+        }
+      }
+    }
+
+    void loadSummary();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
   return (
     <div className="min-h-screen">
       
@@ -655,6 +771,11 @@ export default function KnowledgePage() {
                 id: "ingest" as Tab,
                 label: "Ingest Knowledge",
                 icon: Upload,
+              },
+              {
+                id: "summary" as Tab,
+                label: "Summary",
+                icon: Layers3,
               },
             ].map((item) => {
               const Icon = item.icon;
@@ -1646,6 +1767,194 @@ export default function KnowledgePage() {
                     )}
                   </div>
                 </div>
+              </section>
+            </div>
+          )}
+
+          {tab === "summary" && (
+            <div className="grid gap-6 xl:grid-cols-[390px_minmax(0,1fr)]">
+              <section className="app-panel self-start rounded-[22px] p-6 xl:sticky xl:top-[96px]">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 text-blue-500">
+                    <Layers3 className="h-5 w-5" />
+                  </div>
+
+                  <div>
+                    <h2 className="font-medium text-slate-950">
+                      Corpus Summary
+                    </h2>
+
+                    <p className="text-xs text-slate-400">
+                      Vector knowledge base overview
+                    </p>
+                  </div>
+                </div>
+
+                <p className="mt-5 text-sm leading-6 text-slate-500">
+                  High-level stats about the
+                  documents and chunks currently
+                  stored for retrieval.
+                </p>
+
+                {summaryLoading && (
+                  <div className="mt-6 flex h-40 items-center justify-center">
+                    <LoaderCircle className="h-6 w-6 animate-spin text-violet-500" />
+                  </div>
+                )}
+
+                {summaryError && (
+                  <div className="mt-5 flex gap-3 rounded-2xl border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
+                    <XCircle className="h-5 w-5 shrink-0" />
+                    {summaryError}
+                  </div>
+                )}
+
+                {!summaryLoading &&
+                  !summaryError &&
+                  summary && (
+                    <div className="mt-6 space-y-4">
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                        <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                          Total documents
+                        </p>
+
+                        <p className="editorial-number mt-2 text-2xl font-medium text-slate-950">
+                          {summary.document_count}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                        <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                          Total chunks
+                        </p>
+
+                        <p className="editorial-number mt-2 text-2xl font-medium text-slate-950">
+                          {summary.chunk_count}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                        <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                          Embedding model
+                        </p>
+
+                        <p className="mt-2 text-sm font-medium text-slate-900">
+                          {summary.embedding_model}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200/70 bg-[#fbfcff] p-4">
+                        <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                          Last ingestion
+                        </p>
+
+                        <p className="mt-2 text-sm font-medium text-slate-900">
+                          {summary.last_ingestion_at
+                            ? new Date(
+                                summary.last_ingestion_at,
+                              ).toLocaleString()
+                            : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+              </section>
+
+              <section className="min-w-0">
+                {!summaryLoading &&
+                  !summaryError &&
+                  summary && (
+                    <div className="app-panel rounded-[22px] p-6 md:p-7">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-500">
+                            <FileText className="h-5 w-5" />
+                          </div>
+
+                          <div>
+                            <h2 className="font-medium text-slate-900">
+                              Recent sources
+                            </h2>
+
+                            <p className="text-xs text-slate-400">
+                              Latest ingested documents
+                            </p>
+                          </div>
+                        </div>
+
+                        <Badge variant="violet">
+                          {summaryDocuments.length}{" "}
+                          shown
+                        </Badge>
+                      </div>
+
+                      {summaryDocuments.length ===
+                      0 ? (
+                        <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center text-sm text-slate-500">
+                          No documents ingested yet.
+                        </div>
+                      ) : (
+                        <div className="mt-6 space-y-4">
+                          {summaryDocuments.map(
+                            (document) => (
+                              <div
+                                key={
+                                  document.document_id
+                                }
+                                className="rounded-2xl border border-slate-200/80 bg-[#fbfcff] p-5"
+                              >
+                                <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                                  <div>
+                                    <p className="font-medium text-slate-800">
+                                      {
+                                        document.title
+                                      }
+                                    </p>
+
+                                    <p className="mt-1 text-xs text-slate-400">
+                                      Document ID:{" "}
+                                      {
+                                        document.document_id
+                                      }{" "}
+                                      · Source:{" "}
+                                      {
+                                        document.source
+                                      }
+                                    </p>
+                                  </div>
+
+                                  <Badge variant="info">
+                                    {new Date(
+                                      document.created_at,
+                                    ).toLocaleDateString()}
+                                  </Badge>
+                                </div>
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      )}
+
+                      {summaryDocuments[0] && (
+                        <div className="mt-6 rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50/55 to-blue-50/45 p-5">
+                          <p className="text-xs font-medium text-slate-500">
+                            Latest document
+                          </p>
+
+                          <p className="mt-2 text-sm font-medium text-slate-900">
+                            {summaryDocuments[0].title}
+                          </p>
+
+                          <p className="mt-1 text-xs text-slate-400">
+                            Ingested{" "}
+                            {new Date(
+                              summaryDocuments[0].created_at,
+                            ).toLocaleString()}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
               </section>
             </div>
           )}

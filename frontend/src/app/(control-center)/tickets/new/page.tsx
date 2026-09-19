@@ -29,7 +29,7 @@ import {
   authorizationFeedback,
   planClientAuthorizationResponse,
 } from "@/lib/authorization/helpers";
-
+import { RagEvidenceEmptyState } from "@/lib/rag/evidence-empty-state";
 
 type Priority =
   | "low"
@@ -1249,9 +1249,11 @@ export default function NewTicketPage() {
 
                         {analysis.sources.length ===
                         0 ? (
-                          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 text-sm text-slate-500">
-                            No knowledge retrieval
-                            was required.
+                          <div className="mt-6">
+                            <RagEvidenceEmptyState
+                              workflowPath={analysis.workflow_path}
+                              sources={analysis.sources}
+                            />
                           </div>
                         ) : (
                           <div

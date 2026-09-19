@@ -803,7 +803,7 @@ export default function CustomerDetailPage() {
                     </div>
 
                     <Link
-                      href="/tickets"
+                      href={`/tickets?customer_id=${customer.id}`}
                       className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-600"
                     >
                       View all

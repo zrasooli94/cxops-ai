@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  Database,
   Filter,
   LoaderCircle,
   Play,
@@ -37,7 +38,7 @@ import {
   authorizationFeedback,
   planClientAuthorizationResponse,
 } from "@/lib/authorization/helpers";
-
+import { RagEvidenceEmptyState } from "@/lib/rag/evidence-empty-state";
 
 type ToolPlanItem = {
   tool: string;
@@ -45,6 +46,15 @@ type ToolPlanItem = {
   risk_level: "low" | "medium" | "high";
   requires_approval: boolean;
   authorized: boolean;
+};
+
+type KnowledgeSource = {
+  source_id: string;
+  chunk_id: number;
+  document_id: number;
+  title: string;
+  content: string;
+  similarity: number;
 };
 
 type AgentRun = {
@@ -60,6 +70,7 @@ type AgentRun = {
   reviewer_note: string | null;
   workflow_path: string[];
   tool_plan: ToolPlanItem[];
+  sources: KnowledgeSource[];
 };
 
 type TicketRecord = {
@@ -283,6 +294,11 @@ export default function RunsPage() {
     setActionLoading,
   ] = useState(false);
 
+  const [
+    groupByTicket,
+    setGroupByTicket,
+  ] = useState(false);
+
   const loadData =
     useCallback(async () => {
       setLoading(true);
@@ -463,6 +479,65 @@ export default function RunsPage() {
       ticketMap,
     ]);
 
+  function buildGroups(
+    items: AgentRun[],
+  ): { ticketId: number; runs: AgentRun[] }[] {
+    const groups = new Map<
+      number,
+      AgentRun[]
+    >();
+
+    for (const run of items) {
+      const existing = groups.get(
+        run.ticket_id,
+      );
+
+      if (existing) {
+        existing.push(run);
+      } else {
+        groups.set(run.ticket_id, [run]);
+      }
+    }
+
+    return Array.from(groups.entries()).map(
+      ([ticketId, runs]) => ({
+        ticketId,
+        runs,
+      }),
+    );
+  }
+
+  const groupedRuns = useMemo(
+    () => buildGroups(filteredRuns),
+    [filteredRuns],
+  );
+
+  function selectDefaultGroupRun(
+    items: AgentRun[],
+  ) {
+    const groups = buildGroups(items);
+    const firstGroup = groups[0];
+
+    if (!firstGroup) {
+      setSelectedRun(null);
+      return;
+    }
+
+    setSelectedRun((current) => {
+      if (
+        current &&
+        firstGroup.runs.some(
+          (run) =>
+            run.run_id === current.run_id,
+        )
+      ) {
+        return current;
+      }
+
+      return firstGroup.runs[0] ?? null;
+    });
+  }
+
   const executedCount =
     useMemo(
       () =>
@@ -580,6 +655,80 @@ export default function RunsPage() {
           )
         ? "medium"
         : "low";
+
+  function RunItem({ run }: { run: AgentRun }) {
+    const ticket = ticketMap.get(
+      run.ticket_id,
+    );
+
+    const selected =
+      selectedRun?.run_id === run.run_id;
+
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          setSelectedRun(run)
+        }
+        className={`group relative w-full border-b border-slate-200/60 p-5 text-left transition last:border-b-0 ${
+          selected
+            ? "bg-gradient-to-r from-violet-50/90 via-blue-50/40 to-white"
+            : "bg-white/30 hover:bg-slate-50/80"
+        }`}
+      >
+        {selected && (
+          <span className="absolute bottom-3 left-0 top-3 w-[3px] rounded-r-full bg-gradient-to-b from-violet-500 to-blue-500" />
+        )}
+
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-slate-400">
+              Ticket #{run.ticket_id}
+            </p>
+
+            <p className="mt-2 truncate text-sm font-medium text-slate-850">
+              {ticket?.subject ??
+                formatText(run.action)}
+            </p>
+          </div>
+
+          <ChevronRight
+            className={`mt-1 h-4 w-4 shrink-0 transition ${
+              selected
+                ? "translate-x-0.5 text-violet-500"
+                : "text-slate-300 group-hover:translate-x-0.5 group-hover:text-slate-500"
+            }`}
+          />
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Badge
+            variant={statusVariant(
+              run.status,
+            )}
+          >
+            {formatText(run.status)}
+          </Badge>
+
+          <Badge
+            variant={actionVariant(
+              run.action,
+            )}
+          >
+            {formatText(run.action)}
+          </Badge>
+        </div>
+
+        <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500">
+          {run.reason}
+        </p>
+
+        <p className="mt-3 truncate font-mono text-[9px] text-slate-300">
+          {run.run_id}
+        </p>
+      </button>
+    );
+  }
 
   return (
     <div className="min-h-screen">
@@ -786,6 +935,34 @@ export default function RunsPage() {
                 </Badge>
               </div>
 
+              <div className="flex items-center justify-between border-b border-slate-200/70 px-5 py-3">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={groupByTicket}
+                    onChange={(event) => {
+                      const next =
+                        event.target.checked;
+                      setGroupByTicket(next);
+
+                      if (next) {
+                        selectDefaultGroupRun(
+                          filteredRuns,
+                        );
+                      }
+                    }}
+                    className="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                  />
+                  Group by ticket
+                </label>
+
+                <span className="text-[10px] text-slate-400">
+                  {groupByTicket
+                    ? `${groupedRuns.length} ticket group${groupedRuns.length === 1 ? "" : "s"}`
+                    : "Flat list"}
+                </span>
+              </div>
+
               <div
                 data-lenis-prevent
                 className="max-h-[760px] overflow-y-auto overscroll-contain"
@@ -805,96 +982,43 @@ export default function RunsPage() {
                       current filters.
                     </p>
                   </div>
-                ) : (
-                  filteredRuns.map(
-                    (run) => {
-                      const ticket =
-                        ticketMap.get(
-                          run.ticket_id,
-                        );
-
-                      const selected =
-                        selectedRun?.run_id ===
-                        run.run_id;
-
-                      return (
-                        <button
-                          key={run.run_id}
-                          type="button"
-                          onClick={() =>
-                            setSelectedRun(
-                              run,
-                            )
-                          }
-                          className={`group relative w-full border-b border-slate-200/60 p-5 text-left transition last:border-0 ${
-                            selected
-                              ? "bg-gradient-to-r from-violet-50/90 via-blue-50/40 to-white"
-                              : "bg-white/30 hover:bg-slate-50/80"
-                          }`}
-                        >
-                          {selected && (
-                            <span className="absolute bottom-3 left-0 top-3 w-[3px] rounded-r-full bg-gradient-to-b from-violet-500 to-blue-500" />
-                          )}
-
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-slate-400">
-                                Ticket #
-                                {
-                                  run.ticket_id
-                                }
-                              </p>
-
-                              <p className="mt-2 truncate text-sm font-medium text-slate-850">
-                                {ticket?.subject ??
-                                  formatText(
-                                    run.action,
-                                  )}
-                              </p>
-                            </div>
-
-                            <ChevronRight
-                              className={`mt-1 h-4 w-4 shrink-0 transition ${
-                                selected
-                                  ? "translate-x-0.5 text-violet-500"
-                                  : "text-slate-300 group-hover:translate-x-0.5 group-hover:text-slate-500"
-                              }`}
-                            />
-                          </div>
-
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <Badge
-                              variant={statusVariant(
-                                run.status,
-                              )}
-                            >
-                              {formatText(
-                                run.status,
-                              )}
-                            </Badge>
-
-                            <Badge
-                              variant={actionVariant(
-                                run.action,
-                              )}
-                            >
-                              {formatText(
-                                run.action,
-                              )}
-                            </Badge>
-                          </div>
-
-                          <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500">
-                            {run.reason}
-                          </p>
-
-                          <p className="mt-3 truncate font-mono text-[9px] text-slate-300">
-                            {run.run_id}
-                          </p>
-                        </button>
+                ) : groupByTicket ? (
+                  groupedRuns.map((group) => {
+                    const ticket =
+                      ticketMap.get(
+                        group.ticketId,
                       );
-                    },
-                  )
+
+                    return (
+                      <div
+                        key={group.ticketId}
+                        className="border-b border-slate-200/70 last:border-b-0"
+                      >
+                        <div className="sticky top-0 z-10 border-b border-slate-200/60 bg-slate-50/90 px-5 py-3 backdrop-blur-sm">
+                          <p className="text-xs font-medium text-slate-700">
+                            Ticket #{group.ticketId}
+                            {ticket?.subject
+                              ? ` — ${ticket.subject}`
+                              : ""}
+                          </p>
+                        </div>
+
+                        {group.runs.map((run) => (
+                          <RunItem
+                            key={run.run_id}
+                            run={run}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })
+                ) : (
+                  filteredRuns.map((run) => (
+                    <RunItem
+                      key={run.run_id}
+                      run={run}
+                    />
+                  ))
                 )}
               </div>
             </section>
@@ -1112,6 +1236,65 @@ export default function RunsPage() {
                       )
                     )}
                   </div>
+                </section>
+
+                <section className="app-panel rounded-[22px] p-6 md:p-7">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-500">
+                        <Database className="h-5 w-5" />
+                      </div>
+
+                      <div>
+                        <h2 className="font-medium text-slate-900">
+                          RAG Evidence
+                        </h2>
+
+                        <p className="text-xs text-slate-400">
+                          Knowledge used during reasoning
+                        </p>
+                      </div>
+                    </div>
+
+                    <Badge variant="info">
+                      {selectedRun.sources.length}{" "}
+                      source
+                      {selectedRun.sources.length === 1
+                        ? ""
+                        : "s"}
+                    </Badge>
+                  </div>
+
+                  {selectedRun.sources.length > 0 ? (
+                    <div className="mt-6 max-h-[360px] space-y-4 overflow-y-auto overscroll-contain pr-1">
+                      {selectedRun.sources.map((source) => (
+                        <div
+                          key={`${source.source_id}-${source.chunk_id}`}
+                          className="rounded-2xl border border-slate-200/80 bg-[#fbfcff] p-5"
+                        >
+                          <p className="text-sm font-medium text-slate-800">
+                            {source.source_id} — {source.title}
+                          </p>
+
+                          <p className="mt-1 text-xs text-slate-400">
+                            Document {source.document_id} · Chunk{" "}
+                            {source.chunk_id}
+                          </p>
+
+                          <p className="mt-3 line-clamp-4 text-xs leading-5 text-slate-600">
+                            {source.content}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-6">
+                      <RagEvidenceEmptyState
+                        workflowPath={selectedRun.workflow_path}
+                        sources={selectedRun.sources}
+                      />
+                    </div>
+                  )}
                 </section>
 
                 <section className="app-panel rounded-[22px] p-6 md:p-7">

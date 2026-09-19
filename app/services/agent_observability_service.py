@@ -274,6 +274,18 @@ class AgentObservabilityService:
             exhausted_jobs=(exhausted_jobs),
         )
 
+    @staticmethod
+    async def unique_tickets_analyzed(
+        db: AsyncSession,
+        organization_id: int,
+    ) -> int:
+        result = await db.execute(
+            select(func.count(func.distinct(AgentRun.ticket_id))).where(
+                AgentRun.organization_id == organization_id
+            )
+        )
+        return int(result.scalar_one() or 0)
+
     @classmethod
     async def summary(
         cls,
@@ -282,6 +294,9 @@ class AgentObservabilityService:
     ) -> AgentObservabilitySummary:
 
         total_runs = await cls.total_runs(db, organization_id)
+
+        unique_tickets = await cls.unique_tickets_analyzed(db, organization_id)
+        re_analysis_count = max(0, total_runs - unique_tickets)
 
         actions = await cls.action_distribution(db, organization_id)
 
@@ -293,10 +308,24 @@ class AgentObservabilityService:
             AgentRun.requires_human_approval.is_(True),
         )
 
+        pending_approvals = await cls.count_runs(
+            db,
+            organization_id,
+            AgentRun.status == "pending_approval",
+        )
+
+        current_human_reviews = await cls.count_runs(
+            db,
+            organization_id,
+            AgentRun.status == "review_required",
+        )
+
+        historical_human_review_runs = int(actions.get("human_review", 0))
+
         reviewed_runs = await cls.count_runs(
             db,
             organization_id,
-            AgentRun.reviewed_at.is_not(None),
+            AgentRun.status == "reviewed",
         )
 
         executed_runs = await cls.count_runs(
@@ -319,9 +348,18 @@ class AgentObservabilityService:
 
         auto_execution_eligible_runs = tool_metrics["auto_execution_eligible_runs"]
 
+        autonomous_executed_runs = await cls.count_runs(
+            db,
+            organization_id,
+            AgentRun.status == "executed",
+            AgentRun.authorization_source == "policy_auto",
+        )
+
         return AgentObservabilitySummary(
             generated_at=datetime.now(timezone.utc),
             total_runs=(total_runs),
+            unique_tickets_analyzed=(unique_tickets),
+            re_analysis_count=(re_analysis_count),
             actions=(actions),
             statuses=(statuses),
             human_approval_required=(human_approval_required),
@@ -331,6 +369,9 @@ class AgentObservabilityService:
                     total_runs,
                 )
             ),
+            pending_approvals=(pending_approvals),
+            current_human_reviews=(current_human_reviews),
+            historical_human_review_runs=(historical_human_review_runs),
             reviewed_runs=(reviewed_runs),
             review_rate=(
                 cls.percentage(
@@ -350,6 +391,13 @@ class AgentObservabilityService:
             auto_execution_eligible_rate=(
                 cls.percentage(
                     auto_execution_eligible_runs,
+                    total_runs,
+                )
+            ),
+            autonomous_executed_runs=(autonomous_executed_runs),
+            autonomous_execution_rate=(
+                cls.percentage(
+                    autonomous_executed_runs,
                     total_runs,
                 )
             ),
@@ -413,12 +461,31 @@ class AgentObservabilityService:
 
         attempted_executions = executed_runs + failed_execution_runs
 
+        pending_approvals = statuses.get(
+            "pending_approval",
+            0,
+        )
+
+        current_human_reviews = statuses.get(
+            "review_required",
+            0,
+        )
+
+        reviewed_runs = statuses.get(
+            "reviewed",
+            0,
+        )
+
+        unique_tickets = await cls.unique_tickets_analyzed(db, organization_id)
+
         jobs = await cls.integration_job_metrics(db, organization_id)
 
         average_job_attempts = jobs.total_attempts / jobs.total if jobs.total else 0.0
 
         return {
             "total_runs": total_runs,
+            "unique_tickets_analyzed": unique_tickets,
+            "re_analysis_count": max(0, total_runs - unique_tickets),
             "escalation_rate": (
                 cls.percentage(
                     actions.get(
@@ -454,13 +521,13 @@ class AgentObservabilityService:
             ),
             "pending_approval_rate": (
                 cls.percentage(
-                    statuses.get(
-                        "pending_approval",
-                        0,
-                    ),
+                    pending_approvals,
                     total_runs,
                 )
             ),
+            "pending_approvals": pending_approvals,
+            "current_human_reviews": current_human_reviews,
+            "reviewed_runs": reviewed_runs,
             "auto_approved_runs": (auto_approved_runs),
             "autonomous_execution_rate": (
                 cls.percentage(

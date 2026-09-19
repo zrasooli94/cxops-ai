@@ -1,4 +1,6 @@
-from sqlalchemy import delete, select
+from typing import Any
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge_chunk import KnowledgeChunk
@@ -75,6 +77,51 @@ class KnowledgeRepository:
         )
 
         return list(result.scalars().all())
+
+    @staticmethod
+    async def summary_for_tenant(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+    ) -> dict[str, Any]:
+        """Tenant-scoped operational summary of the knowledge corpus.
+
+        Returns counts and the latest ingestion timestamp without exposing raw
+        document content. The embedding/vector model is reported from settings.
+        """
+        doc_result = await db.execute(
+            select(
+                func.count(KnowledgeDocument.id).label("document_count"),
+                func.max(KnowledgeDocument.created_at).label("last_ingestion_at"),
+            ).where(KnowledgeDocument.organization_id == organization_id)
+        )
+        doc_row = doc_result.mappings().one()
+
+        chunk_result = await db.execute(
+            select(func.count(KnowledgeChunk.id).label("chunk_count")).where(
+                KnowledgeChunk.organization_id == organization_id
+            )
+        )
+        chunk_row = chunk_result.mappings().one()
+
+        last_ingestion_at = doc_row["last_ingestion_at"]
+        last_ingestion_iso = (
+            last_ingestion_at.isoformat()
+            if last_ingestion_at is not None
+            else ""
+        )
+
+        return {
+            "document_count": int(doc_row["document_count"] or 0),
+            "chunk_count": int(chunk_row["chunk_count"] or 0),
+            "last_ingestion_at": last_ingestion_at,
+            "embedding_model": "text-embedding-3-small",
+            "corpus_revision": (
+                f"docs:{doc_row['document_count'] or 0}:"
+                f"chunks:{chunk_row['chunk_count'] or 0}:"
+                f"updated:{last_ingestion_iso}"
+            ),
+        }
 
     @staticmethod
     async def get_document_for_tenant(
