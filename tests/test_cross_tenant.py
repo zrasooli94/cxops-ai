@@ -806,6 +806,10 @@ def _fake_zendesk_user(email, name="Zendesk Requester"):
     return _get_user
 
 
+async def _fake_zendesk_comments(db, ticket_id, *, organization_id=None):
+    return {"comments": []}
+
+
 def _zendesk_external_id() -> int:
     return (int(uuid.uuid4().hex[:12], 16) % 900_000_000) + 100_000_000
 
@@ -841,6 +845,9 @@ async def test_tenant_sync_same_external_id_safe_across_orgs(
         zendesk_client,
         "get_ticket",
         _fake_zendesk_ticket(requester_id=None),
+    )
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
     )
 
     a_ticket_id = None
@@ -892,6 +899,9 @@ async def test_tenant_sync_creates_tenant_owned_ticket(
         zendesk_client,
         "get_ticket",
         _fake_zendesk_ticket(requester_id=None),
+    )
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
     )
 
     async with make_client() as client:
@@ -947,6 +957,9 @@ async def test_tenant_sync_same_customer_email_safe_across_orgs(
         zendesk_client, "get_ticket", _fake_zendesk_ticket(requester_id=9_001)
     )
     monkeypatch.setattr(zendesk_client, "get_user", _fake_zendesk_user(b_email))
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
+    )
 
     a_customer_id = None
     a_ticket_id = None

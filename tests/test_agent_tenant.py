@@ -2548,3 +2548,374 @@ async def test_serialization_and_worker_target_agree(
             run_map[run.run_id]["external_execution_available"]
             == (target is not None)
         )
+
+
+# ===================================================================
+# Outbound execution mirrors a single local conversation message
+# ===================================================================
+
+
+def _authorized_send_reply_run(
+    run_id: str,
+    *,
+    organization_id: int,
+    ticket_id: int,
+    body: str,
+    subject: str = "cxops-test",
+) -> dict:
+    """Return Phase 1D.3-complete metadata for an executable send_reply plan."""
+    plan = [
+        {
+            "tool": "zendesk.send_reply",
+            "arguments": {"body": body},
+            "requires_approval": True,
+            "authorized": True,
+            "risk_level": "high",
+            "required_capability": "ticket.write",
+        }
+    ]
+    return {
+        "plan": plan,
+        "tool_policy_version": ToolAuthorizationService.TOOL_POLICY_VERSION,
+        "authorization_source": "policy_auto",
+        "authorized_by_subject": subject,
+        "authorization_digest": ToolAuthorizationService.compute_run_digest(
+            run_id=run_id,
+            organization_id=organization_id,
+            ticket_id=ticket_id,
+            policy_version=ToolAuthorizationService.TOOL_POLICY_VERSION,
+            tool_plan=plan,
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_reply_execution_mirrors_public_outbound_message(
+    db,
+    two_orgs,
+    monkeypatch,
+):
+    """An executed send_reply mirrors once as a public outbound message.
+
+    Re-executing the same run (crash recovery) repeats the external write but
+    must never duplicate the local conversation mirror.
+    """
+    from app.integrations.zendesk.client import ZendeskClient
+    from app.repositories.conversation_message_repository import (
+        ConversationMessageRepository,
+    )
+    from app.services.conversation_ingestion_service import (
+        ConversationIngestionService,
+    )
+
+    org_a = two_orgs["org_a"]
+
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Mirrored reply ticket",
+        external_id="3001",
+        source="zendesk",
+    )
+    conversation = await ConversationIngestionService.sync_ticket_conversation(
+        db,
+        ticket=ticket,
+        organization_id=org_a.id,
+    )
+
+    run_id = uuid.uuid4().hex
+    run_meta = _authorized_send_reply_run(
+        run_id,
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        body="Our public reply body.",
+    )
+    run = await two_orgs["make_run"](
+        org_a.id,
+        ticket.id,
+        run_id=run_id,
+        status="approved",
+        action="respond",
+        response_draft="Our public reply body.",
+        plan=run_meta["plan"],
+        tool_policy_version=run_meta["tool_policy_version"],
+        authorization_source=run_meta["authorization_source"],
+        authorized_by_subject=run_meta["authorized_by_subject"],
+        authorization_digest=run_meta["authorization_digest"],
+    )
+
+    put_calls: list[str] = []
+
+    async def fake_request(_self, _db, method, path, **_kwargs):
+        if method == "PUT":
+            put_calls.append(path)
+        return {"comments": []}
+
+    async def fake_sync(_db, _zendesk_ticket_id, organization_id):
+        return None
+
+    monkeypatch.setattr(ZendeskClient, "request", fake_request)
+    monkeypatch.setattr(ZendeskSyncService, "sync_ticket_for_tenant", fake_sync)
+
+    result = await agent_execution_service.execute(
+        db=db,
+        run_id=run.run_id,
+        organization_id=org_a.id,
+    )
+
+    assert result["status"] == "executed"
+    assert result["duplicate"] is False
+    assert put_calls == ["/tickets/3001.json"]
+
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org_a.id,
+    )
+    dedupe_key = f"agent_run:{run_id}:zendesk.send_reply"
+    mirrored = [m for m in messages if m.dedupe_key == dedupe_key]
+    assert len(mirrored) == 1
+    assert mirrored[0].direction == "outbound"
+    assert mirrored[0].visibility == "public"
+    assert mirrored[0].body == "Our public reply body."
+
+    # Re-execution of the same approved run (recovery) converges: the external
+    # write repeats, the mirror never duplicates.
+    run.status = "approved"
+    await db.commit()
+
+    second = await agent_execution_service.execute(
+        db=db,
+        run_id=run.run_id,
+        organization_id=org_a.id,
+    )
+    assert second["status"] == "executed"
+    assert put_calls == ["/tickets/3001.json", "/tickets/3001.json"]
+
+    replayed = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org_a.id,
+    )
+    assert len([m for m in replayed if m.dedupe_key == dedupe_key]) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_reply_recovery_detects_marker_and_skips_external_write(
+    db,
+    two_orgs,
+    monkeypatch,
+):
+    """Crash recovery: an existing Zendesk reply marker prevents a second write.
+
+    When the agent run's marker is already present in Zendesk comments, the
+    recovery path must not re-send the public reply, must still ensure the
+    local outbound mirror exists exactly once, and must report duplicate/
+    recovered semantics.
+    """
+    from app.integrations.zendesk.client import ZendeskClient
+    from app.repositories.conversation_message_repository import (
+        ConversationMessageRepository,
+    )
+    from app.services.conversation_ingestion_service import (
+        ConversationIngestionService,
+    )
+
+    org_a = two_orgs["org_a"]
+
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Recovered reply ticket",
+        external_id="5001",
+        source="zendesk",
+    )
+    conversation = await ConversationIngestionService.sync_ticket_conversation(
+        db,
+        ticket=ticket,
+        organization_id=org_a.id,
+    )
+
+    run_id = uuid.uuid4().hex
+    run_meta = _authorized_send_reply_run(
+        run_id,
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        body="Our recovered public reply.",
+    )
+    run = await two_orgs["make_run"](
+        org_a.id,
+        ticket.id,
+        run_id=run_id,
+        status="approved",
+        action="respond",
+        response_draft="Our recovered public reply.",
+        plan=run_meta["plan"],
+        tool_policy_version=run_meta["tool_policy_version"],
+        authorization_source=run_meta["authorization_source"],
+        authorized_by_subject=run_meta["authorized_by_subject"],
+        authorization_digest=run_meta["authorization_digest"],
+    )
+
+    put_calls: list[str] = []
+
+    async def fake_request(_self, _db, method, path, **_kwargs):
+        if method == "PUT":
+            put_calls.append(path)
+        if method == "GET" and path.endswith("/comments.json"):
+            return {
+                "comments": [
+                    {
+                        "id": 9002,
+                        "public": True,
+                        "author_id": 777,
+                        "body": (
+                            "Our recovered public reply.\n\n"
+                            f"CXOps Agent Run: {run_id}"
+                        ),
+                        "created_at": "2026-09-01T10:00:00Z",
+                    }
+                ]
+            }
+        return {}
+
+    monkeypatch.setattr(ZendeskClient, "request", fake_request)
+
+    result = await agent_execution_service.execute(
+        db=db,
+        run_id=run.run_id,
+        organization_id=org_a.id,
+    )
+
+    assert result["status"] == "executed"
+    assert result["duplicate"] is True
+    assert result["message"] == (
+        "Existing Zendesk execution detected and safely recovered."
+    )
+    assert put_calls == []  # marker was present: no external re-write
+
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org_a.id,
+    )
+    dedupe_key = f"agent_run:{run_id}:zendesk.send_reply"
+    mirrored = [m for m in messages if m.dedupe_key == dedupe_key]
+    assert len(mirrored) == 1
+    assert mirrored[0].direction == "outbound"
+    assert mirrored[0].visibility == "public"
+    assert mirrored[0].body == "Our recovered public reply."
+
+    # A second recovery attempt must still be idempotent.
+    run.status = "approved"
+    await db.commit()
+
+    second = await agent_execution_service.execute(
+        db=db,
+        run_id=run.run_id,
+        organization_id=org_a.id,
+    )
+    assert second["duplicate"] is True
+    assert put_calls == []
+
+    replayed = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org_a.id,
+    )
+    assert len([m for m in replayed if m.dedupe_key == dedupe_key]) == 1
+
+
+@pytest.mark.asyncio
+async def test_internal_note_execution_recovery_replays_mirror_once(
+    db,
+    two_orgs,
+    monkeypatch,
+):
+    """A recovered run mirrors its confirmed internal note exactly once.
+
+    When Zendesk already holds the run's marker comment, execution refuses the
+    external write and reconciles the local mirror from the persisted plan.
+    """
+    from app.integrations.zendesk.client import ZendeskClient
+    from app.repositories.conversation_message_repository import (
+        ConversationMessageRepository,
+    )
+    from app.services.conversation_ingestion_service import (
+        ConversationIngestionService,
+    )
+
+    org_a = two_orgs["org_a"]
+
+    ticket = await two_orgs["make_ticket"](
+        org_a.id,
+        subject="Recovered note ticket",
+        external_id="4001",
+        source="zendesk",
+    )
+    conversation = await ConversationIngestionService.sync_ticket_conversation(
+        db,
+        ticket=ticket,
+        organization_id=org_a.id,
+    )
+
+    run_id = uuid.uuid4().hex
+    run_meta = _authorized_internal_note_run(
+        run_id,
+        organization_id=org_a.id,
+        ticket_id=ticket.id,
+        reason="Recovered internal note.",
+    )
+    run = await two_orgs["make_run"](
+        org_a.id,
+        ticket.id,
+        run_id=run_id,
+        status="approved",
+        action="internal_note",
+        plan=run_meta["plan"],
+        tool_policy_version=run_meta["tool_policy_version"],
+        authorization_source=run_meta["authorization_source"],
+        authorized_by_subject=run_meta["authorized_by_subject"],
+        authorization_digest=run_meta["authorization_digest"],
+    )
+
+    put_calls: list[str] = []
+
+    async def fake_request(_self, _db, method, path, **_kwargs):
+        if method == "PUT":
+            put_calls.append(path)
+        if method == "GET" and path.endswith("/comments.json"):
+            return {
+                "comments": [
+                    {
+                        "id": 9001,
+                        "public": False,
+                        "author_id": 777,
+                        "body": f"CXOps Agent Run: {run_id}",
+                        "created_at": "2026-09-01T10:00:00Z",
+                    }
+                ]
+            }
+        return {}
+
+    monkeypatch.setattr(ZendeskClient, "request", fake_request)
+
+    result = await agent_execution_service.execute(
+        db=db,
+        run_id=run.run_id,
+        organization_id=org_a.id,
+    )
+
+    assert result["status"] == "executed"
+    assert result["duplicate"] is True
+    assert put_calls == []  # recovery path never writes externally again
+
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org_a.id,
+    )
+    dedupe_key = f"agent_run:{run_id}:zendesk.add_internal_note"
+    mirrored = [m for m in messages if m.dedupe_key == dedupe_key]
+    assert len(mirrored) == 1
+    assert mirrored[0].direction == "internal"
+    assert mirrored[0].visibility == "internal"
+    assert "Recovered internal note." in mirrored[0].body

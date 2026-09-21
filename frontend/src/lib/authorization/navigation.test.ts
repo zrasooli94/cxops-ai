@@ -47,6 +47,17 @@ describe("capability-driven navigation", () => {
     );
   });
 
+  it("inbox destination is shown only with ticket.read", () => {
+    assert.equal(visibleHrefs([]).includes("/inbox"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.AGENT_RUN]).includes("/inbox"),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/inbox"),
+    );
+  });
+
   it("customer.write alone never reveals the customers destination", () => {
     assert.equal(
       visibleHrefs([CAPABILITIES.CUSTOMER_WRITE]).includes("/customers"),
@@ -59,7 +70,12 @@ describe("capability-driven navigation", () => {
       CAPABILITIES.TICKET_READ,
       CAPABILITIES.KNOWLEDGE_READ,
     ]);
-    assert.deepEqual(visible, ["/dashboard", "/tickets", "/knowledge"]);
+    assert.deepEqual(visible, [
+      "/dashboard",
+      "/tickets",
+      "/inbox",
+      "/knowledge",
+    ]);
   });
 
   it("agent.run exposes agent, approvals, and runs", () => {
@@ -129,7 +145,7 @@ describe("capability-driven navigation", () => {
       view.can,
     ).map((item) => item.href);
 
-    assert.deepEqual(cards, ["/tickets"]);
+    assert.deepEqual(cards, ["/tickets", "/inbox"]);
   });
 
   it("every requirement is a known capability or an explicit always-visible null", () => {
@@ -150,6 +166,7 @@ describe("control-center route requirements", () => {
     ["/customers", CAPABILITIES.CUSTOMER_READ],
     ["/tickets", CAPABILITIES.TICKET_READ],
     ["/tickets/new", CAPABILITIES.TICKET_WRITE],
+    ["/inbox", CAPABILITIES.TICKET_READ],
     ["/agent", CAPABILITIES.AGENT_RUN],
     ["/approvals", CAPABILITIES.AGENT_RUN],
     ["/knowledge", CAPABILITIES.KNOWLEDGE_READ],

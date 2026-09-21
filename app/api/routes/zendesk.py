@@ -20,6 +20,9 @@ from app.schemas.zendesk import (
     ZendeskTicketCreate,
     ZendeskTicketUpdate,
 )
+from app.services.conversation_ingestion_service import (
+    ConversationIngestionService,
+)
 from app.services.zendesk_oauth_service import (
     ZendeskNotConfiguredError,
     ZendeskReauthorizationRequired,
@@ -236,11 +239,19 @@ async def sync_zendesk_ticket(
     authz: TicketWriteAuthz,
 ):
     try:
-        return await ZendeskSyncService.sync_ticket_for_tenant(
+        ticket = await ZendeskSyncService.sync_ticket_for_tenant(
             db=db,
             zendesk_ticket_id=ticket_id,
             organization_id=tenant.organization_id,
         )
+
+        await ConversationIngestionService.ingest_zendesk_ticket(
+            db,
+            zendesk_ticket_id=ticket_id,
+            organization_id=tenant.organization_id,
+        )
+
+        return ticket
 
     except ZendeskSyncConflictError:
         raise HTTPException(

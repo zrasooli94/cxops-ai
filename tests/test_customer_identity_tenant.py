@@ -275,6 +275,10 @@ def _fake_zendesk_user(email, name="Zendesk Requester"):
     return _get_user
 
 
+async def _fake_zendesk_comments(db, ticket_id, *, organization_id=None):
+    return {"comments": []}
+
+
 def _zendesk_external_id() -> int:
     return (int(uuid.uuid4().hex[:12], 16) % 900_000_000) + 100_000_000
 
@@ -705,6 +709,9 @@ async def test_sync_creates_identity_and_links_customer(
     monkeypatch.setattr(
         zendesk_client, "get_user", _fake_zendesk_user(requester_email)
     )
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
+    )
 
     ticket_id = None
     customer_id = None
@@ -758,6 +765,9 @@ async def test_sync_same_requester_resolves_same_customer(
     )
     monkeypatch.setattr(
         zendesk_client, "get_user", _fake_zendesk_user(requester_email)
+    )
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
     )
 
     zid1 = _zendesk_external_id()
@@ -818,6 +828,9 @@ async def test_sync_same_requester_new_email_updates_customer_email(
     )
     monkeypatch.setattr(
         zendesk_client, "get_user", _fake_zendesk_user("first@example.com")
+    )
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
     )
 
     ticket_ids = []
@@ -939,6 +952,9 @@ async def test_sync_same_user_id_two_tenants_independent(
         zendesk_client,
         "get_ticket",
         _fake_zendesk_ticket(requester_id=requester_id),
+    )
+    monkeypatch.setattr(
+        zendesk_client, "get_ticket_comments", _fake_zendesk_comments
     )
 
     a_email = f"a-{uuid.uuid4().hex[:8]}@example.com"

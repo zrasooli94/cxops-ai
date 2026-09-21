@@ -14,6 +14,7 @@ import { CAPABILITIES, type Capability } from "./capabilities.ts";
 export type NavigationIconName =
   | "gauge"
   | "ticket"
+  | "inbox"
   | "bot"
   | "shield"
   | "brain"
@@ -27,6 +28,7 @@ export type ControlCenterRoute =
   | "/customers"
   | "/tickets"
   | "/tickets/new"
+  | "/inbox"
   | "/agent"
   | "/approvals"
   | "/knowledge"
@@ -47,6 +49,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/customers": CAPABILITIES.CUSTOMER_READ,
   "/tickets": CAPABILITIES.TICKET_READ,
   "/tickets/new": CAPABILITIES.TICKET_WRITE,
+  "/inbox": CAPABILITIES.TICKET_READ,
   "/agent": CAPABILITIES.AGENT_RUN,
   "/approvals": CAPABILITIES.AGENT_RUN,
   "/knowledge": CAPABILITIES.KNOWLEDGE_READ,
@@ -100,6 +103,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Customer support workspace",
     icon: "ticket",
     requiredCapability: ROUTE_REQUIREMENTS["/tickets"],
+  },
+  {
+    href: "/inbox",
+    label: "Inbox",
+    description: "Unified conversation inbox",
+    icon: "inbox",
+    requiredCapability: ROUTE_REQUIREMENTS["/inbox"],
   },
   {
     href: "/agent",

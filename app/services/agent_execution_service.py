@@ -1,7 +1,7 @@
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_execution_failure,
     record_agent_tool_execution,
@@ -15,6 +15,9 @@ from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
+from app.services.conversation_ingestion_service import (
+    ConversationIngestionService,
+)
 from app.services.tool_authorization_service import (
     ToolAuthorizationError,
     ToolAuthorizationService,
@@ -25,6 +28,8 @@ from app.services.zendesk_sync_service import (
 from app.services.zendesk_target_service import (
     resolve_zendesk_execution_target,
 )
+
+log = get_logger(__name__)
 
 
 class AgentExecutionError(Exception):
@@ -79,6 +84,60 @@ class AgentExecutionService:
     ) -> str:
 
         return f"CXOps Agent Run: {run_id}"
+
+    @staticmethod
+    async def _mirror_executed_tool(
+        db: AsyncSession,
+        *,
+        run: AgentRun,
+        ticket: Ticket,
+        organization_id: int,
+        tool_name: str,
+        tool_arguments: dict,
+    ) -> None:
+        """Mirror an executed tool into the local conversation (best-effort).
+
+        The mirror is idempotent by the deterministic agent-run dedupe key
+        ``agent_run:<run_id>:<suffix>``, so replaying a recovered run (or this
+        recovery branch after a confirmed external write) converges to a single
+        local message and can never double-insert or cause a duplicate external
+        reply. Failures are absorbed: the external Zendesk write is already
+        durable and must not be retried because a mirror failed.
+        """
+        if tool_name == "zendesk.send_reply":
+            dedupe_suffix = "zendesk.send_reply"
+            direction = "outbound"
+            visibility = "public"
+            body = str(tool_arguments.get("body") or "")
+        elif tool_name == "zendesk.add_internal_note":
+            dedupe_suffix = "zendesk.add_internal_note"
+            direction = "internal"
+            visibility = "internal"
+            body = str(tool_arguments.get("reason") or run.reason or "")
+        else:
+            return
+
+        if not body:
+            return
+
+        try:
+            await ConversationIngestionService.ensure_agent_reply_message(
+                db,
+                ticket=ticket,
+                run_id=run.run_id,
+                organization_id=organization_id,
+                dedupe_suffix=dedupe_suffix,
+                direction=direction,
+                visibility=visibility,
+                body=body,
+            )
+        except Exception:
+            log.exception(
+                "agent_mirror_failed",
+                run_id=run.run_id,
+                tool=tool_name,
+                organization_id=organization_id,
+            )
 
     async def _already_written(
         self,
@@ -218,6 +277,15 @@ class AgentExecutionService:
             record_agent_tool_execution(
                 tool=str(tool_name),
             )
+
+            await self._mirror_executed_tool(
+                db,
+                run=run,
+                ticket=ticket,
+                organization_id=organization_id,
+                tool_name=tool_name,
+                tool_arguments=arguments,
+            )
             return
 
         # -----------------------------------------
@@ -254,6 +322,15 @@ class AgentExecutionService:
             )
             record_agent_tool_execution(
                 tool=str(tool_name),
+            )
+
+            await self._mirror_executed_tool(
+                db,
+                run=run,
+                ticket=ticket,
+                organization_id=organization_id,
+                tool_name=tool_name,
+                tool_arguments=arguments,
             )
             return
 
@@ -522,6 +599,18 @@ class AgentExecutionService:
                     record_autonomous_execution(
                         action=str(run.action),
                         outcome="recovered",
+                    )
+                # Reconcile the local conversation mirror with the confirmed
+                # external writes (idempotent; may already be present from a
+                # partially executed previous attempt).
+                for recovered_tool in tool_plan:
+                    await self._mirror_executed_tool(
+                        db,
+                        run=run,
+                        ticket=ticket,
+                        organization_id=organization_id,
+                        tool_name=recovered_tool.get("tool", ""),
+                        tool_arguments=recovered_tool.get("arguments") or {},
                     )
                 return {
                     "run_id": run_id,

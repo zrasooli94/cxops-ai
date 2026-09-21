@@ -4,6 +4,9 @@ from app.models.ticket import Ticket
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.schemas.ticket import TicketCreate, TicketUpdate
+from app.services.conversation_ingestion_service import (
+    ConversationIngestionService,
+)
 from app.services.customer_service import CustomerService
 
 
@@ -55,10 +58,31 @@ class TicketService:
             organization_id=organization_id,
         )
 
-        return await TicketRepository.create(
+        created = await TicketRepository.create(
             db=db,
             ticket=ticket,
         )
+
+        # Local tickets open a provider-neutral cxops conversation with an
+        # idempotent initial customer message. Zendesk tickets created through
+        # this path do not open a conflicting cxops thread; their conversation
+        # is established by the Zendesk ingestion path.
+        if created.source != "zendesk":
+            conversation = (
+                await ConversationIngestionService.sync_ticket_conversation(
+                    db,
+                    ticket=created,
+                    organization_id=organization_id,
+                )
+            )
+            await ConversationIngestionService.ingest_initial_message(
+                db,
+                conversation=conversation,
+                ticket=created,
+                organization_id=organization_id,
+            )
+
+        return created
 
     @staticmethod
     async def get_ticket_for_tenant(
@@ -135,12 +159,22 @@ class TicketService:
             if customer is None:
                 return None  # Customer not found in this tenant
 
-        return await TicketRepository.update_for_tenant(
+        updated = await TicketRepository.update_for_tenant(
             db=db,
             ticket=ticket,
             changes=changes,
             organization_id=organization_id,
         )
+
+        # Mirror subject/status/customer changes onto the canonical
+        # conversation so the inbox and the ticket can never drift apart.
+        await ConversationIngestionService.sync_ticket_conversation(
+            db,
+            ticket=updated,
+            organization_id=organization_id,
+        )
+
+        return updated
 
     # Internal/global methods (kept for webhook/internal consumers)
     @staticmethod

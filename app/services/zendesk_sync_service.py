@@ -6,6 +6,9 @@ from app.models.ticket import Ticket
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
+from app.services.conversation_ingestion_service import (
+    ConversationIngestionService,
+)
 from app.services.customer_identity_service import (
     CustomerIdentityConflictError,
     CustomerIdentityService,
@@ -130,12 +133,23 @@ class ZendeskSyncService:
                 "source": "zendesk",
             }
 
-            return await TicketRepository.update_for_tenant(
+            updated = await TicketRepository.update_for_tenant(
                 db=db,
                 ticket=existing,
                 changes=changes,
                 organization_id=organization_id,
             )
+
+            # Keep the zendesk conversation mirror in lockstep with the ticket
+            # (subject/status/customer). Comment sync runs through the webhook
+            # and the manual sync route via ingest_zendesk_ticket.
+            await ConversationIngestionService.sync_ticket_conversation(
+                db,
+                ticket=updated,
+                organization_id=organization_id,
+            )
+
+            return updated
 
         ticket = Ticket(
             external_id=external_id,
@@ -150,7 +164,7 @@ class ZendeskSyncService:
         )
 
         try:
-            return await TicketRepository.create(
+            created = await TicketRepository.create(
                 db=db,
                 ticket=ticket,
             )
@@ -161,3 +175,11 @@ class ZendeskSyncService:
             raise ZendeskSyncConflictError(
                 "Zendesk ticket is already linked to an existing record"
             ) from None
+
+        await ConversationIngestionService.sync_ticket_conversation(
+            db,
+            ticket=created,
+            organization_id=organization_id,
+        )
+
+        return created

@@ -10,6 +10,9 @@ from app.repositories.ticket_repository import (
 )
 from app.schemas.webhook import WebhookReceipt
 from app.services.automation_service import AutomationService
+from app.services.conversation_ingestion_service import (
+    ConversationIngestionService,
+)
 from app.services.zendesk_sync_service import ZendeskSyncService
 
 
@@ -96,10 +99,15 @@ class ZendeskWebhookService:
 
         marker = f"CXOps Event: {invocation_id}"
 
-        comments_response = await zendesk_client.get_ticket_comments(
-            db=db,
-            ticket_id=zendesk_ticket_id,
-            organization_id=organization_id,
+        # Classified conversation/comment sync. The returned comments payload
+        # doubles as the marker source of truth, so the two API calls the
+        # previous flow made are replaced by the single bounded ingestion pass.
+        _conversation, comments_response = (
+            await ConversationIngestionService.ingest_zendesk_ticket(
+                db,
+                zendesk_ticket_id=zendesk_ticket_id,
+                organization_id=organization_id,
+            )
         )
 
         already_written = any(

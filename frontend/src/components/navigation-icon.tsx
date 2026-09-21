@@ -4,6 +4,7 @@ import {
   Bot,
   BrainCircuit,
   Gauge,
+  Inbox,
   ShieldCheck,
   Ticket,
   Users,
@@ -15,6 +16,7 @@ import type { NavigationIconName } from "@/lib/authorization/navigation";
 const ICONS: Record<NavigationIconName, LucideIcon> = {
   gauge: Gauge,
   ticket: Ticket,
+  inbox: Inbox,
   bot: Bot,
   shield: ShieldCheck,
   brain: BrainCircuit,

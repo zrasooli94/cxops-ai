@@ -75,6 +75,25 @@ class TicketRepository:
 
         return result.scalar_one_or_none()
 
+    @staticmethod
+    async def list_by_ids_for_tenant(
+        db: AsyncSession,
+        ticket_ids: list[int],
+        organization_id: int,
+    ) -> dict[int, Ticket]:
+        """Batched tenant-scoped ticket lookup (for inbox reply-mode typing)."""
+        if not ticket_ids:
+            return {}
+
+        result = await db.execute(
+            select(Ticket).where(
+                Ticket.id.in_(ticket_ids),
+                Ticket.organization_id == organization_id,
+            )
+        )
+
+        return {t.id: t for t in result.scalars().all()}
+
     # Tenant-safe customer-scoped reads (customer 360). Both the customer and
     # the organization predicate are enforced in SQL so a cross-tenant customer
     # id can never be joined back into another tenant's tickets.

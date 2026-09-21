@@ -3,6 +3,8 @@ from app.models.agent_run import AgentRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.automation_rule import AutomationRule
 from app.models.base import Base
+from app.models.conversation import Conversation
+from app.models.conversation_message import ConversationMessage
 from app.models.customer import Customer
 from app.models.customer_identity import CustomerIdentity
 from app.models.integration_job import IntegrationJob
@@ -21,6 +23,8 @@ __all__ = [
     "AgentRun",
     "AutomationRule",
     "Base",
+    "Conversation",
+    "ConversationMessage",
     "Customer",
     "CustomerIdentity",
     "IntegrationJob",
