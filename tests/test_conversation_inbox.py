@@ -20,17 +20,18 @@ capturing deterministic fake, knowledge search is short-circuited, and Zendesk
 client calls are replaced with deterministic fakes.
 """
 
+import asyncio
 import os
 import time
 import types
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 os.environ["AUTH_MODE"] = "hs256"
 os.environ["AUTH_JWT_SECRET"] = "z" * 32
@@ -40,7 +41,7 @@ os.environ["AUTH_JWT_AUDIENCE"] = "test-conversation-audience"
 os.environ["AUTH_DEV_MODE"] = "False"
 os.environ["ENVIRONMENT"] = "development"
 
-from app.core.config import reset_settings_cache
+from app.core.config import reset_settings_cache, settings
 from app.core.database import AsyncSessionLocal
 from app.core.rbac import OrganizationRole
 from app.integrations.zendesk.client import zendesk_client
@@ -48,6 +49,7 @@ from app.main import app
 from app.models.base import Base
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
+from app.models.integration_job import IntegrationJob
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.ticket import Ticket
@@ -57,6 +59,9 @@ from app.repositories.conversation_message_repository import (
 from app.repositories.conversation_repository import (
     ConversationRepository,
 )
+from app.repositories.integration_job_repository import (
+    IntegrationJobRepository,
+)
 from app.schemas.agent import AgentDecision
 from app.schemas.ticket import TicketCreate, TicketUpdate
 from app.services.agent_workflow_service import (
@@ -65,8 +70,14 @@ from app.services.agent_workflow_service import (
 from app.services.conversation_context_service import (
     ConversationContextService,
 )
+from app.services.conversation_delivery_service import (
+    ConversationDeliveryService,
+)
 from app.services.conversation_ingestion_service import (
     ConversationIngestionService,
+)
+from app.services.conversation_reply_service import (
+    ConversationReplyService,
 )
 from app.services.knowledge_search_service import KnowledgeSearchService
 from app.services.ticket_service import TicketService
@@ -635,14 +646,14 @@ async def test_inbox_conversation_detail_reply_mode(db, client, org_scope):
         headers=_auth_headers(USER_ALPHA, org.id),
     )
     assert response.status_code == 200
-    assert response.json()["reply_mode"] == "agent_workflow"
+    assert response.json()["reply_mode"] == "zendesk"
 
     response = await client.get(
         f"/conversations/{non_integer_conv.id}",
         headers=_auth_headers(USER_ALPHA, org.id),
     )
     assert response.status_code == 200
-    assert response.json()["reply_mode"] == "local_only"
+    assert response.json()["reply_mode"] == "unsupported"
 
     response = await client.get(
         f"/conversations/{legacy.id}",
@@ -1121,3 +1132,1036 @@ async def test_agent_analysis_fingerprint_invalidated_by_new_conversation_messag
     third = await _analyze_ticket_directly(ticket.id, org.id)
     assert third["reused"] is True
     assert third["run_id"] == second["run_id"]
+
+# ----------------------------------------------------------------------
+# Phase 1G — human reply composer, durable enqueue, and delivery lifecycle
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reply_endpoint_requires_ticket_write(
+    db, org_scope, client
+):
+    """A viewer without TICKET_WRITE cannot submit a human reply."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    await org_scope(subject="viewer-user", role=OrganizationRole.VIEWER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Reply auth test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "A reply from a viewer.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers("viewer-user", org.id),
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_reply_endpoint_rejects_unsupported_provider(
+    db, org_scope, client
+):
+    """Human replies are only supported for zendesk and cxops providers."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    conversation = Conversation(
+        organization_id=org.id,
+        provider="future_integration",
+        channel="chat",
+        subject="Unsupported",
+        status="open",
+    )
+    db.add(conversation)
+    await db.commit()
+    await db.refresh(conversation)
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "A reply.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reply_endpoint_rejects_closed_conversation(
+    db, org_scope, client
+):
+    """Replies to closed conversations are rejected with 409."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Closed reply test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+    await _set_status(db, conversation, org.id, "closed")
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "A reply to a closed conversation.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_reply_endpoint_enqueues_job_for_local_conversation(
+    db, org_scope, client
+):
+    """Submitting a reply to a local cxops conversation creates a message and job."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Local reply test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    request_id = str(uuid.uuid4())
+    response = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Local human reply.",
+            "client_request_id": request_id,
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 202
+    data = response.json()
+    assert data["delivery_status"] == "queued"
+    assert data["duplicate"] is False
+    assert data["job_id"] is not None
+
+    # The queued outbound message must not affect needs_response or previews.
+    await db.refresh(conversation)
+    assert conversation.latest_message_at is not None
+
+
+@pytest.mark.asyncio
+async def test_reply_endpoint_is_idempotent_by_client_request_id(
+    db, org_scope, client
+):
+    """Replaying the same client_request_id returns the original message."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Idempotent reply test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    request_id = str(uuid.uuid4())
+    first = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "First reply.",
+            "client_request_id": request_id,
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert first.status_code == 202
+    first_data = first.json()
+
+    second = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Different body, same id.",
+            "client_request_id": request_id,
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert second.status_code == 202
+    second_data = second.json()
+
+    assert second_data["message_id"] == first_data["message_id"]
+    assert second_data["duplicate"] is True
+
+
+@pytest.mark.asyncio
+async def test_reply_endpoint_validates_body_and_client_request_id(
+    db, org_scope, client
+):
+    """Empty body or missing client_request_id are rejected."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Validation reply test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "   ",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 422
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Missing id.",
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_only_allows_failed_messages(
+    db, org_scope, client
+):
+    """Retry is rejected unless the message delivery_status is failed."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Retry state test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    request_id = str(uuid.uuid4())
+    reply = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Reply to retry.",
+            "client_request_id": request_id,
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    message_id = reply.json()["message_id"]
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/messages/{message_id}/retry",
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delivery_service_local_marks_sent(
+    db, org_scope
+):
+    """The local adapter marks a queued cxops reply as sent immediately."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Local delivery test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Local delivery reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+
+    await ConversationDeliveryService().deliver(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=result["message_id"],
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert message is not None
+    assert message.delivery_status == "sent"
+    assert message.delivered_at is not None
+    assert message.sent_at is not None
+
+
+@pytest.mark.asyncio
+async def test_delivery_service_zendesk_recovers_existing_marker(
+    db, org_scope, monkeypatch
+):
+    """If the marker comment already exists, Zendesk delivery is recovered."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Zendesk recovery test",
+        external_id="12345",
+        source="zendesk",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation.external_thread_id = ticket.external_id
+    await db.commit()
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Zendesk recovery reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_tenant(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+    assert message is not None
+    marker_token = message.delivery_token
+
+    captured = {"calls": 0}
+
+    async def _fake_apply(*args, **kwargs):
+        captured["calls"] += 1
+
+    async def _fake_comments(*args, **kwargs):
+        return {
+            "comments": [
+                {
+                    "id": "comment-999",
+                    "body": f"Zendesk recovery reply.\n\nCXOps Reply Ref: {marker_token}",
+                }
+            ]
+        }
+
+    from app.integrations.zendesk.client import ZendeskClient
+
+    monkeypatch.setattr(
+        ZendeskClient, "apply_agent_action", _fake_apply
+    )
+    monkeypatch.setattr(
+        ZendeskClient, "get_ticket_comments", _fake_comments
+    )
+
+    await ConversationDeliveryService().deliver(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=result["message_id"],
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert message is not None
+    assert message.delivery_status == "sent"
+    assert message.external_message_id == "comment-999"
+    assert captured["calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unsent_reply_does_not_update_conversation_preview(
+    db, org_scope, client
+):
+    """A queued outbound human reply must not appear as the latest message."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Preview isolation test",
+        source="api",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Queued reply should not preview.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+
+    response = await client.get(
+        "/conversations",
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 200
+    item = next(
+        (c for c in response.json()["items"] if c["id"] == conversation.id),
+        None,
+    )
+    assert item is not None
+    assert "Queued reply" not in (item["latest_message"]["body"] or "")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reply_creates_message_and_job_atomically(
+    db, org_scope
+):
+    """A successful enqueue persists the message and its job in one commit."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Atomic outbox", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Atomic reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=result["message_id"],
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert message is not None
+    assert message.delivery_status == "queued"
+
+    job = await IntegrationJobRepository.get_by_dedupe_key(
+        db,
+        dedupe_key=f"conversation-reply:{org.id}:{conversation.id}:{message.dedupe_key}",
+    )
+    assert job is not None
+    assert job.job_type == "conversation.reply"
+    assert job.payload["message_id"] == message.id
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reply_job_failure_rolls_back_message(
+    db, org_scope, monkeypatch
+):
+    """If the integration job cannot be staged, no message is committed."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Job failure", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation_id = conversation.id
+
+    class ExplodingJob(IntegrationJob):
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("job staging failure")
+
+    monkeypatch.setattr(
+        "app.services.conversation_reply_service.IntegrationJob",
+        ExplodingJob,
+    )
+
+    request_id = str(uuid.uuid4())
+    with pytest.raises(RuntimeError, match="job staging failure"):
+        await ConversationReplyService.enqueue_reply(
+            db=db,
+            conversation_id=conversation_id,
+            body="Job failure reply.",
+            client_request_id=request_id,
+            organization_id=org.id,
+            requested_by_subject=USER_ALPHA,
+        )
+
+    # Query directly with asyncpg to avoid SQLAlchemy session state after the
+    # expected exception; this proves no message row was committed.
+    import asyncpg
+
+    dsn = str(settings.database_url).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
+    conn = await asyncpg.connect(dsn)
+    try:
+        row = await conn.fetchrow(
+            "SELECT id FROM conversation_messages WHERE organization_id = $1 AND conversation_id = $2 AND dedupe_key = $3",
+            org.id,
+            conversation_id,
+            f"human_reply:{request_id}",
+        )
+        assert row is None
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reply_message_failure_rolls_back_job(
+    db, org_scope, monkeypatch
+):
+    """If the message cannot be flushed, no integration job is committed."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Message failure", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation_id = conversation.id
+
+    class ExplodingMessage(ConversationMessage):
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("message staging failure")
+
+    monkeypatch.setattr(
+        "app.services.conversation_reply_service.ConversationMessage",
+        ExplodingMessage,
+    )
+
+    request_id = str(uuid.uuid4())
+    with pytest.raises(RuntimeError, match="message staging failure"):
+        await ConversationReplyService.enqueue_reply(
+            db=db,
+            conversation_id=conversation_id,
+            body="Message failure reply.",
+            client_request_id=request_id,
+            organization_id=org.id,
+            requested_by_subject=USER_ALPHA,
+        )
+
+    import asyncpg
+
+    dsn = str(settings.database_url).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
+    conn = await asyncpg.connect(dsn)
+    try:
+        row = await conn.fetchrow(
+            "SELECT id FROM integration_jobs WHERE organization_id = $1 AND dedupe_key = $2",
+            org.id,
+            f"conversation-reply:{org.id}:{conversation_id}:human_reply:{request_id}",
+        )
+        assert row is None
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reply_concurrent_same_request_id_is_idempotent(
+    db, org_scope
+):
+    """Concurrent enqueues with the same client_request_id produce one message/job."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Concurrent idempotent", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation_id = conversation.id
+
+    request_id = str(uuid.uuid4())
+
+    async def _enqueue():
+        async with AsyncSessionLocal() as session:
+            return await ConversationReplyService.enqueue_reply(
+                db=session,
+                conversation_id=conversation_id,
+                body="Concurrent reply.",
+                client_request_id=request_id,
+                organization_id=org.id,
+                requested_by_subject=USER_ALPHA,
+            )
+
+    results = await asyncio.gather(
+        _enqueue(),
+        _enqueue(),
+        return_exceptions=True,
+    )
+
+    successes = [r for r in results if not isinstance(r, Exception)]
+
+    # One call wins; the other re-resolves the winner (duplicate=True) or
+    # propagates an unexpected error. We never allow two committed replies.
+    assert len(successes) >= 1
+    message_ids = {result["message_id"] for result in successes}
+    assert len(message_ids) == 1
+
+    messages = await db.execute(
+        select(ConversationMessage).where(
+            ConversationMessage.conversation_id == conversation_id,
+            ConversationMessage.organization_id == org.id,
+            ConversationMessage.dedupe_key == f"human_reply:{request_id}",
+        )
+    )
+    assert len(list(messages.scalars())) == 1
+
+    jobs = await db.execute(
+        select(IntegrationJob).where(
+            IntegrationJob.organization_id == org.id,
+            IntegrationJob.dedupe_key
+            == f"conversation-reply:{org.id}:{conversation_id}:human_reply:{request_id}",
+        )
+    )
+    assert len(list(jobs.scalars())) == 1
+
+    # At least one success must be the original (non-duplicate) reply.
+    assert any(not result["duplicate"] for result in successes)
+
+
+@pytest.mark.asyncio
+async def test_enqueue_reply_different_request_ids_are_distinct(
+    db, org_scope
+):
+    """Different client_request_ids produce separate replies."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Distinct replies", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    first = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="First distinct reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+    second = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Second distinct reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+
+    assert first["message_id"] != second["message_id"]
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_rejects_cross_conversation_message(
+    db, org_scope, client
+):
+    """Retrying a message through a different conversation URL must fail closed."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket_a = await _make_ticket(db, org.id, subject="Conversation A", source="api")
+    conversation_a = await _link_conversation(db, ticket_a, org.id)
+
+    ticket_b = await _make_ticket(db, org.id, subject="Conversation B", source="api")
+    conversation_b = await _link_conversation(db, ticket_b, org.id)
+
+    # Create a failed human reply on conversation B.
+    reply = await client.post(
+        f"/conversations/{conversation_b.id}/replies",
+        json={
+            "body": "Failed reply on B.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert reply.status_code == 202
+    message_b_id = reply.json()["message_id"]
+
+    message_b = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=message_b_id,
+        conversation_id=conversation_b.id,
+        organization_id=org.id,
+    )
+    message_b.delivery_status = "failed"
+    await db.commit()
+
+    response = await client.post(
+        f"/conversations/{conversation_a.id}/messages/{message_b_id}/retry",
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 404
+
+    # Message B must remain failed and unchanged.
+    message_b = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=message_b_id,
+        conversation_id=conversation_b.id,
+        organization_id=org.id,
+    )
+    assert message_b is not None
+    assert message_b.delivery_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_rejects_foreign_tenant_message(
+    db, org_scope, client
+):
+    """Retrying a message belonging to a different tenant must fail closed."""
+    org_alpha = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    org_beta = await org_scope(subject=USER_BETA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org_alpha.id, subject="Alpha ticket", source="api")
+    conversation = await _link_conversation(db, ticket, org_alpha.id)
+
+    reply = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Failed reply on alpha.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org_alpha.id),
+    )
+    assert reply.status_code == 202
+    message_id = reply.json()["message_id"]
+
+    message = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=message_id,
+        conversation_id=conversation.id,
+        organization_id=org_alpha.id,
+    )
+    message.delivery_status = "failed"
+    await db.commit()
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/messages/{message_id}/retry",
+        headers=_auth_headers(USER_BETA, org_beta.id),
+    )
+    assert response.status_code == 404
+
+    message = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=message_id,
+        conversation_id=conversation.id,
+        organization_id=org_alpha.id,
+    )
+    assert message is not None
+    assert message.delivery_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_requeues_same_conversation_failed_message(
+    db, org_scope, client
+):
+    """A valid same-conversation retry requeues the failed delivery job."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Retry success", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    reply = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={
+            "body": "Reply to retry.",
+            "client_request_id": str(uuid.uuid4()),
+        },
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert reply.status_code == 202
+    message_id = reply.json()["message_id"]
+
+    message = await ConversationMessageRepository.get_by_id_for_conversation_for_tenant(
+        db,
+        message_id=message_id,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    message.delivery_status = "failed"
+    await db.commit()
+
+    job = await IntegrationJobRepository.get_by_dedupe_key(
+        db,
+        dedupe_key=f"conversation-reply:{org.id}:{conversation.id}:{message.dedupe_key}",
+    )
+    assert job is not None
+    job.status = "failed"
+    await db.commit()
+
+    response = await client.post(
+        f"/conversations/{conversation.id}/messages/{message_id}/retry",
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 202
+    data = response.json()
+    assert data["message_id"] == message_id
+    assert data["delivery_status"] == "retrying"
+
+
+@pytest.mark.asyncio
+async def test_sent_reply_clears_needs_response_and_updates_preview(
+    db, org_scope, client
+):
+    """A delivered outbound reply clears needs_response and becomes the preview."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Needs response", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    async def _item():
+        response = await client.get(
+            "/conversations",
+            headers=_auth_headers(USER_ALPHA, org.id),
+        )
+        return next(
+            (c for c in response.json()["items"] if c["id"] == conversation.id),
+            None,
+        )
+
+    before = await _item()
+    assert before["needs_response"] is True
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Outbound delivered reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+    await ConversationDeliveryService().deliver(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+
+    after = await _item()
+    assert after["needs_response"] is False
+    assert "Outbound delivered reply" in (after["latest_message"]["body"] or "")
+
+
+@pytest.mark.asyncio
+async def test_sent_reply_enters_conversation_context(
+    db, org_scope
+):
+    """A delivered outbound reply becomes visible to the agent context window."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Context reply", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    before = await ConversationContextService.build_for_ticket(
+        db,
+        organization_id=org.id,
+        ticket_id=ticket.id,
+    )
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Context outbound reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+    await ConversationDeliveryService().deliver(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+
+    after = await ConversationContextService.build_for_ticket(
+        db,
+        organization_id=org.id,
+        ticket_id=ticket.id,
+    )
+
+    before_bodies = {m.body for m in before.recent_messages}
+    after_bodies = {m.body for m in after.recent_messages}
+
+    assert "Context outbound reply." not in before_bodies
+    assert "Context outbound reply." in after_bodies
+    assert ConversationContextService.compute_digest(before) != ConversationContextService.compute_digest(after)
+
+
+@pytest.mark.asyncio
+async def test_handle_job_failure_marks_retrying(
+    db, org_scope
+):
+    """The worker failure hook updates the message to retrying when will_retry."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Hook retrying", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Hook retry reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+    message_id = result["message_id"]
+
+    await ConversationReplyService.handle_job_failure(
+        db=db,
+        message_id=message_id,
+        organization_id=org.id,
+        error_code="provider_unavailable",
+        will_retry=True,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_tenant(
+        db,
+        message_id=message_id,
+        organization_id=org.id,
+    )
+    assert message.delivery_status == "retrying"
+    assert message.delivery_error_code == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_handle_job_failure_marks_failed(
+    db, org_scope
+):
+    """The worker failure hook updates the message to failed when exhausted."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(db, org.id, subject="Hook failed", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Hook failed reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+    message_id = result["message_id"]
+
+    await ConversationReplyService.handle_job_failure(
+        db=db,
+        message_id=message_id,
+        organization_id=org.id,
+        error_code="provider_unavailable",
+        will_retry=False,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_tenant(
+        db,
+        message_id=message_id,
+        organization_id=org.id,
+    )
+    assert message.delivery_status == "failed"
+    assert message.delivery_error_code == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_zendesk_delivery_sends_once_when_marker_absent(
+    db, org_scope, monkeypatch
+):
+    """A Zendesk reply performs exactly one provider write when no marker exists."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Zendesk once",
+        external_id="22222",
+        source="zendesk",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation.external_thread_id = ticket.external_id
+    await db.commit()
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Zendesk once reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+
+    captured = {"calls": 0, "comment_id": "comment-once"}
+
+    async def _fake_apply(*args, **kwargs):
+        captured["calls"] += 1
+
+    async def _fake_comments(*args, **kwargs):
+        if captured["calls"] == 0:
+            return {"comments": []}
+        return {
+            "comments": [
+                {
+                    "id": captured["comment_id"],
+                    "body": "Zendesk once reply.\n\nCXOps Reply Ref: unknown",
+                }
+            ]
+        }
+
+    from app.integrations.zendesk.client import ZendeskClient
+
+    monkeypatch.setattr(ZendeskClient, "apply_agent_action", _fake_apply)
+    monkeypatch.setattr(ZendeskClient, "get_ticket_comments", _fake_comments)
+
+    await ConversationDeliveryService().deliver(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+
+    assert captured["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_zendesk_delivery_skips_provider_when_message_already_sent(
+    db, org_scope, monkeypatch
+):
+    """If the message is already sent, delivery is a no-op with zero provider calls."""
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+
+    ticket = await _make_ticket(
+        db,
+        org.id,
+        subject="Already sent",
+        external_id="33333",
+        source="zendesk",
+    )
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation.external_thread_id = ticket.external_id
+    await db.commit()
+
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Already sent reply.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+
+    message = await ConversationMessageRepository.get_by_id_for_tenant(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+    message.delivery_status = "sent"
+    message.sent_at = datetime.now(timezone.utc)
+    message.delivered_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    captured = {"calls": 0}
+
+    async def _fake_apply(*args, **kwargs):
+        captured["calls"] += 1
+
+    from app.integrations.zendesk.client import ZendeskClient
+
+    monkeypatch.setattr(ZendeskClient, "apply_agent_action", _fake_apply)
+
+    await ConversationDeliveryService().deliver(
+        db,
+        message_id=result["message_id"],
+        organization_id=org.id,
+    )
+
+    assert captured["calls"] == 0

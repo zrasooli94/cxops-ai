@@ -128,6 +128,20 @@ INTEGRATION_JOB_FAILURES_TOTAL = Counter(
 
 
 # =====================================================
+# Human reply delivery metrics
+# =====================================================
+
+HUMAN_REPLY_DELIVERIES_TOTAL = Counter(
+    "cxops_human_reply_deliveries_total",
+    "Human reply delivery outcomes.",
+    [
+        "provider",
+        "outcome",
+    ],
+)
+
+
+# =====================================================
 # Recording helpers
 # =====================================================
 
@@ -246,4 +260,16 @@ def record_integration_job_failure(
 
     INTEGRATION_JOB_FAILURES_TOTAL.labels(
         job_type=job_type,
+    ).inc()
+
+
+def record_human_reply_delivery(
+    *,
+    provider: str,
+    outcome: str,
+) -> None:
+
+    HUMAN_REPLY_DELIVERIES_TOTAL.labels(
+        provider=provider,
+        outcome=outcome,
     ).inc()

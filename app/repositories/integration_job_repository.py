@@ -8,6 +8,21 @@ from app.models.integration_job import IntegrationJob
 
 class IntegrationJobRepository:
     @staticmethod
+    def add(
+        db: AsyncSession,
+        job: IntegrationJob,
+    ) -> None:
+        """Stage a job inside the caller's transaction (no commit)."""
+        db.add(job)
+
+    @staticmethod
+    async def flush(
+        db: AsyncSession,
+    ) -> None:
+        """Flush pending job so its generated id is available."""
+        await db.flush()
+
+    @staticmethod
     async def get_by_id_unscoped(
         db: AsyncSession,
         job_id: int,
@@ -45,6 +60,42 @@ class IntegrationJobRepository:
     ) -> IntegrationJob:
 
         db.add(job)
+
+        await db.commit()
+        await db.refresh(job)
+
+        return job
+
+    @staticmethod
+    async def requeue_failed_for_tenant(
+        db: AsyncSession,
+        *,
+        dedupe_key: str,
+        organization_id: int,
+    ) -> IntegrationJob | None:
+        """Reset a failed job for manual retry, scoped to the tenant.
+
+        Only a permanently failed job may be requeued. The same dedupe key and
+        organization are preserved so the retry remains the same durable unit
+        of work.
+        """
+        result = await db.execute(
+            select(IntegrationJob).where(
+                IntegrationJob.dedupe_key == dedupe_key,
+                IntegrationJob.organization_id == organization_id,
+                IntegrationJob.status == "failed",
+            )
+        )
+
+        job = result.scalar_one_or_none()
+        if job is None:
+            return None
+
+        job.status = "retry"
+        job.attempts = 0
+        job.locked_at = None
+        job.last_error = None
+        job.available_at = datetime.now(timezone.utc)
 
         await db.commit()
         await db.refresh(job)

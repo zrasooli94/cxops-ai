@@ -19,6 +19,14 @@ import {
   useState,
 } from "react";
 
+type DeliveryStatus =
+  | "queued"
+  | "sending"
+  | "retrying"
+  | "sent"
+  | "failed"
+  | null;
+
 type ConversationMessage = {
   id: number;
   conversation_id: number;
@@ -28,6 +36,9 @@ type ConversationMessage = {
   body: string;
   sent_at: string | null;
   created_at: string;
+  delivery_status: DeliveryStatus;
+  delivered_at: string | null;
+  can_retry: boolean;
 };
 
 type ConversationListItem = {
@@ -41,7 +52,7 @@ type ConversationListItem = {
   ticket_id: number | null;
   latest_message_at: string | null;
   needs_response: boolean;
-  reply_mode: "agent_workflow" | "local_only" | "unsupported";
+  reply_mode: "zendesk" | "local_only" | "unsupported";
   latest_message: {
     body: string;
     direction: string;
@@ -109,12 +120,49 @@ function replyModeLabel(
   mode: ConversationListItem["reply_mode"],
 ): string {
   switch (mode) {
-    case "agent_workflow":
-      return "Agent workflow";
+    case "zendesk":
+      return "Zendesk reply";
     case "local_only":
       return "Local reply";
     default:
       return "Unsupported";
+  }
+}
+
+function deliveryStatusLabel(
+  status: DeliveryStatus,
+): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "sending":
+      return "Sending";
+    case "retrying":
+      return "Retrying";
+    case "sent":
+      return "Sent";
+    case "failed":
+      return "Failed";
+    default:
+      return "";
+  }
+}
+
+function deliveryStatusVariant(
+  status: DeliveryStatus,
+): BadgeVariant {
+  switch (status) {
+    case "queued":
+    case "sending":
+      return "info";
+    case "retrying":
+      return "warning";
+    case "sent":
+      return "success";
+    case "failed":
+      return "danger";
+    default:
+      return "default";
   }
 }
 
@@ -151,6 +199,18 @@ export default function InboxPage() {
     useState("");
 
   const [search, setSearch] = useState("");
+
+  const [replyBody, setReplyBody] = useState("");
+
+  const [replySubmitting, setReplySubmitting] =
+    useState(false);
+
+  const [replyError, setReplyError] = useState("");
+
+  const [replySuccess, setReplySuccess] = useState("");
+
+  const [retryingMessageId, setRetryingMessageId] =
+    useState<number | null>(null);
 
   const loadConversations =
     useCallback(async (refreshSelected = false) => {
@@ -279,6 +339,142 @@ export default function InboxPage() {
       window.clearTimeout(timer);
     };
   }, [selectedId, loadThread]);
+
+  const submitReply = useCallback(
+    async (conversationId: number) => {
+      const body = replyBody.trim();
+
+      if (!body) {
+        setReplyError("Reply body cannot be empty.");
+        return;
+      }
+
+      setReplySubmitting(true);
+      setReplyError("");
+      setReplySuccess("");
+
+      try {
+        const response = await fetch(
+          `/api/backend/conversations/${conversationId}/replies`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              body,
+              client_request_id: crypto.randomUUID(),
+            }),
+          },
+        );
+
+        if (response.status === 409) {
+          setReplyBody("");
+          setReplySuccess(
+            "This reply was already submitted.",
+          );
+          void loadThread(conversationId);
+          return;
+        }
+
+        if (!response.ok) {
+          const payload = (await response
+            .json()
+            .catch(() => ({}))) as {
+            detail?: string;
+          };
+          throw new Error(
+            payload.detail ??
+              `Reply API returned ${response.status}`,
+          );
+        }
+
+        setReplyBody("");
+        setReplySuccess("Reply queued for delivery.");
+        void loadThread(conversationId);
+      } catch (err) {
+        setReplyError(
+          err instanceof Error
+            ? err.message
+            : "Failed to send reply.",
+        );
+      } finally {
+        setReplySubmitting(false);
+      }
+    },
+    [replyBody, loadThread],
+  );
+
+  const retryMessage = useCallback(
+    async (
+      conversationId: number,
+      messageId: number,
+    ) => {
+      setRetryingMessageId(messageId);
+      setReplyError("");
+      setReplySuccess("");
+
+      try {
+        const response = await fetch(
+          `/api/backend/conversations/${conversationId}/messages/${messageId}/retry`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+
+        if (!response.ok) {
+          const payload = (await response
+            .json()
+            .catch(() => ({}))) as {
+            detail?: string;
+          };
+          throw new Error(
+            payload.detail ??
+              `Retry API returned ${response.status}`,
+          );
+        }
+
+        setReplySuccess("Retry queued for delivery.");
+        void loadThread(conversationId);
+      } catch (err) {
+        setReplyError(
+          err instanceof Error
+            ? err.message
+            : "Failed to retry message.",
+        );
+      } finally {
+        setRetryingMessageId(null);
+      }
+    },
+    [loadThread],
+  );
+
+  useEffect(() => {
+    if (selectedId === null) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (
+        messages.some(
+          (message) =>
+            message.direction === "outbound" &&
+            message.delivery_status &&
+            message.delivery_status !== "sent" &&
+            message.delivery_status !== "failed",
+        )
+      ) {
+        void loadThread(selectedId);
+      }
+    }, 3000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [selectedId, messages, loadThread]);
 
   const selectedConversation =
     useMemo(
@@ -526,6 +722,9 @@ export default function InboxPage() {
                               conversation.id,
                             );
                             setThreadError("");
+                            setReplyBody("");
+                            setReplyError("");
+                            setReplySuccess("");
                           }}
                           className={`group relative w-full border-b border-slate-200/60 p-4 text-left transition last:border-b-0 ${
                             selected
@@ -805,11 +1004,57 @@ export default function InboxPage() {
                                         ),
                                       )}
                                     </span>
+
+                                    {!internal &&
+                                      !inbound &&
+                                      message.delivery_status && (
+                                        <Badge
+                                          variant={deliveryStatusVariant(
+                                            message.delivery_status,
+                                          )}
+                                        >
+                                          {deliveryStatusLabel(
+                                            message.delivery_status,
+                                          )}
+                                        </Badge>
+                                      )}
                                   </div>
 
                                   <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-600">
                                     {message.body}
                                   </p>
+
+                                  {!internal &&
+                                    !inbound &&
+                                    message.delivery_status ===
+                                      "failed" &&
+                                    message.can_retry &&
+                                    selectedConversation && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void retryMessage(
+                                            selectedConversation.id,
+                                            message.id,
+                                          )
+                                        }
+                                        disabled={
+                                          retryingMessageId ===
+                                          message.id
+                                        }
+                                        className="mt-3 flex items-center gap-1.5 text-[11px] font-medium text-rose-600 hover:text-rose-700 disabled:opacity-50"
+                                      >
+                                        <RefreshCw
+                                          className={`h-3 w-3 ${
+                                            retryingMessageId ===
+                                            message.id
+                                              ? "animate-spin"
+                                              : ""
+                                          }`}
+                                        />
+                                        Retry delivery
+                                      </button>
+                                    )}
                                 </div>
                               </div>
                             );
@@ -823,6 +1068,94 @@ export default function InboxPage() {
                           )}
                         </div>
                       )}
+
+                      {selectedConversation &&
+                        selectedConversation.reply_mode !==
+                          "unsupported" && (
+                          <div className="mt-6 border-t border-slate-200/70 pt-5">
+                            {replyError && (
+                              <div className="mb-3 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50/80 p-3 text-xs text-rose-700">
+                                <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                                {replyError}
+                              </div>
+                            )}
+
+                            {replySuccess && (
+                              <div className="mb-3 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50/80 p-3 text-xs text-emerald-700">
+                                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                                {replySuccess}
+                              </div>
+                            )}
+
+                            <div className="relative">
+                              <textarea
+                                value={replyBody}
+                                onChange={(event) => {
+                                  setReplyBody(
+                                    event.target.value,
+                                  );
+                                  if (replyError) {
+                                    setReplyError("");
+                                  }
+                                }}
+                                onKeyDown={(event) => {
+                                  if (
+                                    event.key ===
+                                      "Enter" &&
+                                    (event.metaKey ||
+                                      event.ctrlKey)
+                                  ) {
+                                    event.preventDefault();
+                                    void submitReply(
+                                      selectedConversation.id,
+                                    );
+                                  }
+                                }}
+                                placeholder="Write a reply..."
+                                rows={4}
+                                maxLength={10000}
+                                disabled={replySubmitting}
+                                className="w-full resize-none rounded-2xl border border-slate-200 bg-[#fbfcff] p-4 pr-14 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-violet-300 focus:bg-white focus:ring-4 focus:ring-violet-100/50 disabled:opacity-60"
+                              />
+
+                              <div className="absolute bottom-3 right-3 text-[10px] text-slate-400">
+                                {replyBody.length}/10000
+                              </div>
+                            </div>
+
+                            <div className="mt-3 flex items-center justify-end gap-3">
+                              <span className="text-[11px] text-slate-400">
+                                Cmd/Ctrl + Enter to send
+                              </span>
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void submitReply(
+                                    selectedConversation.id,
+                                  )
+                                }
+                                disabled={
+                                  replySubmitting ||
+                                  replyBody.trim().length === 0
+                                }
+                                className="inline-flex h-10 items-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-medium text-white shadow-sm transition hover:bg-violet-700 disabled:opacity-50"
+                              >
+                                {replySubmitting ? (
+                                  <>
+                                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                                    Sending
+                                  </>
+                                ) : (
+                                  <>
+                                    <MessageSquare className="h-4 w-4" />
+                                    Send reply
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                     </div>
                   </div>
                 </div>

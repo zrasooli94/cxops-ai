@@ -8,12 +8,24 @@ from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
+from app.repositories.conversation_message_repository import (
+    ConversationMessageRepository,
+)
 from app.repositories.integration_job_repository import (
     IntegrationJobRepository,
 )
 from app.schemas.job import JobAccepted
 from app.services.agent_execution_service import (
     agent_execution_service,
+)
+from app.services.conversation_delivery_service import (
+    DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
+    ConversationDeliveryError,
+    ConversationDeliveryService,
+)
+from app.services.conversation_reply_service import (
+    JOB_TYPE_CONVERSATION_REPLY,
+    ConversationReplyService,
 )
 from app.services.zendesk_webhook_service import (
     ZendeskWebhookService,
@@ -27,6 +39,7 @@ class AgentExecutionQueueBlockedError(Exception):
 class IntegrationJobService:
     ZENDESK_TICKET_EVENT = "zendesk.ticket_event"
     AGENT_EXECUTION = "agent.execute"
+    CONVERSATION_REPLY = JOB_TYPE_CONVERSATION_REPLY
 
     @staticmethod
     async def _assert_agent_execution_target(
@@ -189,7 +202,103 @@ class IntegrationJobService:
 
             return
 
+        # Human reply delivery
+        if job.job_type == IntegrationJobService.CONVERSATION_REPLY:
+            organization_id = job.organization_id
+
+            if organization_id is None:
+                raise ValueError(
+                    "Conversation reply job is missing an organization binding"
+                )
+
+            payload = job.payload
+            message_id = int(payload["message_id"])
+
+            message = await ConversationMessageRepository.get_by_id_for_tenant(
+                db,
+                message_id=message_id,
+                organization_id=organization_id,
+            )
+            if message is None:
+                raise ValueError("Conversation reply job references a missing message")
+
+            await ConversationMessageRepository.update_for_tenant(
+                db,
+                message=message,
+                changes={"delivery_status": "sending"},
+                organization_id=organization_id,
+            )
+
+            try:
+                await ConversationDeliveryService().deliver(
+                    db=db,
+                    message_id=message_id,
+                    organization_id=organization_id,
+                )
+
+            except ConversationDeliveryError as exc:
+                # Non-retryable delivery failure (configuration, unsupported
+                # provider, invalid target). Mark the job and message failed
+                # now rather than exhausting retries.
+                await db.rollback()
+
+                job.status = "failed"
+                job.locked_at = None
+                job.last_error = str(exc)[:4000]
+
+                await ConversationMessageRepository.update_for_tenant(
+                    db,
+                    message=message,
+                    changes={
+                        "delivery_status": "failed",
+                        "delivery_error_code": exc.error_code,
+                    },
+                    organization_id=organization_id,
+                )
+
+                await db.commit()
+                return
+
+            return
+
         raise ValueError(f"Unknown job type: {job.job_type}")
+
+    @staticmethod
+    async def handle_failure(
+        db: AsyncSession,
+        *,
+        job: IntegrationJob,
+        error_message: str,
+    ) -> None:
+        """Job-type-specific failure cleanup after the generic retry decision.
+
+        Called by the worker after ``mark_failed`` has decided retry vs failed.
+        For human replies, this synchronizes the message delivery_status with
+        the job's final retry/failed state.
+        """
+        if job.job_type != IntegrationJobService.CONVERSATION_REPLY:
+            return
+
+        organization_id = job.organization_id
+        if organization_id is None:
+            return
+
+        payload = job.payload
+        if not isinstance(payload, dict):
+            return
+
+        message_id = payload.get("message_id")
+        if message_id is None:
+            return
+
+        will_retry = job.status == "retry"
+        await ConversationReplyService.handle_job_failure(
+            db=db,
+            message_id=int(message_id),
+            organization_id=organization_id,
+            error_code=DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
+            will_retry=will_retry,
+        )
 
     @staticmethod
     async def enqueue_agent_execution(

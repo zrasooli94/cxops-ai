@@ -1,9 +1,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-ReplyMode = Literal["agent_workflow", "local_only", "unsupported"]
+ReplyMode = Literal["zendesk", "local_only", "unsupported"]
 
 
 class ConversationMessageRead(BaseModel):
@@ -15,6 +15,9 @@ class ConversationMessageRead(BaseModel):
     body: str
     sent_at: datetime | None
     created_at: datetime
+    delivery_status: str | None
+    delivered_at: datetime | None
+    can_retry: bool = False
 
 
 class ConversationMessagePreview(BaseModel):
@@ -69,3 +72,29 @@ class ConversationSummaryResponse(BaseModel):
     needs_response: int
     by_provider: dict[str, int] = Field(default_factory=dict)
     by_channel: dict[str, int] = Field(default_factory=dict)
+
+
+class ConversationReplyRequest(BaseModel):
+    body: str
+    client_request_id: str
+
+    @field_validator("body")
+    @classmethod
+    def body_not_blank(cls, value: str) -> str:
+        if value is None or str(value).strip() == "":
+            raise ValueError("Reply body cannot be empty")
+        return value
+
+    @field_validator("client_request_id")
+    @classmethod
+    def client_request_id_required(cls, value: str) -> str:
+        if not value:
+            raise ValueError("client_request_id is required")
+        return value
+
+
+class ConversationReplyResponse(BaseModel):
+    message_id: int
+    delivery_status: str | None
+    duplicate: bool
+    job_id: int | None

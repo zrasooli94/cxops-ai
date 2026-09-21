@@ -62,16 +62,38 @@ async def run_worker() -> None:
                     job=job,
                 )
 
-                await IntegrationJobRepository.mark_completed(
+                # execute() may have already marked the job terminal for
+                # non-retryable failures (e.g. conversation.reply). Only mark
+                # completed if the job is still in processing.
+                fresh_job = await IntegrationJobRepository.get_by_id_unscoped(
                     db=db,
                     job_id=job_id,
                 )
+                if fresh_job is not None and fresh_job.status == "processing":
+                    await IntegrationJobRepository.mark_completed(
+                        db=db,
+                        job_id=job_id,
+                    )
 
-                record_integration_job_completed(
-                    job_type=job_type,
-                )
+                    record_integration_job_completed(
+                        job_type=job_type,
+                    )
 
-                log.info("job_completed", job_id=job_id, job_type=job_type)
+                    log.info("job_completed", job_id=job_id, job_type=job_type)
+
+                elif fresh_job is not None and fresh_job.status == "failed":
+                    record_integration_job_failure(
+                        job_type=job_type,
+                    )
+                    bind_context(
+                        outcome="failed", error_category="non_retryable"
+                    )
+                    log.error(
+                        "job_failed",
+                        job_id=job_id,
+                        job_type=job_type,
+                        error=fresh_job.last_error,
+                    )
 
             except Exception as exc:  # noqa: BLE001
                 await db.rollback()
@@ -79,6 +101,12 @@ async def run_worker() -> None:
                 updated_job = await IntegrationJobRepository.mark_failed(
                     db=db,
                     job_id=job_id,
+                    error_message=str(exc),
+                )
+
+                await IntegrationJobService.handle_failure(
+                    db=db,
+                    job=updated_job,
                     error_message=str(exc),
                 )
 

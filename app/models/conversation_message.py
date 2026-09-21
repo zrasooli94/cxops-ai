@@ -24,6 +24,12 @@ class ConversationMessage(Base):
     for provider-backed messages so re-delivery is impossible. ``direction``
     (inbound/outbound/internal) and ``visibility`` (public/internal) are
     bounded values; no raw provider payload is stored.
+
+    Human-submitted outbound replies additionally carry a delivery lifecycle:
+    ``delivery_status`` tracks queued/sending/retrying/sent/failed,
+    ``delivery_token`` is the server-generated crash-recovery marker,
+    ``requested_by_subject`` is the authenticated human author, and
+    ``delivery_error_code`` holds a safe bounded failure category.
     """
 
     __tablename__ = "conversation_messages"
@@ -48,6 +54,21 @@ class ConversationMessage(Base):
             "conversation_id",
             "dedupe_key",
             name="ux_conversation_messages_conversation_dedupe",
+        ),
+        # Delivery token is unique within a tenant when present; NULLs are
+        # permitted for provider-ingested messages and agent mirrors.
+        Index(
+            "ux_conversation_messages_delivery_token",
+            "organization_id",
+            "delivery_token",
+            unique=True,
+            postgresql_where=None,  # applied via DDL partial index in migration
+        ),
+        Index(
+            "ix_conv_msg_org_conv_delivery_status",
+            "organization_id",
+            "conversation_id",
+            "delivery_status",
         ),
         # Tenant-safe linkage with CASCADE like customer_identities: deleting a
         # conversation removes its tenant-owned messages.
@@ -117,6 +138,31 @@ class ConversationMessage(Base):
     )
 
     sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    delivery_status: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+    )
+
+    delivery_token: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    requested_by_subject: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    delivery_error_code: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    delivered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )

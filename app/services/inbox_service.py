@@ -23,26 +23,37 @@ class InboxService:
     """Read-model assembly for the unified conversation inbox."""
 
     @staticmethod
-    def reply_mode_for(ticket: Ticket | None) -> ReplyMode:
-        """How this conversation's replies are produced, from the linked ticket.
+    def reply_mode_for(
+        provider: str,
+        ticket: Ticket | None,
+    ) -> ReplyMode:
+        """How this conversation's replies are delivered.
 
-        - agent_workflow: backed by a Zendesk ticket, so the agent's outbound
-          mirror writes real replies (after Phase 1E/Zendesk automation).
-        - local_only: backed by a local ticket; replies live in the local dx
-          until a downstream channel is wired.
-        - unsupported: no ticket link; replying is not possible in Phase 1F.
+        - zendesk: backed by a valid Zendesk ticket and supports human replies
+          delivered through Zendesk.
+        - local_only: backed by a local CXOps ticket; replies are stored locally
+          and are not delivered to an external provider.
+        - unsupported: no ticket link or an unsupported provider; replying is
+          not possible.
+
+        Eligibility uses positive allowlists and the same canonical target
+        helper as agent execution so arbitrary external_ids are never treated
+        as Zendesk.
         """
+        from app.services.zendesk_target_service import resolve_zendesk_execution_target
+
         if ticket is None:
             return "unsupported"
 
-        if ticket.source == "zendesk" and ticket.external_id is not None:
-            try:
-                int(ticket.external_id)
-            except ValueError:
-                return "local_only"
-            return "agent_workflow"
+        if provider == "zendesk":
+            if resolve_zendesk_execution_target(ticket) is not None:
+                return "zendesk"
+            return "unsupported"
 
-        return "local_only"
+        if provider == "cxops":
+            return "local_only"
+
+        return "unsupported"
 
     @staticmethod
     def _needs_response(
@@ -136,7 +147,8 @@ class InboxService:
                 latest_message_at=c.latest_message_at,
                 needs_response=cls._needs_response(c, latest.get(c.id)),
                 reply_mode=cls.reply_mode_for(
-                    tickets.get(c.ticket_id) if c.ticket_id else None
+                    c.provider,
+                    tickets.get(c.ticket_id) if c.ticket_id else None,
                 ),
                 latest_message=cls._preview(latest.get(c.id)),
             )
@@ -193,7 +205,7 @@ class InboxService:
             updated_at=conversation.updated_at,
             latest_message_at=conversation.latest_message_at,
             needs_response=cls._needs_response(conversation, latest),
-            reply_mode=cls.reply_mode_for(ticket),
+            reply_mode=cls.reply_mode_for(conversation.provider, ticket),
         )
 
     @classmethod
@@ -285,6 +297,9 @@ class InboxService:
                 body=m.body,
                 sent_at=m.sent_at,
                 created_at=m.created_at,
+                delivery_status=m.delivery_status,
+                delivered_at=m.delivered_at,
+                can_retry=m.delivery_status == "failed",
             )
             for m in messages
         ]

@@ -194,7 +194,9 @@ class ConversationRepository:
         """Ranked public messages (1 = most recent) for a tenant.
 
         Internal notes (visibility ``internal``) never clear needs-response, so
-        they are excluded here and in the preview query.
+        they are excluded here and in the preview query. Human replies that have
+        not yet been delivered are also excluded because they are not yet real
+        conversation history.
         """
         return (
             select(
@@ -213,6 +215,10 @@ class ConversationRepository:
             .where(
                 ConversationMessage.organization_id == organization_id,
                 ConversationMessage.visibility == "public",
+                (
+                    ConversationMessage.delivery_status.is_(None)
+                    | (ConversationMessage.delivery_status == "sent")
+                ),
             )
             .subquery()
         )
@@ -259,7 +265,15 @@ class ConversationRepository:
                 ranked,
                 ranked.c.conversation_id == ConversationMessage.conversation_id,
             )
-            .where(ConversationMessage.conversation_id.in_(conversation_ids))
+            .where(
+                ConversationMessage.conversation_id.in_(conversation_ids),
+                ConversationMessage.organization_id == organization_id,
+                ConversationMessage.visibility == "public",
+                (
+                    ConversationMessage.delivery_status.is_(None)
+                    | (ConversationMessage.delivery_status == "sent")
+                ),
+            )
         )
 
         previews: dict[int, ConversationMessage] = {}

@@ -3,14 +3,24 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
+from app.api.deps import (
+    CurrentPrincipal,
+    CurrentTenant,
+    RequireCapability,
+)
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
 from app.schemas.conversation import (
     ConversationDetail,
     ConversationListResponse,
     ConversationMessageRead,
+    ConversationReplyRequest,
+    ConversationReplyResponse,
     ConversationSummaryResponse,
+)
+from app.services.conversation_reply_service import (
+    ConversationReplyError,
+    ConversationReplyService,
 )
 from app.services.inbox_service import InboxService
 
@@ -28,6 +38,11 @@ DatabaseSession = Annotated[
 TicketReadAuthz = Annotated[
     AuthorizationContext,
     Depends(RequireCapability(Capability.TICKET_READ)),
+]
+
+TicketWriteAuthz = Annotated[
+    AuthorizationContext,
+    Depends(RequireCapability(Capability.TICKET_WRITE)),
 ]
 
 
@@ -139,3 +154,65 @@ async def get_conversation_messages(
         )
 
     return messages
+
+
+@router.post(
+    "/{conversation_id}/replies",
+    response_model=ConversationReplyResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_conversation_reply(
+    conversation_id: int,
+    request: ConversationReplyRequest,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
+):
+    try:
+        result = await ConversationReplyService.enqueue_reply(
+            db=db,
+            conversation_id=conversation_id,
+            body=request.body,
+            client_request_id=request.client_request_id,
+            organization_id=tenant.organization_id,
+            requested_by_subject=principal.subject,
+            authz=authz,
+        )
+    except ConversationReplyError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.args[0],
+        ) from exc
+
+    return ConversationReplyResponse(**result)
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/retry",
+    response_model=ConversationReplyResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_conversation_message(
+    conversation_id: int,
+    message_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
+):
+    try:
+        result = await ConversationReplyService.retry_failed_reply(
+            db=db,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            organization_id=tenant.organization_id,
+            authz=authz,
+        )
+    except ConversationReplyError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.args[0],
+        ) from exc
+
+    return ConversationReplyResponse(**result)
