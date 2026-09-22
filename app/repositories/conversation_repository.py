@@ -200,6 +200,7 @@ class ConversationRepository:
         """
         return (
             select(
+                ConversationMessage.id.label("message_id"),
                 ConversationMessage.conversation_id.label("conversation_id"),
                 ConversationMessage.direction.label("direction"),
                 func.row_number()
@@ -263,24 +264,16 @@ class ConversationRepository:
             select(ConversationMessage, ranked.c.rn)
             .join(
                 ranked,
-                ranked.c.conversation_id == ConversationMessage.conversation_id,
+                ranked.c.message_id == ConversationMessage.id,
             )
             .where(
-                ConversationMessage.conversation_id.in_(conversation_ids),
+                ranked.c.conversation_id.in_(conversation_ids),
+                ranked.c.rn == 1,
                 ConversationMessage.organization_id == organization_id,
-                ConversationMessage.visibility == "public",
-                (
-                    ConversationMessage.delivery_status.is_(None)
-                    | (ConversationMessage.delivery_status == "sent")
-                ),
             )
         )
 
-        previews: dict[int, ConversationMessage] = {}
-        for message, rn in result.all():
-            if rn == 1:
-                previews[message.conversation_id] = message
-        return previews
+        return {message.conversation_id: message for message, _ in result.all()}
 
     @classmethod
     async def count_by_column_for_tenant(

@@ -1933,6 +1933,7 @@ async def test_sent_reply_clears_needs_response_and_updates_preview(
 
     after = await _item()
     assert after["needs_response"] is False
+    assert after["latest_message"]["direction"] == "outbound"
     assert "Outbound delivered reply" in (after["latest_message"]["body"] or "")
 
 
