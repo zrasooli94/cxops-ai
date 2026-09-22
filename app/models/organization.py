@@ -51,3 +51,13 @@ class Organization(Base):
         "Ticket",
         back_populates="organization",
     )
+
+    sla_policies = relationship(
+        "SLAPolicy",
+        back_populates="organization",
+    )
+
+    service_queues = relationship(
+        "ServiceQueue",
+        back_populates="organization",
+    )

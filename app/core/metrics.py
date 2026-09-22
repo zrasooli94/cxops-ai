@@ -142,6 +142,28 @@ HUMAN_REPLY_DELIVERIES_TOTAL = Counter(
 
 
 # =====================================================
+# Service operations metrics
+# =====================================================
+
+TICKET_ROUTED_TOTAL = Counter(
+    "cxops_ticket_routed_total",
+    "Tickets routed to a service queue.",
+    [
+        "routing_source",
+    ],
+)
+
+
+TICKET_CLAIMED_TOTAL = Counter(
+    "cxops_ticket_claimed_total",
+    "Tickets claimed by an agent.",
+    [
+        "routing_source",
+    ],
+)
+
+
+# =====================================================
 # Recording helpers
 # =====================================================
 
@@ -272,4 +294,22 @@ def record_human_reply_delivery(
     HUMAN_REPLY_DELIVERIES_TOTAL.labels(
         provider=provider,
         outcome=outcome,
+    ).inc()
+
+
+def record_ticket_routed(
+    *,
+    routing_source: str,
+) -> None:
+    TICKET_ROUTED_TOTAL.labels(
+        routing_source=routing_source,
+    ).inc()
+
+
+def record_ticket_claimed(
+    *,
+    routing_source: str = "manual",
+) -> None:
+    TICKET_CLAIMED_TOTAL.labels(
+        routing_source=routing_source,
     ).inc()

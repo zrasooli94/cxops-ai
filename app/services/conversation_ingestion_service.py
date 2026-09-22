@@ -13,6 +13,7 @@ from app.repositories.conversation_message_repository import (
 )
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.ticket_repository import TicketRepository
+from app.services.ticket_sla_service import TicketSLAService
 
 log = get_logger("conversation_ingestion")
 
@@ -394,7 +395,40 @@ class ConversationIngestionService:
             sent_at=latest_sent_at,
         )
 
+        # Record first response from provider-synced public outbound comments.
+        await cls._record_first_response_from_candidates(
+            db,
+            ticket=local_ticket,
+            candidates=candidates,
+        )
+
         return conversation, comments_response
+
+    @classmethod
+    async def _record_first_response_from_candidates(
+        cls,
+        db: AsyncSession,
+        *,
+        ticket: Ticket,
+        candidates: list[ConversationMessage],
+    ) -> None:
+        """Update first_response_at from newly ingested public outbound comments."""
+        outbound_public_sent_at = [
+            m.sent_at
+            for m in candidates
+            if m.direction == "outbound"
+            and m.visibility == "public"
+            and m.sent_at is not None
+        ]
+        if not outbound_public_sent_at:
+            return
+
+        earliest = min(outbound_public_sent_at)
+        await TicketSLAService.record_first_response(
+            db,
+            ticket=ticket,
+            responded_at=earliest,
+        )
 
     @classmethod
     async def _insert_messages_deduplicated(

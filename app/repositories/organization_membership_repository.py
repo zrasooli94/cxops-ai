@@ -42,6 +42,21 @@ class OrganizationMembershipRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_by_organization_and_subject(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        subject: str,
+    ) -> OrganizationMembership | None:
+        result = await db.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.organization_id == organization_id,
+                OrganizationMembership.subject == subject,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def create(
         db: AsyncSession,
         *,

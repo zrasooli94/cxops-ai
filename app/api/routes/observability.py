@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import (
     APIRouter,
     Depends,
+    Query,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,7 @@ from app.services.agent_observability_service import (
 from app.services.ai_observability_service import (
     AIObservabilityService,
 )
+from app.services.service_kpi_service import ServiceKPIService
 
 router = APIRouter(
     prefix="/observability",
@@ -112,4 +114,18 @@ async def agent_roi(
     return await AgentObservabilityService.roi_summary(
         db,
         tenant.organization_id,
+    )
+
+
+@router.get("/service/kpis")
+async def service_kpis(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
+    days: int = Query(default=7, ge=1, le=365),
+):
+    return await ServiceKPIService.kpis_for_tenant(
+        db,
+        organization_id=tenant.organization_id,
+        days=days,
     )

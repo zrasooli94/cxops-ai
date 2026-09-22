@@ -20,7 +20,8 @@ export type NavigationIconName =
   | "brain"
   | "workflow"
   | "activity"
-  | "users";
+  | "users"
+  | "layers";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -33,7 +34,8 @@ export type ControlCenterRoute =
   | "/approvals"
   | "/knowledge"
   | "/runs"
-  | "/observability";
+  | "/observability"
+  | "/operations";
 
 /**
  * Single source of truth for what each route requires. Sidebar visibility
@@ -55,6 +57,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/knowledge": CAPABILITIES.KNOWLEDGE_READ,
   "/runs": CAPABILITIES.AGENT_RUN,
   "/observability": CAPABILITIES.OBSERVABILITY_READ,
+  "/operations": CAPABILITIES.TICKET_READ,
 };
 
 export interface NavigationItem {
@@ -103,6 +106,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Customer support workspace",
     icon: "ticket",
     requiredCapability: ROUTE_REQUIREMENTS["/tickets"],
+  },
+  {
+    href: "/operations",
+    label: "Operations",
+    description: "Queues, ownership & SLA",
+    icon: "layers",
+    requiredCapability: ROUTE_REQUIREMENTS["/operations"],
   },
   {
     href: "/inbox",

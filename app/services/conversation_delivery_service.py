@@ -20,6 +20,8 @@ from app.repositories.conversation_message_repository import (
     ConversationMessageRepository,
 )
 from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.ticket_repository import TicketRepository
+from app.services.ticket_sla_service import TicketSLAService
 from app.services.zendesk_target_service import resolve_zendesk_execution_target
 
 log = get_logger("conversation_delivery")
@@ -56,6 +58,34 @@ class ConversationDeliveryTransientError(Exception):
 
 def _reply_marker(delivery_token: str) -> str:
     return f"{REPLY_MARKER_PREFIX} {delivery_token}"
+
+
+async def _record_first_response_if_eligible(
+    db: AsyncSession,
+    *,
+    message: ConversationMessage,
+    conversation: Conversation,
+    responded_at: datetime,
+) -> None:
+    """Record first response when a public outbound message is delivered."""
+    if conversation.ticket_id is None:
+        return
+    if message.direction != "outbound" or message.visibility != "public":
+        return
+
+    ticket = await TicketRepository.get_by_id_for_tenant(
+        db,
+        ticket_id=conversation.ticket_id,
+        organization_id=message.organization_id,
+    )
+    if ticket is None:
+        return
+
+    await TicketSLAService.record_first_response(
+        db,
+        ticket=ticket,
+        responded_at=responded_at,
+    )
 
 
 class ZendeskConversationDeliveryAdapter:
@@ -238,6 +268,13 @@ class ZendeskConversationDeliveryAdapter:
         )
 
         sent_at = message.sent_at or now
+        await _record_first_response_if_eligible(
+            db,
+            message=message,
+            conversation=conversation,
+            responded_at=sent_at,
+        )
+
         if (
             conversation.latest_message_at is None
             or sent_at > conversation.latest_message_at
@@ -273,6 +310,13 @@ class LocalConversationDeliveryAdapter:
                 "delivered_at": now,
             },
             organization_id=organization_id,
+        )
+
+        await _record_first_response_if_eligible(
+            db,
+            message=message,
+            conversation=conversation,
+            responded_at=now,
         )
 
         if (

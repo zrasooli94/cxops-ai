@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +20,7 @@ from app.repositories.agent_run_repository import (
 from app.services.conversation_ingestion_service import (
     ConversationIngestionService,
 )
+from app.services.ticket_sla_service import TicketSLAService
 from app.services.tool_authorization_service import (
     ToolAuthorizationError,
     ToolAuthorizationService,
@@ -322,6 +325,12 @@ class AgentExecutionService:
             )
             record_agent_tool_execution(
                 tool=str(tool_name),
+            )
+
+            await TicketSLAService.record_first_response(
+                db,
+                ticket=ticket,
+                responded_at=datetime.now(timezone.utc),
             )
 
             await self._mirror_executed_tool(

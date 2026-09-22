@@ -171,6 +171,25 @@ class AgentRunRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_latest_for_ticket_and_tenant(
+        db: AsyncSession,
+        *,
+        ticket_id: int,
+        organization_id: int,
+    ) -> AgentRun | None:
+        """Latest run for a ticket, used for read-only AI routing suggestion."""
+        result = await db.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.ticket_id == ticket_id,
+                AgentRun.organization_id == organization_id,
+            )
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def get_by_run_id_unscoped(
         db: AsyncSession,
         run_id: str,

@@ -9,6 +9,7 @@ from app.models.ticket_event import TicketEvent
 from app.repositories.automation_rule_repository import AutomationRuleRepository
 from app.repositories.ticket_event_repository import TicketEventRepository
 from app.repositories.ticket_repository import TicketRepository
+from app.services.ticket_routing_service import TicketRoutingService
 
 log = get_logger(__name__)
 
@@ -19,6 +20,10 @@ class AutomationService:
         "assigned_team",
         "priority",
         "status",
+    }
+
+    ROUTING_ACTION_FIELDS: ClassVar[set[str]] = {
+        "service_queue_key",
     }
 
     @staticmethod
@@ -141,6 +146,35 @@ class AutomationService:
                     changes=changes,
                     organization_id=organization_id,
                 )
+
+            routing_key = (rule.actions or {}).get("service_queue_key")
+            if routing_key is not None:
+                from app.repositories.service_queue_repository import (
+                    ServiceQueueRepository,
+                )
+
+                queue = await ServiceQueueRepository.get_by_key_for_tenant(
+                    db,
+                    key=routing_key,
+                    organization_id=organization_id,
+                )
+
+                if queue is not None and queue.active:
+                    await TicketRoutingService.apply_queue_to_ticket(
+                        db,
+                        ticket=ticket,
+                        queue=queue,
+                        source="automation",
+                    )
+                    await db.commit()
+                    await db.refresh(ticket)
+                else:
+                    log.warning(
+                        "automation_routing_invalid_queue",
+                        organization_id=organization_id,
+                        rule_id=rule.id,
+                        queue_key=routing_key,
+                    )
 
             break
 

@@ -13,6 +13,7 @@ from app.services.customer_identity_service import (
     CustomerIdentityConflictError,
     CustomerIdentityService,
 )
+from app.services.ticket_routing_service import TicketRoutingService
 
 
 class ZendeskSyncConflictError(RuntimeError):
@@ -181,5 +182,7 @@ class ZendeskSyncService:
             ticket=created,
             organization_id=organization_id,
         )
+
+        await TicketRoutingService.route_new_ticket(db, created)
 
         return created

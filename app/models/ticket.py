@@ -41,6 +41,26 @@ class Ticket(Base):
             ["customers.id", "customers.organization_id"],
             name="fk_tickets_customer_id_organization_id_customers",
         ),
+        # Tenant-safe queue linkage.
+        ForeignKeyConstraint(
+            ["service_queue_id", "organization_id"],
+            ["service_queues.id", "service_queues.organization_id"],
+            name="fk_tickets_service_queue_id_organization_id",
+        ),
+        # Tenant-safe SLA policy linkage.
+        ForeignKeyConstraint(
+            ["sla_policy_id", "organization_id"],
+            ["sla_policies.id", "sla_policies.organization_id"],
+            name="fk_tickets_sla_policy_id_organization_id",
+        ),
+        # Tenant-safe assignee linkage. The membership uniqueness is on
+        # (organization_id, subject), so this composite FK enforces that an
+        # assigned subject belongs to the ticket's organization.
+        ForeignKeyConstraint(
+            ["organization_id", "assigned_subject"],
+            ["organization_memberships.organization_id", "organization_memberships.subject"],
+            name="fk_tickets_organization_id_assigned_subject_memberships",
+        ),
         Index(
             "ix_tickets_organization_id",
             "organization_id",
@@ -48,6 +68,31 @@ class Ticket(Base):
         Index(
             "ix_tickets_customer_id",
             "customer_id",
+        ),
+        Index(
+            "ix_tickets_organization_id_status",
+            "organization_id",
+            "status",
+        ),
+        Index(
+            "ix_tickets_organization_id_service_queue_id",
+            "organization_id",
+            "service_queue_id",
+        ),
+        Index(
+            "ix_tickets_organization_id_assigned_subject",
+            "organization_id",
+            "assigned_subject",
+        ),
+        Index(
+            "ix_tickets_organization_id_first_response_due_at",
+            "organization_id",
+            "first_response_due_at",
+        ),
+        Index(
+            "ix_tickets_organization_id_resolution_due_at",
+            "organization_id",
+            "resolution_due_at",
         ),
     )
 
@@ -124,6 +169,9 @@ class Ticket(Base):
 
     organization = relationship("Organization", back_populates="tickets")
 
+    service_queue = relationship("ServiceQueue", foreign_keys="Ticket.service_queue_id")
+    sla_policy = relationship("SLAPolicy", foreign_keys="Ticket.sla_policy_id")
+
     category: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
@@ -131,5 +179,48 @@ class Ticket(Base):
 
     assigned_team: Mapped[str | None] = mapped_column(
         String(100),
+        nullable=True,
+    )
+
+    service_queue_id: Mapped[int | None] = mapped_column(
+        nullable=True,
+    )
+
+    assigned_subject: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    sla_policy_id: Mapped[int | None] = mapped_column(
+        nullable=True,
+    )
+
+    first_response_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    resolution_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    first_response_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    routing_source: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    routed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )

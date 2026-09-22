@@ -5,6 +5,7 @@ import {
   BrainCircuit,
   Gauge,
   Inbox,
+  Layers,
   ShieldCheck,
   Ticket,
   Users,
@@ -23,6 +24,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   workflow: Workflow,
   activity: Activity,
   users: Users,
+  layers: Layers,
 };
 
 export default function NavigationIcon({

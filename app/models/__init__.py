@@ -12,6 +12,8 @@ from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
+from app.models.service_queue import ServiceQueue
+from app.models.sla_policy import SLAPolicy
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
 from app.models.zendesk_oauth_state import ZendeskOAuthState
@@ -32,6 +34,8 @@ __all__ = [
     "KnowledgeDocument",
     "Organization",
     "OrganizationMembership",
+    "SLAPolicy",
+    "ServiceQueue",
     "Ticket",
     "TicketEvent",
     "ZendeskOAuthState",

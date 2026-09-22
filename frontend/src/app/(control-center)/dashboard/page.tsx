@@ -9,6 +9,7 @@ import {
   TriangleAlert,
   Users,
 } from "lucide-react";
+import Link from "next/link";
 import { type ComponentType, useCallback, useEffect, useState } from "react";
 
 import DashboardNavCards from "./nav-cards";
@@ -22,6 +23,17 @@ type OperationalMetrics = {
   reviewed_runs: number;
   re_analysis_count: number;
   autonomous_executed_runs: number;
+};
+
+type ServiceOperationsSummary = {
+  open: number;
+  unassigned: number;
+  needs_response: number;
+  response_breaches: number;
+  resolution_breaches: number;
+  due_soon: number;
+  urgent: number;
+  high: number;
 };
 
 function MetricCard({
@@ -61,6 +73,7 @@ export default function DashboardPage() {
   const canReadMetrics = can(CAPABILITIES.OBSERVABILITY_READ);
 
   const [metrics, setMetrics] = useState<OperationalMetrics | null>(null);
+  const [serviceOps, setServiceOps] = useState<ServiceOperationsSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -91,15 +104,31 @@ export default function DashboardPage() {
     }
   }, [canReadMetrics]);
 
+  const loadServiceOps = useCallback(async () => {
+    try {
+      const response = await fetch("/api/backend/service-operations/summary", {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? `Service ops API returned ${response.status}`);
+      }
+      setServiceOps(await response.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load service ops summary.");
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadMetrics();
+      void loadServiceOps();
     }, 0);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [loadMetrics]);
+  }, [loadMetrics, loadServiceOps]);
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
@@ -134,6 +163,52 @@ export default function DashboardPage() {
           </section>
 
           <DashboardNavCards />
+
+          <section className="mb-12">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-medium text-slate-950">
+                  Service operations
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Queues, ownership & SLA snapshot
+                </p>
+              </div>
+              <Link
+                href="/operations"
+                className="text-sm font-medium text-violet-600 hover:underline"
+              >
+                View operations →
+              </Link>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              <MetricCard
+                label="Needs response"
+                value={serviceOps?.needs_response ?? 0}
+                note="Open tickets awaiting a public reply."
+                icon={TriangleAlert}
+              />
+              <MetricCard
+                label="Unassigned"
+                value={serviceOps?.unassigned ?? 0}
+                note="Open tickets with no owner."
+                icon={Users}
+              />
+              <MetricCard
+                label="SLA breached"
+                value={(serviceOps?.response_breaches ?? 0) + (serviceOps?.resolution_breaches ?? 0)}
+                note="Open tickets past first-response or resolution SLA."
+                icon={Clock3}
+              />
+              <MetricCard
+                label="Due soon"
+                value={serviceOps?.due_soon ?? 0}
+                note="Open tickets within 30 minutes of an SLA deadline."
+                icon={Clock3}
+              />
+            </div>
+          </section>
 
           {canReadMetrics && (
             <section className="mb-12">

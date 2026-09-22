@@ -8,6 +8,9 @@ from app.api.routes.health import router as health_router
 from app.api.routes.knowledge import router as knowledge_router
 from app.api.routes.observability import router as observability_router
 from app.api.routes.organizations import router as organizations_router
+from app.api.routes.service_operations import router as service_operations_router
+from app.api.routes.service_queues import router as service_queues_router
+from app.api.routes.sla_policies import router as sla_policies_router
 from app.api.routes.tenant import router as tenant_router
 from app.api.routes.tickets import router as tickets_router
 from app.api.routes.webhooks import router as webhooks_router
@@ -30,4 +33,7 @@ api_router.include_router(zendesk_router)
 api_router.include_router(zendesk_auth_router)
 api_router.include_router(knowledge_router)
 api_router.include_router(observability_router)
+api_router.include_router(service_operations_router)
+api_router.include_router(service_queues_router)
+api_router.include_router(sla_policies_router)
 api_router.include_router(agent_router)

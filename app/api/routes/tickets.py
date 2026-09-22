@@ -4,14 +4,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
+from app.api.deps import (
+    CurrentAuthorization,
+    CurrentPrincipal,
+    CurrentTenant,
+    RequireCapability,
+)
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
+from app.repositories.ticket_repository import TicketRepository
 from app.schemas.ticket import (
+    TicketAssignmentUpdate,
     TicketCreate,
     TicketRead,
     TicketUpdate,
 )
+from app.services.ticket_assignment_service import TicketAssignmentService
 from app.services.ticket_service import TicketService
 
 router = APIRouter(
@@ -124,6 +132,69 @@ async def get_ticket(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Ticket not found",
+        )
+
+    return ticket
+
+
+@router.patch(
+    "/{ticket_id}/assignment",
+    response_model=TicketRead,
+)
+async def update_ticket_assignment(
+    ticket_id: int,
+    data: TicketAssignmentUpdate,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
+    authorization: CurrentAuthorization,
+):
+    ticket = await TicketRepository.get_by_id_for_tenant(
+        db,
+        ticket_id=ticket_id,
+        organization_id=tenant.organization_id,
+    )
+    if ticket is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ticket not found",
+        )
+
+    try:
+        if "service_queue_id" in data.model_dump(exclude_unset=True):
+            if data.service_queue_id is not None:
+                await TicketAssignmentService.assign_queue(
+                    db,
+                    ticket=ticket,
+                    queue_id=data.service_queue_id,
+                    authz=authorization,
+                )
+            else:
+                await TicketAssignmentService.unassign_queue(
+                    db,
+                    ticket=ticket,
+                    authz=authorization,
+                )
+
+        if "assigned_subject" in data.model_dump(exclude_unset=True):
+            if data.assigned_subject is not None:
+                await TicketAssignmentService.assign_subject(
+                    db,
+                    ticket=ticket,
+                    subject=data.assigned_subject,
+                    authz=authorization,
+                )
+            else:
+                await TicketAssignmentService.unassign_subject(
+                    db,
+                    ticket=ticket,
+                    authz=authorization,
+                )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
         )
 
     return ticket

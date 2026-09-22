@@ -83,6 +83,14 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.asyncio(loop_scope="session"))
 
 
+@pytest_asyncio.fixture(scope="function", loop_scope="session")
+async def db():
+    """Yield a fresh async SQLAlchemy session for each test function."""
+    session = _LazySessionMaker()()
+    async with session:
+        yield session
+
+
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
 async def _dispose_test_engine():
     """Dispose the lazy engine's pool after the test session to avoid leaking

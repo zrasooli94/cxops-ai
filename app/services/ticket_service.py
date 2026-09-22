@@ -8,6 +8,8 @@ from app.services.conversation_ingestion_service import (
     ConversationIngestionService,
 )
 from app.services.customer_service import CustomerService
+from app.services.ticket_routing_service import TicketRoutingService
+from app.services.ticket_sla_service import TicketSLAService
 
 
 class TicketService:
@@ -63,6 +65,9 @@ class TicketService:
             ticket=ticket,
         )
 
+        # Route new ticket to queue/SLA deterministically.
+        await TicketRoutingService.route_new_ticket(db, created)
+
         # Local tickets open a provider-neutral cxops conversation with an
         # idempotent initial customer message. Zendesk tickets created through
         # this path do not open a conflicting cxops thread; their conversation
@@ -82,6 +87,7 @@ class TicketService:
                 organization_id=organization_id,
             )
 
+        await db.refresh(created)
         return created
 
     @staticmethod
@@ -159,12 +165,28 @@ class TicketService:
             if customer is None:
                 return None  # Customer not found in this tenant
 
+        priority_changed = "priority" in changes and changes["priority"] != ticket.priority
+        status_changed = "status" in changes and changes["status"] != ticket.status
+
         updated = await TicketRepository.update_for_tenant(
             db=db,
             ticket=ticket,
             changes=changes,
             organization_id=organization_id,
         )
+
+        # SLA lifecycle hooks
+        if status_changed:
+            if updated.status in ("solved", "closed"):
+                await TicketSLAService.record_resolution(db, updated)
+            elif updated.resolved_at is not None:
+                await TicketSLAService.handle_reopen(db, updated)
+
+        if priority_changed and updated.status not in ("solved", "closed"):
+            await TicketSLAService.recalculate_for_priority_change(db, updated)
+
+        await db.commit()
+        await db.refresh(updated)
 
         # Mirror subject/status/customer changes onto the canonical
         # conversation so the inbox and the ticket can never drift apart.

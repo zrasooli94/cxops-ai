@@ -73,6 +73,7 @@ describe("capability-driven navigation", () => {
     assert.deepEqual(visible, [
       "/dashboard",
       "/tickets",
+      "/operations",
       "/inbox",
       "/knowledge",
     ]);
@@ -145,7 +146,7 @@ describe("capability-driven navigation", () => {
       view.can,
     ).map((item) => item.href);
 
-    assert.deepEqual(cards, ["/tickets", "/inbox"]);
+    assert.deepEqual(cards, ["/tickets", "/operations", "/inbox"]);
   });
 
   it("every requirement is a known capability or an explicit always-visible null", () => {
@@ -172,6 +173,7 @@ describe("control-center route requirements", () => {
     ["/knowledge", CAPABILITIES.KNOWLEDGE_READ],
     ["/runs", CAPABILITIES.AGENT_RUN],
     ["/observability", CAPABILITIES.OBSERVABILITY_READ],
+    ["/operations", CAPABILITIES.TICKET_READ],
   ];
 
   for (const [route, requirement] of expected) {

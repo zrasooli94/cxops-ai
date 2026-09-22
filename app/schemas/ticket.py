@@ -90,3 +90,18 @@ class TicketRead(BaseModel):
 
     customer_id: int | None
     organization_id: int
+
+    service_queue_id: int | None
+    assigned_subject: str | None
+    sla_policy_id: int | None
+    first_response_due_at: datetime | None
+    resolution_due_at: datetime | None
+    first_response_at: datetime | None
+    resolved_at: datetime | None
+    routing_source: str | None
+    routed_at: datetime | None
+
+
+class TicketAssignmentUpdate(BaseModel):
+    service_queue_id: int | None = None
+    assigned_subject: str | None = None
