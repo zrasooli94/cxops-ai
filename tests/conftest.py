@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+# pytest launched via the console entrypoint does not put the repository root on
+# sys.path the way ``python -m pytest`` does. Bootstrap it test-only here before
+# any ``from app...`` imports.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import pytest
 import pytest_asyncio
 
