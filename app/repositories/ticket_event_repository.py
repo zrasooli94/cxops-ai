@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +7,20 @@ from app.models.ticket_event import TicketEvent
 
 
 class TicketEventRepository:
+    @staticmethod
+    def add(
+        db: AsyncSession,
+        event: TicketEvent,
+    ) -> None:
+        """Stage an event inside the caller's transaction (no commit)."""
+        db.add(event)
+
+    @staticmethod
+    async def flush(
+        db: AsyncSession,
+    ) -> None:
+        await db.flush()
+
     @staticmethod
     async def get_by_event_key(
         db: AsyncSession,
@@ -123,7 +137,7 @@ class TicketEventRepository:
     ) -> TicketEvent:
 
         event.processed = True
-        event.processed_at = datetime.now(timezone.utc)
+        event.processed_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(event)
@@ -137,7 +151,7 @@ class TicketEventRepository:
     ) -> TicketEvent:
 
         event.writeback_completed = True
-        event.writeback_at = datetime.now(timezone.utc)
+        event.writeback_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(event)

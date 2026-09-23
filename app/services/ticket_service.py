@@ -180,6 +180,7 @@ class TicketService:
             if updated.status in ("solved", "closed"):
                 await TicketSLAService.record_resolution(db, updated)
             elif updated.resolved_at is not None:
+                updated.resolution_sla_cycle += 1
                 await TicketSLAService.handle_reopen(db, updated)
 
         if priority_changed and updated.status not in ("solved", "closed"):

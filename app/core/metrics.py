@@ -163,6 +163,26 @@ TICKET_CLAIMED_TOTAL = Counter(
 )
 
 
+SLA_ESCALATIONS_TRIGGERED_TOTAL = Counter(
+    "cxops_sla_escalations_triggered_total",
+    "SLA escalation transitions triggered.",
+    [
+        "milestone",
+        "stage",
+    ],
+)
+
+
+SLA_ESCALATIONS_ACKNOWLEDGED_TOTAL = Counter(
+    "cxops_sla_escalations_acknowledged_total",
+    "SLA escalations acknowledged by a supervisor.",
+    [
+        "milestone",
+        "stage",
+    ],
+)
+
+
 # =====================================================
 # Recording helpers
 # =====================================================
@@ -308,8 +328,30 @@ def record_ticket_routed(
 
 def record_ticket_claimed(
     *,
-    routing_source: str = "manual",
+    routing_source: str,
 ) -> None:
     TICKET_CLAIMED_TOTAL.labels(
         routing_source=routing_source,
+    ).inc()
+
+
+def record_escalation_transition(
+    *,
+    milestone: str,
+    stage: str,
+) -> None:
+    SLA_ESCALATIONS_TRIGGERED_TOTAL.labels(
+        milestone=milestone,
+        stage=stage,
+    ).inc()
+
+
+def record_escalation_acknowledged(
+    *,
+    milestone: str,
+    stage: str,
+) -> None:
+    SLA_ESCALATIONS_ACKNOWLEDGED_TOTAL.labels(
+        milestone=milestone,
+        stage=stage,
     ).inc()

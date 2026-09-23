@@ -15,6 +15,11 @@ import { type ComponentType, useCallback, useEffect, useState } from "react";
 import DashboardNavCards from "./nav-cards";
 import { CAPABILITIES } from "@/lib/authorization/capabilities";
 import { useAuthorization } from "@/lib/authorization/context";
+import {
+  canViewServiceOperations,
+  escalationSummaryToCounts,
+  ESCALATION_SUMMARY_ENDPOINT,
+} from "@/lib/dashboard/escalation-summary";
 
 type OperationalMetrics = {
   unique_tickets_analyzed: number;
@@ -34,6 +39,11 @@ type ServiceOperationsSummary = {
   due_soon: number;
   urgent: number;
   high: number;
+};
+
+type EscalationCounts = {
+  unacknowledged: number;
+  breached: number;
 };
 
 function MetricCard({
@@ -71,9 +81,11 @@ function MetricCard({
 export default function DashboardPage() {
   const { can } = useAuthorization();
   const canReadMetrics = can(CAPABILITIES.OBSERVABILITY_READ);
+  const canReadServiceOps = canViewServiceOperations(can);
 
   const [metrics, setMetrics] = useState<OperationalMetrics | null>(null);
   const [serviceOps, setServiceOps] = useState<ServiceOperationsSummary | null>(null);
+  const [escalations, setEscalations] = useState<EscalationCounts | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -105,6 +117,10 @@ export default function DashboardPage() {
   }, [canReadMetrics]);
 
   const loadServiceOps = useCallback(async () => {
+    if (!canReadServiceOps) {
+      return;
+    }
+
     try {
       const response = await fetch("/api/backend/service-operations/summary", {
         cache: "no-store",
@@ -117,18 +133,38 @@ export default function DashboardPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load service ops summary.");
     }
-  }, []);
+  }, [canReadServiceOps]);
+
+  const loadEscalations = useCallback(async () => {
+    if (!canReadServiceOps) {
+      return;
+    }
+
+    try {
+      const response = await fetch(ESCALATION_SUMMARY_ENDPOINT, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? `Escalations API returned ${response.status}`);
+      }
+      setEscalations(escalationSummaryToCounts(await response.json()));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load escalation counts.");
+    }
+  }, [canReadServiceOps]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadMetrics();
       void loadServiceOps();
+      void loadEscalations();
     }, 0);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [loadMetrics, loadServiceOps]);
+  }, [loadMetrics, loadServiceOps, loadEscalations]);
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
@@ -164,51 +200,74 @@ export default function DashboardPage() {
 
           <DashboardNavCards />
 
-          <section className="mb-12">
-            <div className="mb-5 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-medium text-slate-950">
-                  Service operations
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Queues, ownership & SLA snapshot
-                </p>
+          {canReadServiceOps && (
+            <section className="mb-12">
+              <div className="mb-5 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-medium text-slate-950">
+                    Service operations
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Queues, ownership & SLA snapshot
+                  </p>
+                </div>
+                <Link
+                  href="/operations"
+                  className="text-sm font-medium text-violet-600 hover:underline"
+                >
+                  View operations →
+                </Link>
               </div>
-              <Link
-                href="/operations"
-                className="text-sm font-medium text-violet-600 hover:underline"
-              >
-                View operations →
-              </Link>
-            </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-              <MetricCard
-                label="Needs response"
-                value={serviceOps?.needs_response ?? 0}
-                note="Open tickets awaiting a public reply."
-                icon={TriangleAlert}
-              />
-              <MetricCard
-                label="Unassigned"
-                value={serviceOps?.unassigned ?? 0}
-                note="Open tickets with no owner."
-                icon={Users}
-              />
-              <MetricCard
-                label="SLA breached"
-                value={(serviceOps?.response_breaches ?? 0) + (serviceOps?.resolution_breaches ?? 0)}
-                note="Open tickets past first-response or resolution SLA."
-                icon={Clock3}
-              />
-              <MetricCard
-                label="Due soon"
-                value={serviceOps?.due_soon ?? 0}
-                note="Open tickets within 30 minutes of an SLA deadline."
-                icon={Clock3}
-              />
-            </div>
-          </section>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+                <MetricCard
+                  label="Needs response"
+                  value={serviceOps?.needs_response ?? 0}
+                  note="Open tickets awaiting a public reply."
+                  icon={TriangleAlert}
+                />
+                <MetricCard
+                  label="Unassigned"
+                  value={serviceOps?.unassigned ?? 0}
+                  note="Open tickets with no owner."
+                  icon={Users}
+                />
+                <MetricCard
+                  label="SLA breached"
+                  value={(serviceOps?.response_breaches ?? 0) + (serviceOps?.resolution_breaches ?? 0)}
+                  note="Open tickets past first-response or resolution SLA."
+                  icon={Clock3}
+                />
+                <MetricCard
+                  label="Due soon"
+                  value={serviceOps?.due_soon ?? 0}
+                  note="Open tickets within 30 minutes of an SLA deadline."
+                  icon={Clock3}
+                />
+                <Link
+                  href="/operations?tab=escalations"
+                  className="app-panel rounded-[20px] p-6 transition hover:border-violet-300 hover:shadow-md"
+                >
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-50 text-rose-500">
+                    <TriangleAlert className="h-5 w-5" />
+                  </div>
+                  <p className="mt-5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                    Escalations
+                  </p>
+                  <p className="editorial-number mt-2 text-4xl font-medium tracking-[-0.045em] text-slate-950">
+                    {escalations?.unacknowledged ?? 0}
+                  </p>
+                  <p className="mt-3 text-xs leading-5 text-slate-500">
+                    Unacknowledged escalations
+                    {escalations && escalations.breached > 0
+                      ? ` · ${escalations.breached} breached`
+                      : ""}
+                    .
+                  </p>
+                </Link>
+              </div>
+            </section>
+          )}
 
           {canReadMetrics && (
             <section className="mb-12">

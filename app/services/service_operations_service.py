@@ -131,7 +131,10 @@ class ServiceOperationsService:
             offset=0,
         )
         for ticket, *_ in rows:
-            if ticket.status in ("new", "open", "pending") and ticket.service_queue_id in queue_counts:
+            if (
+                ticket.status in ("new", "open", "pending")
+                and ticket.service_queue_id in queue_counts
+            ):
                 assert ticket.service_queue_id is not None
                 queue_counts[ticket.service_queue_id]["count"] = int(
                     queue_counts[ticket.service_queue_id]["count"]
@@ -172,12 +175,14 @@ class ServiceOperationsService:
             )
         }
 
+        latest_by_ticket = await AgentRunRepository.get_latest_for_tickets_for_tenant(
+            db,
+            ticket_ids=ticket_ids,
+            organization_id=organization_id,
+        )
+
         for ticket_id in ticket_ids:
-            run = await AgentRunRepository.get_latest_for_ticket_and_tenant(
-                db,
-                ticket_id=ticket_id,
-                organization_id=organization_id,
-            )
+            run = latest_by_ticket.get(ticket_id)
             if run is None or not run.recommended_team:
                 continue
 

@@ -512,7 +512,8 @@ async def test_resolution_clears_resolution_due_at(db, client, org_scope):
     assert response.status_code == 200
     assert response.json()["status"] == "solved"
     assert response.json()["resolved_at"] is not None
-    assert response.json()["resolution_due_at"] is None
+    # Historical resolution deadline is preserved for met/breached evaluation.
+    assert response.json()["resolution_due_at"] is not None
 
 
 @pytest.mark.asyncio
@@ -766,3 +767,40 @@ async def test_default_queue_sla_policy_used_when_queue_has_none(db, client, org
     )
     assert response.status_code == 201
     assert response.json()["sla_policy_id"] == sla_id
+
+
+@pytest.mark.asyncio
+async def test_workload_visible_with_ticket_read_and_member_read(
+    db, client, org_scope
+):
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.SUPERVISOR)
+
+    response = await client.get(
+        "/service-operations/workload",
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert list(body.keys()) == ["members"]
+    assert isinstance(body["members"], list)
+    assert len(body["members"]) == 1
+    assert set(body["members"][0].keys()) == {
+        "subject",
+        "open_assigned",
+        "breached",
+        "urgent",
+        "needs_response",
+        "due_soon",
+    }
+
+
+@pytest.mark.asyncio
+async def test_workload_hidden_without_member_read(db, client, org_scope):
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.VIEWER)
+
+    # viewer holds ticket.read but not member.read
+    response = await client.get(
+        "/service-operations/workload",
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert response.status_code == 403

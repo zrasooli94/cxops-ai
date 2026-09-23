@@ -16,6 +16,7 @@ from app.schemas.automation_rule import (
 )
 from app.services.automation_rule_service import (
     AutomationRuleService,
+    InvalidAutomationRuleError,
 )
 
 router = APIRouter(
@@ -52,11 +53,17 @@ async def create_rule(
     authz: AutomationManageAuthz,
 ):
     # organization_id comes from CurrentTenant, never from client payload
-    return await AutomationRuleService.create_for_tenant(
-        db=db,
-        data=data,
-        organization_id=tenant.organization_id,
-    )
+    try:
+        return await AutomationRuleService.create_for_tenant(
+            db=db,
+            data=data,
+            organization_id=tenant.organization_id,
+        )
+    except InvalidAutomationRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
 
 @router.get(
@@ -113,12 +120,18 @@ async def update_rule(
     tenant: CurrentTenant,
     authz: AutomationManageAuthz,
 ):
-    rule = await AutomationRuleService.update_for_tenant(
-        db=db,
-        rule_id=rule_id,
-        data=data,
-        organization_id=tenant.organization_id,
-    )
+    try:
+        rule = await AutomationRuleService.update_for_tenant(
+            db=db,
+            rule_id=rule_id,
+            data=data,
+            organization_id=tenant.organization_id,
+        )
+    except InvalidAutomationRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
     if rule is None:
         raise HTTPException(

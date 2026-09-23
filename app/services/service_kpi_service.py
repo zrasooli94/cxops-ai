@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.service_queue import ServiceQueue
 from app.models.ticket import Ticket
 
 OPEN_TICKET_STATUSES = ("new", "open", "pending")
@@ -229,3 +230,35 @@ class ServiceKPIService:
             "response_breaches": int(row.response_breaches),
             "resolution_breaches": int(row.resolution_breaches),
         }
+
+    @classmethod
+    async def _ticket_map_for_tenant(
+        cls,
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        ticket_ids: list[int],
+    ) -> dict[int, Ticket]:
+        if not ticket_ids:
+            return {}
+        result = await db.execute(
+            select(Ticket).where(
+                Ticket.organization_id == organization_id,
+                Ticket.id.in_(ticket_ids),
+            )
+        )
+        return {ticket.id: ticket for ticket in result.scalars().all()}
+
+    @classmethod
+    async def _queue_map_for_tenant(
+        cls,
+        db: AsyncSession,
+        *,
+        organization_id: int,
+    ) -> dict[int, ServiceQueue]:
+        result = await db.execute(
+            select(ServiceQueue).where(
+                ServiceQueue.organization_id == organization_id,
+            )
+        )
+        return {queue.id: queue for queue in result.scalars().all()}

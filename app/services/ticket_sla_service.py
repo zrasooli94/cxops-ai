@@ -75,14 +75,26 @@ class TicketSLAService:
         current time, so queue/policy/priority changes do not reset the SLA
         clock. Existing completed milestones are preserved.
         """
+        from app.services.service_escalation_service import (
+            ServiceEscalationService,
+        )
+
+        old_first_due = ticket.first_response_due_at
+        old_resolution_due = ticket.resolution_due_at
+
         if policy is None:
             ticket.sla_policy_id = None
-            ticket.first_response_due_at = None
-            ticket.resolution_due_at = None
+            # Preserve historical completed deadlines; only clear active ones.
+            if ticket.first_response_at is None:
+                ticket.first_response_due_at = None
+            if ticket.resolved_at is None:
+                ticket.resolution_due_at = None
             return
 
         ticket.sla_policy_id = policy.id
 
+        # Active milestones recalculate from the original clock anchor.
+        # Completed milestones keep their historical deadline snapshot.
         if ticket.first_response_at is None:
             ticket.first_response_due_at = cls.deadline_for(
                 policy,
@@ -90,17 +102,44 @@ class TicketSLAService:
                 priority=ticket.priority,
                 created_at=ticket.created_at,
             )
-        else:
-            ticket.first_response_due_at = None
 
         if ticket.status in RESOLVED_TICKET_STATUSES:
-            ticket.resolution_due_at = None
+            if ticket.resolved_at is None:
+                ticket.resolved_at = datetime.now(UTC)
+            # Preserve the historical resolution deadline for attainment calcs.
         else:
             ticket.resolution_due_at = cls.deadline_for(
                 policy,
                 metric="resolution",
                 priority=ticket.priority,
                 created_at=ticket.created_at,
+            )
+
+        now = datetime.now(UTC)
+        if (
+            ticket.first_response_at is None
+            and old_first_due is not None
+            and ticket.first_response_due_at != old_first_due
+        ):
+            await ServiceEscalationService.resolve_for_deadline_recalculated(
+                db,
+                ticket=ticket,
+                milestone="first_response",
+                old_due_at=old_first_due,
+                now=now,
+            )
+
+        if (
+            ticket.resolved_at is None
+            and old_resolution_due is not None
+            and ticket.resolution_due_at != old_resolution_due
+        ):
+            await ServiceEscalationService.resolve_for_deadline_recalculated(
+                db,
+                ticket=ticket,
+                milestone="resolution",
+                old_due_at=old_resolution_due,
+                now=now,
             )
 
     @classmethod
@@ -179,7 +218,33 @@ class TicketSLAService:
             return
 
         ticket.first_response_at = responded_at
-        ticket.first_response_due_at = None
+        # Historical first_response_due_at is preserved for met/breached eval.
+        await cls.resolve_escalation_for_milestone_completion(
+            db,
+            ticket,
+            milestone="first_response",
+            now=responded_at,
+        )
+
+    @classmethod
+    async def resolve_escalation_for_milestone_completion(
+        cls,
+        db,
+        ticket,
+        *,
+        milestone,
+        now,
+    ):
+        from app.services.service_escalation_service import (
+            ServiceEscalationService,
+        )
+
+        await ServiceEscalationService.resolve_for_milestone_completion(
+            db,
+            ticket=ticket,
+            milestone=milestone,
+            now=now,
+        )
 
     @classmethod
     async def record_resolution(
@@ -197,7 +262,13 @@ class TicketSLAService:
             return
 
         ticket.resolved_at = resolved_at or datetime.now(UTC)
-        ticket.resolution_due_at = None
+        # Historical resolution_due_at is preserved for met/breached eval.
+        await cls.resolve_escalation_for_milestone_completion(
+            db,
+            ticket,
+            milestone="resolution",
+            now=ticket.resolved_at,
+        )
 
     @classmethod
     async def handle_reopen(
@@ -216,6 +287,21 @@ class TicketSLAService:
         ticket.resolved_at = None
         if ticket.organization_id is None:
             return
+
+        now = datetime.now(UTC)
+
+        # Supersede the prior resolution-cycle escalation before recalculating.
+        from app.services.service_escalation_service import (
+            ServiceEscalationService,
+        )
+
+        await ServiceEscalationService.resolve_for_milestone_completion(
+            db,
+            ticket=ticket,
+            milestone="resolution",
+            now=now,
+            resolution_reason="ticket_reopened",
+        )
 
         policy = None
         if ticket.sla_policy_id is not None:
@@ -238,13 +324,11 @@ class TicketSLAService:
         now: datetime,
     ) -> SLAState:
         """Derive deterministic SLA state for a single milestone."""
-        if completed_at is not None:
-            if due_at is None:
-                return "met"
-            return "met" if completed_at <= due_at else "breached"
-
         if due_at is None:
             return "not_configured"
+
+        if completed_at is not None:
+            return "met" if completed_at <= due_at else "breached"
 
         if now > due_at:
             return "breached"

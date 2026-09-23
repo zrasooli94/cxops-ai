@@ -1,11 +1,16 @@
 import asyncio
+import time
+from datetime import UTC, datetime
 
 from prometheus_client import (
     start_http_server,
 )
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.database import (
     AsyncSessionLocal,
+    engine,
 )
 from app.core.logging import (
     bind_context,
@@ -24,19 +29,88 @@ from app.repositories.integration_job_repository import (
 from app.services.integration_job_service import (
     IntegrationJobService,
 )
+from app.services.sla_escalation_scanner_service import (
+    SLAEscalationScannerService,
+)
 
 WORKER_METRICS_PORT = 9101
+
+# Stable advisory-lock key for the global SLA escalation scanner.
+# Only one worker replica should scan at a time.
+SLA_SCANNER_LOCK_KEY = 0x1A4C_1A4C_1A4C_1A4C
+SLA_SCAN_INTERVAL_SECONDS = 60
 
 configure_logging()
 
 log = get_logger("worker")
 
 
+async def _try_acquire_scanner_lock(
+    lock_conn: AsyncConnection,
+) -> bool:
+    result = await lock_conn.execute(
+        text("SELECT pg_try_advisory_lock(:lock_key)"),
+        {"lock_key": SLA_SCANNER_LOCK_KEY},
+    )
+    acquired = result.scalar()
+    return bool(acquired)
+
+
+async def _release_scanner_lock(
+    lock_conn: AsyncConnection,
+) -> None:
+    result = await lock_conn.execute(
+        text("SELECT pg_advisory_unlock(:lock_key)"),
+        {"lock_key": SLA_SCANNER_LOCK_KEY},
+    )
+    released = result.scalar()
+    if not released:
+        log.error(
+            "scanner_lock_release_failed",
+            lock_key=SLA_SCANNER_LOCK_KEY,
+        )
+
+
+async def run_sla_scan_cycle() -> None:
+    """Run one bounded SLA escalation scan if the advisory lock is available."""
+    lock_conn: AsyncConnection | None = None
+    try:
+        lock_conn = await engine.connect()
+        acquired = await _try_acquire_scanner_lock(lock_conn)
+        if not acquired:
+            log.debug("scanner_lock_unavailable", lock_key=SLA_SCANNER_LOCK_KEY)
+            return
+
+        log.info("sla_scan_started")
+        async with AsyncSessionLocal() as db:
+            evaluated = await SLAEscalationScannerService.scan_once(
+                db,
+                now=datetime.now(UTC),
+            )
+        log.info("sla_scan_completed", evaluated=evaluated)
+
+    except Exception:
+        log.exception("sla_scan_failed")
+    finally:
+        if lock_conn is not None:
+            try:
+                await _release_scanner_lock(lock_conn)
+            finally:
+                await lock_conn.close()
+
+
 async def run_worker() -> None:
 
     log.info("worker_started", metrics_port=WORKER_METRICS_PORT)
 
+    last_scan_time = 0.0
+
     while True:
+        now = time.monotonic()
+        if now - last_scan_time >= SLA_SCAN_INTERVAL_SECONDS:
+            await run_sla_scan_cycle()
+            last_scan_time = now
+
         async with AsyncSessionLocal() as db:
             job = await IntegrationJobRepository.claim_next_unscoped(db)
 

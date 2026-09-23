@@ -1,8 +1,10 @@
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
     Query,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentTenant, RequireCapability
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
+from app.repositories.service_escalation_repository import (
+    ServiceEscalationRepository,
+)
 from app.schemas.observability import (
     AgentObservabilitySummary,
     AgentOperationalKPIs,
@@ -17,6 +22,7 @@ from app.schemas.observability import (
     AIObservabilityBreakdown,
     AIObservabilitySummary,
 )
+from app.schemas.service_escalation import EscalationWindowedSummary
 from app.services.agent_observability_service import (
     AgentObservabilityService,
 )
@@ -127,5 +133,28 @@ async def service_kpis(
     return await ServiceKPIService.kpis_for_tenant(
         db,
         organization_id=tenant.organization_id,
+        days=days,
+    )
+
+
+@router.get(
+    "/service/escalations",
+    response_model=EscalationWindowedSummary,
+)
+async def service_escalations(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
+    days: int = Query(default=30),
+):
+    if days not in (7, 30, 90):
+        raise HTTPException(
+            status_code=400,
+            detail="days must be one of 7, 30, 90",
+        )
+    return await ServiceEscalationRepository.windowed_summary_for_tenant(
+        db,
+        organization_id=tenant.organization_id,
+        now=datetime.now(UTC),
         days=days,
     )

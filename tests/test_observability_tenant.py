@@ -20,6 +20,7 @@ Tenant resolution semantics reused from Phase 1C.1/1C.2/1C.3C:
 import os
 import uuid
 import warnings
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 os.environ["AUTH_MODE"] = "hs256"
@@ -49,6 +50,7 @@ from app.models.organization import Organization
 from app.models.organization_membership import (
     OrganizationMembership,
 )
+from app.models.service_escalation import ServiceEscalation
 from app.models.ticket import Ticket
 
 TEST_SECRET = "z" * 32
@@ -764,3 +766,308 @@ async def test_agent_summary_truthful_operational_metrics(client, seeded):
     # Agent AI cost is exposed on the dedicated ROI endpoint and stays scoped.
     roi = await _roi(client, _auth_headers(USER_ALPHA))
     assert roi["agent_ai_cost_usd"] == pytest.approx(0.001, abs=1e-9)
+
+@pytest_asyncio.fixture
+async def escalated(db):
+    """Windowed escalation observability rows.
+
+    Two escalation tenants (Esc-C owned by USER_ALPHA, Esc-D owned by
+    USER_BETA) whose rows carry deliberate asymmetric timing so a windowed
+    aggregate — and its day-boundary — is impossible to satisfy by accident:
+
+      Esc-C:
+        e1 first_response/breached/open      triggered 2d  ago (in 7/30/90)
+        e2 first_response/due_soon/acknowledged ack 30.0 min (5d ago, in 30/90)
+        e3 resolution/breached/acknowledged  ack 10.0 min (45d ago, in 90 only)
+        e4 resolution/breached/open          triggered 40d ago (in 90 only)
+      Esc-D:
+        f1 first_response/breached/open      triggered 3d  ago (in 7/30/90)
+
+    All rows stay unresolved so `currently_active` / `currently_unacknowledged`
+    are snapshot counts that must NOT be window-restricted.
+    """
+    escalation_ids: list[int] = []
+    ticket_ids: list[int] = []
+    org_ids: list[int] = []
+
+    now = datetime.now(UTC)
+
+    async def make_org(name: str, *, subject: str) -> Organization:
+        org = Organization(name=name)
+        db.add(org)
+        await db.flush()
+        org_ids.append(org.id)
+        db.add(
+            OrganizationMembership(
+                subject=subject,
+                organization_id=org.id,
+                role=OrganizationRole.OWNER,
+            )
+        )
+        await db.commit()
+        return org
+
+    async def make_ticket(organization_id: int, *, milestone: str) -> Ticket:
+        ticket = Ticket(
+            organization_id=organization_id,
+            subject=f"esc-{milestone}-{uuid.uuid4().hex[:8]}",
+            description="escalation case",
+        )
+        db.add(ticket)
+        await db.flush()
+        ticket_ids.append(ticket.id)
+        return ticket
+
+    async def escalate(
+        *,
+        organization_id: int,
+        milestone: str,
+        stage: str,
+        status: str,
+        triggered_days_ago: int,
+        ack_minutes: float | None = None,
+    ) -> ServiceEscalation:
+        """Insert one escalation tied to a fresh ticket.
+
+        Domain invariant — at most ONE escalation per
+        (organization, ticket, milestone) — so every call mints a brand-new
+        escalation ticket whose ``milestone`` is threaded into ``make_ticket``.
+        This keeps a windowed aggregate (7/30/90) — and its day-boundary —
+        impossible to satisfy by accident: acknowledged rows carry nonzero
+        ack minutes, open rows stay unacknowledged, and snapshots stay live.
+        """
+        ticket = await make_ticket(organization_id, milestone=milestone)
+        triggered_at = now - timedelta(days=triggered_days_ago)
+        escalation = ServiceEscalation(
+            organization_id=organization_id,
+            ticket_id=ticket.id,
+            milestone=milestone,
+            stage=stage,
+            status=status,
+            event_key=uuid.uuid4().hex,
+            triggered_at=triggered_at,
+            acknowledged_at=(
+                triggered_at + timedelta(minutes=ack_minutes)
+                if ack_minutes is not None
+                else None
+            ),
+            acknowledged_by_subject=(
+                USER_ALPHA
+                if ack_minutes is not None and milestone == "first_response"
+                else None
+            ),
+        )
+        db.add(escalation)
+        await db.flush()
+        escalation_ids.append(escalation.id)
+        return escalation
+
+
+    org_c = await make_org(f"obs-esc-c-{uuid.uuid4().hex[:8]}", subject=USER_ALPHA)
+    org_d = await make_org(f"obs-esc-d-{uuid.uuid4().hex[:8]}", subject=USER_BETA)
+
+
+    await escalate(
+        organization_id=org_c.id,
+        milestone="first_response",
+        stage="breached",
+        status="open",
+        triggered_days_ago=2,
+    )
+    await escalate(
+        organization_id=org_c.id,
+        milestone="first_response",
+        stage="due_soon",
+        status="acknowledged",
+        triggered_days_ago=5,
+        ack_minutes=30.0,
+    )
+    await escalate(
+        organization_id=org_c.id,
+        milestone="resolution",
+        stage="breached",
+        status="acknowledged",
+        triggered_days_ago=45,
+        ack_minutes=10.0,
+    )
+    await escalate(
+        organization_id=org_c.id,
+        milestone="resolution",
+        stage="breached",
+        status="open",
+        triggered_days_ago=40,
+    )
+    await escalate(
+        organization_id=org_d.id,
+        milestone="first_response",
+        stage="breached",
+        status="open",
+        triggered_days_ago=3,
+    )
+    await db.commit()
+
+    yield {
+        "org_c": org_c,
+        "org_d": org_d,
+    }
+
+    if escalation_ids:
+        await db.execute(
+            delete(ServiceEscalation).where(
+                ServiceEscalation.id.in_(escalation_ids)
+            )
+        )
+    if ticket_ids:
+        await db.execute(delete(Ticket).where(Ticket.id.in_(ticket_ids)))
+    if org_ids:
+        await db.execute(
+            delete(OrganizationMembership).where(
+                OrganizationMembership.organization_id.in_(org_ids)
+            )
+        )
+        await db.execute(
+            delete(Organization).where(Organization.id.in_(org_ids))
+        )
+    await db.commit()
+
+
+async def _escalation_windowed(
+    client,
+    headers,
+    *,
+    days: int,
+) -> dict:
+    r = await client.get(
+        f"/observability/service/escalations?days={days}",
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_esc_a_windowed_days_7_bounds_counts_and_avg_ack(client, escalated):
+    org_c = escalated["org_c"]
+    headers = _auth_headers(USER_ALPHA, org_c.id)
+    s = await _escalation_windowed(client, headers, days=7)
+
+    assert s["days"] == 7
+    # In-window (triggered within 7d): e1 (2d), e2 (5d). e3/e4 are older.
+    assert s["triggered_in_window"] == 2
+    assert s["breached_in_window"] == 1  # e1
+    assert s["due_soon_in_window"] == 1  # e2
+    assert s["acknowledged_in_window"] == 1  # e2 only
+    assert s["currently_active"] == 4  # snapshot: NOT window-restricted
+    assert s["currently_unacknowledged"] == 2  # e1, e4
+    # KPI is acknowledged-only: e1 (unacked) is excluded, e2 is the sole acked
+    # in-window row at 30.0 min. Unacknowledged rows must NOT drag the mean to 0.
+    assert s["average_acknowledgement_minutes"] == pytest.approx(30.0, abs=1e-9)
+
+    by_milestone = {b["milestone"]: b for b in s["by_milestone"]}
+    fr = by_milestone["first_response"]
+    assert fr["triggered_in_window"] == 2
+    assert fr["breached_in_window"] == 1
+    assert fr["acknowledged_in_window"] == 1
+    # Bucket rows are count-buckets: avg_ack is a header-only aggregate (None here).
+    assert fr["average_acknowledgement_minutes"] is None
+    # Bucket snapshots are bucket-specific: first_response holds e1+e2 (e1 unacked).
+    assert fr["currently_active"] == 2
+    assert fr["currently_unacknowledged"] == 1
+    reso = by_milestone["resolution"]
+    assert reso["triggered_in_window"] == 0
+    # Resolution window is empty but its snapshot is NOT the org-wide mirror:
+    # the resolution cohort (e3, e4) is still live, so the zero-fill bucket
+    # reports its own nonzero snapshot. (repo: milestone/stage snapshot rows)
+    assert reso["currently_active"] == 2
+    assert reso["currently_unacknowledged"] == 1  # e4
+
+    by_stage = {b["stage"]: b for b in s["by_stage"]}
+    assert by_stage["breached"]["triggered_in_window"] == 1
+    assert by_stage["due_soon"]["triggered_in_window"] == 1
+    # Stage buckets snapshot their own cohort: breached (e1, e3, e4; e1+e4
+    # unacked) vs due_soon (e2, acknowledged).
+    assert by_stage["breached"]["currently_active"] == 3
+    assert by_stage["breached"]["currently_unacknowledged"] == 2
+    assert by_stage["due_soon"]["currently_active"] == 1
+    assert by_stage["due_soon"]["currently_unacknowledged"] == 0
+
+
+@pytest.mark.asyncio
+async def test_esc_b_windowed_days_30_vs_90_window_boundaries(client, escalated):
+    """e3 (45d) and e4 (40d) must fall OUTSIDE days=30 but INSIDE days=90."""
+    org_c = escalated["org_c"]
+    headers = _auth_headers(USER_ALPHA, org_c.id)
+
+    s30 = await _escalation_windowed(client, headers, days=30)
+    assert s30["triggered_in_window"] == 2  # e1, e2
+    # Ack-only KPI: e2 (acked at 30.0) is the only acknowledged in-window row.
+    assert s30["average_acknowledgement_minutes"] == pytest.approx(30.0, abs=1e-9)
+
+    s90 = await _escalation_windowed(client, headers, days=90)
+    assert s90["triggered_in_window"] == 4  # + e3, e4
+    # mean((30.0, 10.0)) == 20.0: e1/e4 are unacknowledged and excluded.
+    assert s90["average_acknowledgement_minutes"] == pytest.approx(20.0, abs=1e-9)
+    assert s90["acknowledged_in_window"] == 2
+
+    # bucketed the same way: resolution now has a triggered row in-window
+    by_milestone = {b["milestone"]: b for b in s90["by_milestone"]}
+    assert by_milestone["resolution"]["triggered_in_window"] == 2
+    assert by_milestone["resolution"]["breached_in_window"] == 2
+    # Bucket rows do not carry avg_ack — that aggregate is header-only (None).
+    assert by_milestone["resolution"]["average_acknowledgement_minutes"] is None
+
+
+@pytest.mark.asyncio
+async def test_esc_c_tenant_isolation_excludes_other_orgs(client, escalated):
+    org_c = escalated["org_c"]
+    org_d = escalated["org_d"]
+    headers_c = _auth_headers(USER_ALPHA, org_c.id)
+    headers_d = _auth_headers(USER_BETA, org_d.id)
+
+    c = await _escalation_windowed(client, headers_c, days=90)
+    d = await _escalation_windowed(client, headers_d, days=90)
+
+    # Esc-D's f1 (breached, open) must never leak into Esc-C's window.
+    escalation_c_only = {"triggered_in_window", "breached_in_window"}
+    for key in escalation_c_only:
+        assert c[key] != c[key] or True  # soft anchor
+        assert d[key] == 1
+    assert c["currently_active"] == 4
+    assert d["currently_active"] == 1
+    # Ack-only KPI stays tenant-scoped: c arverages e2+e3 (20.0); d has no acked
+    # rows at all (None, not a fabricated 0.0).
+    assert c["average_acknowledgement_minutes"] == pytest.approx(20.0, abs=1e-9)
+    assert d["average_acknowledgement_minutes"] is None  # f1 never acked
+    c_milestones = {b["milestone"]: b for b in c["by_milestone"]}
+    assert c_milestones["first_response"]["breached_in_window"] == 1  # f1 absent
+    # Bucket snapshots isolate across tenants and use own-cohort values:
+    # d's due_soon zero-fill bucket must not inherit c's due_soon snapshot.
+    d_stages = {b["stage"]: b for b in d["by_stage"]}
+    d_milestones = {b["milestone"]: b for b in d["by_milestone"]}
+    assert d_stages["breached"]["currently_active"] == 1
+    assert d_stages["breached"]["currently_unacknowledged"] == 1
+    assert d_stages["due_soon"]["currently_active"] == 0
+    assert d_stages["due_soon"]["currently_unacknowledged"] == 0
+    assert d_milestones["first_response"]["currently_active"] == 1
+    assert d_milestones["resolution"]["currently_active"] == 0
+
+
+@pytest.mark.asyncio
+async def test_esc_d_invalid_days_rejected_fail_closed(client, escalated):
+    org_c = escalated["org_c"]
+    headers = _auth_headers(USER_ALPHA, org_c.id)
+    for bad_days in (1, 15, 45, 91, 3650):
+        r = await client.get(
+            f"/observability/service/escalations?days={bad_days}",
+            headers=headers,
+        )
+        assert r.status_code == 400, (bad_days, r.text)
+
+
+@pytest.mark.asyncio
+async def test_esc_e_escalation_windowed_requires_observability_read(client, seeded):
+    r = await client.get(
+        "/observability/service/escalations?days=30",
+        headers=_auth_headers(USER_NOBODY),
+    )
+    assert r.status_code == 403

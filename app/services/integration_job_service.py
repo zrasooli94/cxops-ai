@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +16,10 @@ from app.repositories.conversation_message_repository import (
 from app.repositories.integration_job_repository import (
     IntegrationJobRepository,
 )
+from app.repositories.ticket_event_repository import (
+    TicketEventRepository,
+)
+from app.repositories.ticket_repository import TicketRepository
 from app.schemas.job import JobAccepted
 from app.services.agent_execution_service import (
     agent_execution_service,
@@ -27,6 +33,13 @@ from app.services.conversation_reply_service import (
     JOB_TYPE_CONVERSATION_REPLY,
     ConversationReplyService,
 )
+from app.services.service_escalation_service import (
+    ServiceEscalationService,
+)
+from app.services.sla_escalation_scanner_service import (
+    SLA_ESCALATION_JOB_TYPE,
+)
+from app.services.ticket_sla_service import TicketSLAService
 from app.services.zendesk_webhook_service import (
     ZendeskWebhookService,
 )
@@ -40,6 +53,7 @@ class IntegrationJobService:
     ZENDESK_TICKET_EVENT = "zendesk.ticket_event"
     AGENT_EXECUTION = "agent.execute"
     CONVERSATION_REPLY = JOB_TYPE_CONVERSATION_REPLY
+    SLA_ESCALATION = SLA_ESCALATION_JOB_TYPE
 
     @staticmethod
     async def _assert_agent_execution_target(
@@ -258,6 +272,91 @@ class IntegrationJobService:
 
                 await db.commit()
                 return
+
+            return
+
+        # SLA escalation transition job
+        if job.job_type == IntegrationJobService.SLA_ESCALATION:
+            payload = job.payload
+            organization_id = job.organization_id
+            if organization_id is None:
+                raise ValueError("SLA escalation job is missing an organization binding")
+
+            ticket_id = int(payload["ticket_id"])
+            milestone = str(payload["milestone"])
+            expected_stage = str(payload.get("stage"))
+            expected_cycle = int(payload.get("sla_cycle", 0))
+            due_at_iso = payload.get("due_at")
+            expected_due_at = None
+            if due_at_iso:
+                from datetime import datetime as _dt
+                expected_due_at = _dt.fromisoformat(due_at_iso)
+
+            ticket = await TicketRepository.get_by_id_for_tenant(
+                db,
+                ticket_id=ticket_id,
+                organization_id=organization_id,
+            )
+            if ticket is None:
+                return
+
+            # Revalidation: stale jobs are no-ops.
+            current_cycle = (
+                ticket.resolution_sla_cycle if milestone == "resolution" else 0
+            )
+            current_due_at = (
+                ticket.first_response_due_at
+                if milestone == "first_response"
+                else ticket.resolution_due_at
+            )
+            if current_cycle != expected_cycle or current_due_at != expected_due_at:
+                return
+
+            # A milestone that completed after this job was enqueued is stale:
+            # completion re-evaluated the escalation via ensure_transition, which
+            # resolves any lingering active escalation with milestone_completed.
+            if (
+                (
+                    milestone == "first_response"
+                    and ticket.first_response_at is not None
+                )
+                or (milestone == "resolution" and ticket.resolved_at is not None)
+            ):
+                return
+
+            current_state = (
+                TicketSLAService.first_response_state(ticket, now=datetime.now(UTC))
+                if milestone == "first_response"
+                else TicketSLAService.resolution_state(ticket, now=datetime.now(UTC))
+            )
+            expected_state_map = {
+                "due_soon": "due_soon",
+                "breached": "breached",
+            }
+            if current_state != expected_state_map.get(expected_stage):
+                return
+
+            escalation = await ServiceEscalationService.ensure_transition(
+                db,
+                ticket=ticket,
+                milestone=milestone,  # type: ignore[arg-type]
+                now=datetime.now(UTC),
+            )
+
+            if escalation is not None:
+                from app.services.automation_service import AutomationService
+
+                event_key = ServiceEscalationService.ticket_event_key(
+                    escalation_id=escalation.id,
+                    transition_version=escalation.transition_version,
+                )
+                event = await TicketEventRepository.get_by_event_key(db, event_key)
+                if event is not None and not event.processed:
+                    await AutomationService.process_ticket_event(
+                        db,
+                        event=event,
+                        organization_id=organization_id,
+                    )
 
             return
 

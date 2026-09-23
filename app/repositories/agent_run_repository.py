@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -190,6 +190,56 @@ class AgentRunRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_latest_for_tickets_for_tenant(
+        db: AsyncSession,
+        *,
+        ticket_ids: list[int],
+        organization_id: int,
+    ) -> dict[int, AgentRun]:
+        """Latest run per ticket for a tenant, in one query.
+
+        Mirrors ``get_latest_for_ticket_and_tenant`` (created_at desc, id desc)
+        across many tickets via a window function, replacing the per-ticket
+        lookup that caused the workload-loop N+1.
+        """
+        if not ticket_ids:
+            return {}
+
+        window_select = (
+            select(
+                AgentRun.ticket_id,
+                func.row_number()
+                .over(
+                    partition_by=AgentRun.ticket_id,
+                    order_by=(
+                        AgentRun.created_at.desc(),
+                        AgentRun.id.desc(),
+                    ),
+                )
+                .label("_rn"),
+            )
+            .where(
+                AgentRun.ticket_id.in_(ticket_ids),
+                AgentRun.organization_id == organization_id,
+            )
+            .subquery()
+        )
+
+        result = await db.execute(
+            select(AgentRun)
+            .join(
+                window_select,
+                window_select.c.ticket_id == AgentRun.ticket_id,
+            )
+            .where(window_select.c._rn == 1)
+        )
+
+        latest: dict[int, AgentRun] = {}
+        for run in result.scalars():
+            latest[run.ticket_id] = run
+        return latest
+
+    @staticmethod
     async def get_by_run_id_unscoped(
         db: AsyncSession,
         run_id: str,
@@ -288,7 +338,7 @@ class AgentRunRepository:
 
         run.status = "approved"
         run.reviewer_note = note
-        run.reviewed_at = datetime.now(timezone.utc)
+        run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(run)
@@ -306,7 +356,7 @@ class AgentRunRepository:
 
         run.status = "rejected"
         run.reviewer_note = note
-        run.reviewed_at = datetime.now(timezone.utc)
+        run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(run)
@@ -385,7 +435,7 @@ class AgentRunRepository:
 
         run.status = "executed"
 
-        run.executed_at = datetime.now(timezone.utc)
+        run.executed_at = datetime.now(UTC)
 
         run.error_message = None
 
@@ -444,7 +494,7 @@ class AgentRunRepository:
 
         run.status = "reviewed"
         run.reviewer_note = note
-        run.reviewed_at = datetime.now(timezone.utc)
+        run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(run)
@@ -463,7 +513,7 @@ class AgentRunRepository:
         run.status = "no_action"
         run.reviewer_note = note
 
-        run.reviewed_at = datetime.now(timezone.utc)
+        run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(run)
@@ -482,7 +532,7 @@ class AgentRunRepository:
 
         run.reviewer_note = "Automatically approved by low-risk tool policy"
 
-        run.reviewed_at = datetime.now(timezone.utc)
+        run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
         await db.refresh(run)
