@@ -97,6 +97,24 @@ describe("capability-driven navigation", () => {
     );
   });
 
+  it("evaluation.read reveals the evaluations destination", () => {
+    assert.equal(visibleHrefs([]).includes("/evaluations"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/evaluations"),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.EVALUATION_READ]).includes("/evaluations"),
+    );
+  });
+
+  it("evaluation.manage alone never reveals the evaluations destination", () => {
+    assert.equal(
+      visibleHrefs([CAPABILITIES.EVALUATION_MANAGE]).includes("/evaluations"),
+      false,
+    );
+  });
+
   it("an unknown capability string never unlocks a destination", () => {
     assert.equal(
       visibleHrefs(["ticket.read.everything"]).includes("/tickets"),
@@ -174,6 +192,7 @@ describe("control-center route requirements", () => {
     ["/runs", CAPABILITIES.AGENT_RUN],
     ["/observability", CAPABILITIES.OBSERVABILITY_READ],
     ["/operations", CAPABILITIES.TICKET_READ],
+    ["/evaluations", CAPABILITIES.EVALUATION_READ],
   ];
 
   for (const [route, requirement] of expected) {

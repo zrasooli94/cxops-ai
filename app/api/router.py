@@ -4,6 +4,7 @@ from app.api.routes.agent import router as agent_router
 from app.api.routes.automation_rules import router as automation_rules_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.customers import router as customers_router
+from app.api.routes.evaluations import router as evaluations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.knowledge import router as knowledge_router
 from app.api.routes.observability import router as observability_router
@@ -37,3 +38,4 @@ api_router.include_router(service_operations_router)
 api_router.include_router(service_queues_router)
 api_router.include_router(sla_policies_router)
 api_router.include_router(agent_router)
+api_router.include_router(evaluations_router)

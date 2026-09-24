@@ -194,8 +194,37 @@ def test_supervisor_matrix():
         Capability.OBSERVABILITY_READ,
         Capability.INTEGRATION_READ,
         Capability.MEMBER_READ,
+        Capability.EVALUATION_READ,
+        Capability.EVALUATION_MANAGE,
     }
     assert ROLE_CAPABILITIES[OrganizationRole.SUPERVISOR] == frozenset(expected)
+
+
+def test_evaluation_capabilities_matrix():
+    assert Capability.EVALUATION_READ in ALL_CAPABILITIES
+    assert Capability.EVALUATION_MANAGE in ALL_CAPABILITIES
+
+    for role in (OrganizationRole.OWNER, OrganizationRole.ADMIN):
+        caps = capabilities_for_role(role)
+        assert Capability.EVALUATION_READ in caps
+        assert Capability.EVALUATION_MANAGE in caps
+
+    caps = capabilities_for_role(OrganizationRole.SUPERVISOR)
+    assert Capability.EVALUATION_READ in caps
+    assert Capability.EVALUATION_MANAGE in caps
+
+    for role in (OrganizationRole.AGENT, OrganizationRole.VIEWER):
+        caps = capabilities_for_role(role)
+        assert Capability.EVALUATION_READ not in caps
+        assert Capability.EVALUATION_MANAGE not in caps
+
+
+def test_evaluation_capabilities_fail_closed():
+    authz = AuthorizationContext(
+        organization_id=1, subject="sub", role=OrganizationRole.VIEWER
+    )
+    assert not has_capability(authz, Capability.EVALUATION_READ)
+    assert not has_capability(authz, Capability.EVALUATION_MANAGE)
 
 
 def test_agent_matrix():

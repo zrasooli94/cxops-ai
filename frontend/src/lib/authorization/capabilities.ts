@@ -28,6 +28,8 @@ export const CAPABILITIES = {
   INTEGRATION_READ: "integration.read",
   INTEGRATION_MANAGE: "integration.manage",
   OBSERVABILITY_READ: "observability.read",
+  EVALUATION_READ: "evaluation.read",
+  EVALUATION_MANAGE: "evaluation.manage",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];

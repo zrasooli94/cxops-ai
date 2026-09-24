@@ -75,6 +75,10 @@ class Capability(str, Enum):
     # Observability
     OBSERVABILITY_READ = "observability.read"
 
+    # AI evaluations
+    EVALUATION_READ = "evaluation.read"
+    EVALUATION_MANAGE = "evaluation.manage"
+
 
 ALL_CAPABILITIES: frozenset[Capability] = frozenset(Capability)
 
@@ -116,6 +120,8 @@ ROLE_CAPABILITIES: dict[OrganizationRole, frozenset[Capability]] = {
         Capability.OBSERVABILITY_READ,
         Capability.INTEGRATION_READ,
         Capability.MEMBER_READ,
+        Capability.EVALUATION_READ,
+        Capability.EVALUATION_MANAGE,
     }),
     OrganizationRole.AGENT: frozenset({
         Capability.CUSTOMER_READ,

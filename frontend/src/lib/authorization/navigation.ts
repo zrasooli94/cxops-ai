@@ -21,7 +21,8 @@ export type NavigationIconName =
   | "workflow"
   | "activity"
   | "users"
-  | "layers";
+  | "layers"
+  | "clipboard-check";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -35,7 +36,8 @@ export type ControlCenterRoute =
   | "/knowledge"
   | "/runs"
   | "/observability"
-  | "/operations";
+  | "/operations"
+  | "/evaluations";
 
 /**
  * Single source of truth for what each route requires. Sidebar visibility
@@ -58,6 +60,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/runs": CAPABILITIES.AGENT_RUN,
   "/observability": CAPABILITIES.OBSERVABILITY_READ,
   "/operations": CAPABILITIES.TICKET_READ,
+  "/evaluations": CAPABILITIES.EVALUATION_READ,
 };
 
 export interface NavigationItem {
@@ -113,6 +116,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Queues, ownership & SLA",
     icon: "layers",
     requiredCapability: ROUTE_REQUIREMENTS["/operations"],
+  },
+  {
+    href: "/evaluations",
+    label: "Evaluations",
+    description: "AI evaluation runs & results",
+    icon: "clipboard-check",
+    requiredCapability: ROUTE_REQUIREMENTS["/evaluations"],
   },
   {
     href: "/inbox",

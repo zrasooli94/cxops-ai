@@ -10,6 +10,9 @@ from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
+from app.repositories.ai_evaluation_repository import (
+    AIEvaluationRepository,
+)
 from app.repositories.conversation_message_repository import (
     ConversationMessageRepository,
 )
@@ -54,6 +57,7 @@ class IntegrationJobService:
     AGENT_EXECUTION = "agent.execute"
     CONVERSATION_REPLY = JOB_TYPE_CONVERSATION_REPLY
     SLA_ESCALATION = SLA_ESCALATION_JOB_TYPE
+    AI_EVALUATION = "ai.evaluation"
 
     @staticmethod
     async def _assert_agent_execution_target(
@@ -69,9 +73,7 @@ class IntegrationJobService:
         )
 
         if run is None:
-            raise AgentExecutionQueueBlockedError(
-                f"Agent run {run_id} was not found."
-            )
+            raise AgentExecutionQueueBlockedError(f"Agent run {run_id} was not found.")
 
         result = await db.execute(
             select(Ticket).where(
@@ -178,9 +180,7 @@ class IntegrationJobService:
             payload = job.payload
 
             if job.organization_id is None:
-                raise ValueError(
-                    "Zendesk webhook job is missing an organization binding"
-                )
+                raise ValueError("Zendesk webhook job is missing an organization binding")
 
             await ZendeskWebhookService.process(
                 db=db,
@@ -204,9 +204,7 @@ class IntegrationJobService:
             organization_id = job.organization_id
 
             if organization_id is None:
-                raise ValueError(
-                    "Agent execution job is missing an organization binding"
-                )
+                raise ValueError("Agent execution job is missing an organization binding")
 
             await agent_execution_service.execute(
                 db=db,
@@ -221,9 +219,7 @@ class IntegrationJobService:
             organization_id = job.organization_id
 
             if organization_id is None:
-                raise ValueError(
-                    "Conversation reply job is missing an organization binding"
-                )
+                raise ValueError("Conversation reply job is missing an organization binding")
 
             payload = job.payload
             message_id = int(payload["message_id"])
@@ -290,6 +286,7 @@ class IntegrationJobService:
             expected_due_at = None
             if due_at_iso:
                 from datetime import datetime as _dt
+
                 expected_due_at = _dt.fromisoformat(due_at_iso)
 
             ticket = await TicketRepository.get_by_id_for_tenant(
@@ -301,9 +298,7 @@ class IntegrationJobService:
                 return
 
             # Revalidation: stale jobs are no-ops.
-            current_cycle = (
-                ticket.resolution_sla_cycle if milestone == "resolution" else 0
-            )
+            current_cycle = ticket.resolution_sla_cycle if milestone == "resolution" else 0
             current_due_at = (
                 ticket.first_response_due_at
                 if milestone == "first_response"
@@ -315,12 +310,8 @@ class IntegrationJobService:
             # A milestone that completed after this job was enqueued is stale:
             # completion re-evaluated the escalation via ensure_transition, which
             # resolves any lingering active escalation with milestone_completed.
-            if (
-                (
-                    milestone == "first_response"
-                    and ticket.first_response_at is not None
-                )
-                or (milestone == "resolution" and ticket.resolved_at is not None)
+            if (milestone == "first_response" and ticket.first_response_at is not None) or (
+                milestone == "resolution" and ticket.resolved_at is not None
             ):
                 return
 
@@ -357,6 +348,47 @@ class IntegrationJobService:
                         event=event,
                         organization_id=organization_id,
                     )
+
+            return
+
+        # Durable AI evaluation job
+        if job.job_type == IntegrationJobService.AI_EVALUATION:
+            organization_id = job.organization_id
+
+            if organization_id is None:
+                raise ValueError("AI evaluation job is missing an organization binding")
+
+            payload = job.payload
+            evaluation_run_id = str(payload["evaluation_run_id"])
+            target_type = str(payload["target_type"])
+
+            # Imported lazily: ``agent_workflow_service`` imports this module at
+            # import time, and AIEvaluationService pulls agent_evaluation_service
+            # → agent_workflow_service, which would deadlock at module load.
+            from app.services.ai_evaluation_service import AIEvaluationService
+
+            try:
+                if target_type == "rag":
+                    await AIEvaluationService.execute_existing_rag_run(
+                        db=db,
+                        organization_id=organization_id,
+                        run_id=evaluation_run_id,
+                    )
+                elif target_type == "agent":
+                    await AIEvaluationService.execute_existing_agent_run(
+                        db=db,
+                        organization_id=organization_id,
+                        run_id=evaluation_run_id,
+                    )
+                else:
+                    raise ValueError(f"Unsupported AI evaluation target_type: {target_type}")
+            except Exception as exc:
+                # Job-facing errors stay type-name-only so the worker's
+                # ``last_error``/logs never echo case input or model output;
+                # the run itself already carries its own safe, specific error.
+                raise RuntimeError(
+                    f"ai.evaluation run {evaluation_run_id} failed: {type(exc).__name__}"
+                ) from exc
 
             return
 
@@ -471,6 +503,101 @@ class IntegrationJobService:
 
         return {
             "run_id": run_id,
+            "job_id": job.id,
+            "status": job.status,
+            "duplicate": False,
+        }
+
+    @staticmethod
+    async def enqueue_ai_evaluation(
+        db: AsyncSession,
+        *,
+        evaluation_run_id: str,
+        target_type: str,
+        organization_id: int,
+    ) -> dict:
+        """Enqueue a durable AI evaluation job for a provisioned run.
+
+        Validates that the run exists for the tenant and that its ``target_type``
+        matches before creating the job; the job payload never carries case input
+        or customer content — the run's sanitized snapshot in ``run.input`` is
+        the execution-time reference. Deduplication is per
+        ``(organization_id, evaluation_run_id)``.
+        """
+        if target_type not in ("rag", "agent"):
+            raise ValueError(f"Unsupported AI evaluation target_type: {target_type}")
+
+        run = await AIEvaluationRepository.get_run_for_tenant(
+            db=db,
+            run_id=evaluation_run_id,
+            organization_id=organization_id,
+        )
+        if run is None:
+            raise ValueError(
+                f"AI evaluation run {evaluation_run_id} was not found for the organization."
+            )
+        if run.target_type != target_type:
+            raise ValueError(
+                f"AI evaluation run {evaluation_run_id} is target_type "
+                f"'{run.target_type}', not '{target_type}'."
+            )
+
+        dedupe_key = f"ai-evaluation:{organization_id}:{evaluation_run_id}"
+
+        existing = await IntegrationJobRepository.get_by_dedupe_key(
+            db,
+            dedupe_key,
+        )
+
+        if existing:
+            return {
+                "evaluation_run_id": evaluation_run_id,
+                "target_type": target_type,
+                "job_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+            }
+
+        # Propagate request correlation ID if available
+        request_id = get_request_id()
+
+        try:
+            job = await IntegrationJobRepository.create(
+                db,
+                job=IntegrationJob(
+                    dedupe_key=dedupe_key,
+                    job_type=(IntegrationJobService.AI_EVALUATION),
+                    organization_id=organization_id,
+                    payload={
+                        "evaluation_run_id": evaluation_run_id,
+                        "target_type": target_type,
+                        "request_id": request_id,
+                    },
+                ),
+            )
+
+        except IntegrityError:
+            await db.rollback()
+
+            existing = await IntegrationJobRepository.get_by_dedupe_key(
+                db,
+                dedupe_key,
+            )
+
+            if existing is None:
+                raise
+
+            return {
+                "evaluation_run_id": evaluation_run_id,
+                "target_type": target_type,
+                "job_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+            }
+
+        return {
+            "evaluation_run_id": evaluation_run_id,
+            "target_type": target_type,
             "job_id": job.id,
             "status": job.status,
             "duplicate": False,

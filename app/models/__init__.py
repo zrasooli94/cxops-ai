@@ -1,5 +1,9 @@
 from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
+from app.models.ai_evaluation_baseline import AIEvaluationBaseline
+from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
+from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.automation_rule import AutomationRule
 from app.models.base import Base
@@ -21,6 +25,10 @@ from app.models.zendesk_oauth_state import ZendeskOAuthState
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
 
 __all__ = [
+    "AIEvaluationBaseline",
+    "AIEvaluationCase",
+    "AIEvaluationReleaseDecision",
+    "AIEvaluationRun",
     "AIRequestLog",
     "AgentActionEvent",
     "AgentRun",
