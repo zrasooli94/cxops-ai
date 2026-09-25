@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Literal
 
 from sqlalchemy import case, select
@@ -358,7 +359,7 @@ class ServiceEscalationRepository:
         head_where = cohort_where + (
             ServiceEscalation.acknowledged_at.is_not(None),
         )
-        avg = (
+        avg: Decimal | None = (
             await db.execute(
                 select(
                     func.avg(

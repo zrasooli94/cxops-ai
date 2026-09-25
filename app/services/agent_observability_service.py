@@ -1,5 +1,6 @@
 from collections import Counter
 from collections import Counter as CounterType
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -109,7 +110,7 @@ class AgentObservabilityService:
             )
         )
 
-        plans = result.scalars().all()
+        plans: Sequence[list[dict]] = result.scalars().all()
 
         tool_usage: CounterType[str] = Counter()
         risk_levels: CounterType[str] = Counter()
