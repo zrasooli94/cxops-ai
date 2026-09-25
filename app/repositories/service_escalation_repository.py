@@ -325,6 +325,7 @@ class ServiceEscalationRepository:
         cohort_where = (
             ServiceEscalation.organization_id == organization_id,
             ServiceEscalation.triggered_at >= window_start,
+            ServiceEscalation.triggered_at <= now,
         )
 
         header = await db.execute(
@@ -406,7 +407,12 @@ class ServiceEscalationRepository:
                         ServiceEscalation.milestone.label("milestone"),
                         func.count().label("currently_active"),
                         func.coalesce(
-                            func.sum(case((ServiceEscalation.acknowledged_at.is_(None), 1), else_=0)),
+                            func.sum(
+                                case(
+                                    (ServiceEscalation.acknowledged_at.is_(None), 1),
+                                    else_=0,
+                                )
+                            ),
                             0,
                         ).label("currently_unacknowledged"),
                     ).where(
@@ -424,7 +430,12 @@ class ServiceEscalationRepository:
                         ServiceEscalation.stage.label("stage"),
                         func.count().label("currently_active"),
                         func.coalesce(
-                            func.sum(case((ServiceEscalation.acknowledged_at.is_(None), 1), else_=0)),
+                            func.sum(
+                                case(
+                                    (ServiceEscalation.acknowledged_at.is_(None), 1),
+                                    else_=0,
+                                )
+                            ),
                             0,
                         ).label("currently_unacknowledged"),
                     ).where(

@@ -211,6 +211,12 @@ SLA_ESCALATIONS_ACKNOWLEDGED_TOTAL = Counter(
 )
 
 
+SERVICE_TRANSFORMATION_REQUESTS_TOTAL = Counter(
+    "cxops_service_transformation_requests_total",
+    "Service transformation analytics requests.",
+)
+
+
 # =====================================================
 # Recording helpers
 # =====================================================
@@ -415,3 +421,7 @@ def record_escalation_acknowledged(
         milestone=milestone,
         stage=stage,
     ).inc()
+
+
+def record_service_transformation_request() -> None:
+    SERVICE_TRANSFORMATION_REQUESTS_TOTAL.inc()

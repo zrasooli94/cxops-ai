@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -11,6 +11,7 @@ from app.api.deps import (
     RequireCapability,
 )
 from app.core.database import get_db
+from app.core.metrics import record_service_transformation_request
 from app.core.rbac import Capability
 from app.repositories.service_escalation_repository import (
     ServiceEscalationRepository,
@@ -29,9 +30,11 @@ from app.schemas.service_operations import (
     OperationsQueueParams,
     OperationsSummary,
 )
+from app.schemas.service_transformation import ServiceTransformationSummary
 from app.services.service_escalation_service import ServiceEscalationService
 from app.services.service_kpi_service import ServiceKPIService
 from app.services.service_operations_service import ServiceOperationsService
+from app.services.service_transformation_service import ServiceTransformationService
 from app.services.ticket_assignment_service import TicketAssignmentService
 from app.services.workload_service import WorkloadService
 
@@ -98,6 +101,37 @@ async def get_operations_summary(
     return await ServiceOperationsService.summary_for_tenant(
         db,
         organization_id=tenant.organization_id,
+    )
+
+
+@router.get(
+    "/transformation",
+    response_model=ServiceTransformationSummary,
+)
+async def get_service_transformation(
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: ReadAuthz,
+    days: Annotated[int, Query(le=90, ge=7)] = 30,
+):
+    """Service transformation analytics for the tenant over 7/30/90-day
+    windows, with a current-vs-previous period comparison, queue/channel
+    breakdowns, AI adoption, specialist usage, human workload and value
+    realization.
+    """
+    del principal, authz
+    if days not in (7, 30, 90):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="days must be one of 7, 30, 90",
+        )
+
+    record_service_transformation_request()
+    return await ServiceTransformationService.summary_for_tenant(
+        db,
+        organization_id=tenant.organization_id,
+        days=days,
     )
 
 

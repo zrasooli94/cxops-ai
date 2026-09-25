@@ -7,6 +7,7 @@ import {
   Gauge,
   Inbox,
   Layers,
+  Route,
   ShieldCheck,
   Ticket,
   Users,
@@ -27,6 +28,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   users: Users,
   layers: Layers,
   "clipboard-check": ClipboardCheck,
+  route: Route,
 };
 
 export default function NavigationIcon({

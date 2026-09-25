@@ -1,9 +1,9 @@
 from collections import Counter
 from collections import Counter as CounterType
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,6 +16,25 @@ from app.schemas.observability import (
     AgentObservabilitySummary,
     IntegrationJobObservabilitySummary,
 )
+
+
+def run_created_at_window(
+    start: datetime | None,
+    end: datetime | None,
+):
+    """Optional AgentRun.created_at range predicate (None bounds are skipped).
+
+    Used by the windowed ROI estimator so the transformation analytics can
+    evaluate the same formula over a bounded period without changing the
+    all-time default behavior.
+    """
+    clauses = []
+    if start is not None:
+        clauses.append(AgentRun.created_at >= start)
+    if end is not None:
+        clauses.append(AgentRun.created_at <= end)
+
+    return and_(*clauses) if clauses else None
 
 
 class AgentObservabilityService:
@@ -37,12 +56,18 @@ class AgentObservabilityService:
     async def total_runs(
         db: AsyncSession,
         organization_id: int,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> int:
 
+        conditions = [AgentRun.organization_id == organization_id]
+        window = run_created_at_window(start, end)
+        if window is not None:
+            conditions.append(window)
+
         result = await db.execute(
-            select(func.count(AgentRun.id)).where(
-                AgentRun.organization_id == organization_id
-            )
+            select(func.count(AgentRun.id)).where(*conditions)
         )
 
         return int(result.scalar_one())
@@ -357,7 +382,7 @@ class AgentObservabilityService:
         )
 
         return AgentObservabilitySummary(
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             total_runs=(total_runs),
             unique_tickets_analyzed=(unique_tickets),
             re_analysis_count=(re_analysis_count),
@@ -567,9 +592,20 @@ class AgentObservabilityService:
         cls,
         db: AsyncSession,
         organization_id: int,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> dict:
 
-        total_runs = await cls.total_runs(db, organization_id)
+        window = run_created_at_window(start, end)
+
+        run_window_condition = (window,) if window is not None else ()
+
+        total_runs = await cls.count_runs(
+            db,
+            organization_id,
+            *run_window_condition,
+        )
 
         # Match a production AgentRun to its
         # corresponding AI telemetry row.
@@ -580,9 +616,11 @@ class AgentObservabilityService:
 
         # Both the agent run and its telemetry row are bound to the tenant in
         # SQL; a legacy NULL-org telemetry row can never enter an aggregate.
+        # The optional window restricts the run cohort only, never the tenant.
         tenant_condition = (
             AgentRun.organization_id == organization_id,
             AIRequestLog.organization_id == organization_id,
+            *run_window_condition,
         )
 
         instrumented_result = await db.execute(

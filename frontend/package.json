@@ -9,7 +9,7 @@
     "lint": "eslint",
     "test": "node --experimental-strip-types --test 'src/lib/**/*.test.ts'",
     "test:session": "node --experimental-strip-types --test src/lib/session/helpers.test.ts src/lib/session/read.test.ts src/lib/session/recovery-helpers.test.ts src/lib/session/bff-helpers.test.ts src/lib/session/logout.test.ts src/lib/tenant/cookie.test.ts",
-    "test:auth": "node --experimental-strip-types --test src/lib/session/helpers.test.ts src/lib/session/read.test.ts src/lib/session/recovery-helpers.test.ts src/lib/session/bff-helpers.test.ts src/lib/session/logout.test.ts src/lib/auth/auth-helpers.test.ts src/lib/auth/sign-in-result.test.ts src/lib/auth/proxy-helpers.test.ts src/lib/authorization/helpers.test.ts src/lib/authorization/navigation.test.ts src/lib/authorization/agent.test.ts src/lib/customer/customer.test.ts src/lib/rag/evidence.test.ts src/lib/tenant/cookie.test.ts src/lib/operations/team-load.test.ts src/lib/dashboard/escalation-summary.test.ts src/lib/evaluations.test.ts"
+    "test:auth": "node --experimental-strip-types --test src/lib/session/helpers.test.ts src/lib/session/read.test.ts src/lib/session/recovery-helpers.test.ts src/lib/session/bff-helpers.test.ts src/lib/session/logout.test.ts src/lib/auth/auth-helpers.test.ts src/lib/auth/sign-in-result.test.ts src/lib/auth/proxy-helpers.test.ts src/lib/authorization/helpers.test.ts src/lib/authorization/navigation.test.ts src/lib/authorization/agent.test.ts src/lib/customer/customer.test.ts src/lib/rag/evidence.test.ts src/lib/tenant/cookie.test.ts src/lib/operations/team-load.test.ts src/lib/dashboard/escalation-summary.test.ts src/lib/evaluations.test.ts src/lib/transformation/transformation.test.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

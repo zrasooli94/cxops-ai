@@ -22,7 +22,8 @@ export type NavigationIconName =
   | "activity"
   | "users"
   | "layers"
-  | "clipboard-check";
+  | "clipboard-check"
+  | "route";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -37,7 +38,8 @@ export type ControlCenterRoute =
   | "/runs"
   | "/observability"
   | "/operations"
-  | "/evaluations";
+  | "/evaluations"
+  | "/transformation";
 
 /**
  * Single source of truth for what each route requires. Sidebar visibility
@@ -61,6 +63,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/observability": CAPABILITIES.OBSERVABILITY_READ,
   "/operations": CAPABILITIES.TICKET_READ,
   "/evaluations": CAPABILITIES.EVALUATION_READ,
+  "/transformation": CAPABILITIES.TICKET_READ,
 };
 
 export interface NavigationItem {
@@ -116,6 +119,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Queues, ownership & SLA",
     icon: "layers",
     requiredCapability: ROUTE_REQUIREMENTS["/operations"],
+  },
+  {
+    href: "/transformation",
+    label: "Transformation",
+    description: "Service value analytics",
+    icon: "route",
+    requiredCapability: ROUTE_REQUIREMENTS["/transformation"],
   },
   {
     href: "/evaluations",
