@@ -23,7 +23,8 @@ export type NavigationIconName =
   | "users"
   | "layers"
   | "clipboard-check"
-  | "route";
+  | "route"
+  | "car";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -39,7 +40,8 @@ export type ControlCenterRoute =
   | "/observability"
   | "/operations"
   | "/evaluations"
-  | "/transformation";
+  | "/transformation"
+  | "/automotive-pilot";
 
 /**
  * Single source of truth for what each route requires. Sidebar visibility
@@ -64,6 +66,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/operations": CAPABILITIES.TICKET_READ,
   "/evaluations": CAPABILITIES.EVALUATION_READ,
   "/transformation": CAPABILITIES.TICKET_READ,
+  "/automotive-pilot": CAPABILITIES.TICKET_READ,
 };
 
 export interface NavigationItem {
@@ -126,6 +129,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Service value analytics",
     icon: "route",
     requiredCapability: ROUTE_REQUIREMENTS["/transformation"],
+  },
+  {
+    href: "/automotive-pilot",
+    label: "Automotive Pilot",
+    description: "A1 showroom workspace",
+    icon: "car",
+    requiredCapability: ROUTE_REQUIREMENTS["/automotive-pilot"],
   },
   {
     href: "/evaluations",

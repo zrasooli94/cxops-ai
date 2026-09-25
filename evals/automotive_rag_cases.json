@@ -1,0 +1,112 @@
+[
+  {
+    "id": "a1_purchase_process",
+    "question": "A customer wants to sell their car to A1. Which steps should support describe?",
+    "expected_sources": [
+      "A1 Vehicle Purchase Process (Pilot)"
+    ],
+    "expected_terms": [
+      "inspection",
+      "offer"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_valuation_process",
+    "question": "What information does A1 collect for a vehicle valuation, and when is an offer quoted?",
+    "expected_sources": [
+      "Vehicle Valuation Process (Pilot)"
+    ],
+    "expected_terms": [
+      "make",
+      "valuation"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_selling_what_to_expect",
+    "question": "What should a customer expect when selling their car to A1?",
+    "expected_sources": [
+      "Selling My Car to A1: What to Expect (Pilot)"
+    ],
+    "expected_terms": [
+      "title"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_pickup_checklist",
+    "question": "What does the pickup condition check cover at handover?",
+    "expected_sources": [
+      "Vehicle Inspection & Pickup Checklist (Pilot)"
+    ],
+    "expected_terms": [
+      "odometer",
+      "condition"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_payment_faq",
+    "question": "Which payment methods are available to a customer after title transfer?",
+    "expected_sources": [
+      "Vehicle Purchase Documents & Payment FAQ (Pilot)"
+    ],
+    "expected_terms": [
+      "bank transfer"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_parts_ordering",
+    "question": "How is part availability confirmed before an order is placed?",
+    "expected_sources": [
+      "Auto Parts Ordering & Availability (Pilot)"
+    ],
+    "expected_terms": [
+      "stock"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_parts_returns",
+    "question": "Within what window can auto parts be returned, and what is required?",
+    "expected_sources": [
+      "Auto Parts Returns & Warranty Policy (Pilot)"
+    ],
+    "expected_terms": [
+      "30-day"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_safety_guardrails",
+    "question": "What must automated support refuse to guarantee or do?",
+    "expected_sources": [
+      "A1 Support & Safety Guardrails (Pilot)"
+    ],
+    "expected_terms": [
+      "guardrails"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "a1_parts_compatibility_refusal",
+    "question": "Will a brake rotor sold by A1 fit a customer's car when no make, model, year, or vehicle details have been provided?",
+    "expected_sources": [],
+    "expected_terms": [
+      "make",
+      "model"
+    ],
+    "should_refuse": true
+  },
+  {
+    "id": "a1_price_guarantee_refusal",
+    "question": "Does A1 guarantee to match any competitor price for a vehicle valuation?",
+    "expected_sources": [],
+    "expected_terms": [
+      "offer"
+    ],
+    "should_refuse": true
+  }
+]

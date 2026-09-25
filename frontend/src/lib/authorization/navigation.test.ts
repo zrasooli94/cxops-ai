@@ -73,6 +73,21 @@ describe("capability-driven navigation", () => {
     );
   });
 
+  it("automotive pilot destination is shown only with ticket.read", () => {
+    assert.equal(visibleHrefs([]).includes("/automotive-pilot"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.CUSTOMER_READ]).includes("/automotive-pilot"),
+      false,
+    );
+    assert.equal(
+      visibleHrefs([CAPABILITIES.AGENT_RUN]).includes("/automotive-pilot"),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/automotive-pilot"),
+    );
+  });
+
   it("customer.write alone never reveals the customers destination", () => {
     assert.equal(
       visibleHrefs([CAPABILITIES.CUSTOMER_WRITE]).includes("/customers"),
@@ -90,6 +105,7 @@ describe("capability-driven navigation", () => {
       "/tickets",
       "/operations",
       "/transformation",
+      "/automotive-pilot",
       "/inbox",
       "/knowledge",
     ]);
@@ -184,6 +200,7 @@ describe("capability-driven navigation", () => {
       "/tickets",
       "/operations",
       "/transformation",
+      "/automotive-pilot",
       "/inbox",
     ]);
   });
@@ -215,6 +232,7 @@ describe("control-center route requirements", () => {
     ["/operations", CAPABILITIES.TICKET_READ],
     ["/evaluations", CAPABILITIES.EVALUATION_READ],
     ["/transformation", CAPABILITIES.TICKET_READ],
+    ["/automotive-pilot", CAPABILITIES.TICKET_READ],
   ];
 
   for (const [route, requirement] of expected) {

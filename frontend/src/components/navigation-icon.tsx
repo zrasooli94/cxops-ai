@@ -3,6 +3,7 @@ import {
   Activity,
   Bot,
   BrainCircuit,
+  Car,
   ClipboardCheck,
   Gauge,
   Inbox,
@@ -29,6 +30,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   layers: Layers,
   "clipboard-check": ClipboardCheck,
   route: Route,
+  car: Car,
 };
 
 export default function NavigationIcon({
