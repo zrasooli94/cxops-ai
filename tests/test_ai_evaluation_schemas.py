@@ -8,6 +8,8 @@ any read schema.
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
+
 from app.schemas.evaluation import (
     EvalAgentCaseInput,
     EvalAgentCaseInputs,
@@ -22,7 +24,6 @@ from app.schemas.evaluation import (
     EvaluationRunListResponse,
     EvaluationRunRead,
 )
-from pydantic import ValidationError
 
 _RUN_PAYLOAD = {
     "run_id": "run-123",

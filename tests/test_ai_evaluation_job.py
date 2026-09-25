@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
+
 from app.core.database import AsyncSessionLocal
 from app.models.ai_evaluation_case import AIEvaluationCase
 from app.models.ai_evaluation_run import AIEvaluationRun
@@ -26,7 +28,6 @@ from app.services.agent_evaluation_service import AgentEvaluationService
 from app.services.ai_evaluation_service import AIEvaluationService
 from app.services.integration_job_service import IntegrationJobService
 from app.services.rag_evaluation_service import RAGEvaluationService
-from sqlalchemy import select
 
 
 @pytest_asyncio.fixture
