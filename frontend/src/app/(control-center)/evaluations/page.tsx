@@ -11,6 +11,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useAuthorization } from "@/lib/authorization/context";
 import {
+  AGENT_INTENT_OPTIONS,
+  SPECIALIST_PATH_PRESETS,
   EVALUATION_BASELINES_ERROR,
   EVALUATION_COMPARE_ERROR,
   EVALUATION_DECISION_APPROVED_MESSAGE,
@@ -50,6 +52,7 @@ import {
   reviewReleaseDecision,
   runDisplayRow,
   runStatusLabel,
+  specialistPathForPreset,
   targetTypeLabel,
   type EvaluationReleaseDecision,
   type EvaluationRun,
@@ -348,6 +351,8 @@ export default function EvaluationsPage() {
   const [agentExpectedRetrieval, setAgentExpectedRetrieval] = useState(false);
   const [agentExpectedTool, setAgentExpectedTool] = useState("");
   const [agentExpectedAutoExecute, setAgentExpectedAutoExecute] = useState(false);
+  const [agentExpectedIntent, setAgentExpectedIntent] = useState("");
+  const [agentExpectedSpecialists, setAgentExpectedSpecialists] = useState("");
   const [agentFingerprint, setAgentFingerprint] = useState("");
 
   const submitRag = async (event: React.FormEvent) => {
@@ -405,6 +410,10 @@ export default function EvaluationsPage() {
     setStartMessage("");
     setStarting("agent");
     try {
+      // Not-specified / unknown preset resolves to null and must be omitted.
+      const expectedSpecialists = specialistPathForPreset(
+        agentExpectedSpecialists,
+      );
       const outcome = await queueAgentEvaluation([
         {
           ticket_id: Number(agentTicketId),
@@ -414,6 +423,14 @@ export default function EvaluationsPage() {
           expected_auto_execute: agentExpectedAutoExecute,
           ...(agentFingerprint.trim() !== ""
             ? { fingerprint: agentFingerprint.trim() }
+            : {}),
+          // "Not specified" is omitted so intent stays an optional dimension.
+          ...(agentExpectedIntent !== ""
+            ? { expected_intent: agentExpectedIntent }
+            : {}),
+          // Only the bounded presets can be sent; unknown values never are.
+          ...(expectedSpecialists
+            ? { expected_specialists: [...expectedSpecialists] }
             : {}),
         },
       ]);
@@ -430,6 +447,8 @@ export default function EvaluationsPage() {
       setAgentExpectedRetrieval(false);
       setAgentExpectedTool("");
       setAgentExpectedAutoExecute(false);
+      setAgentExpectedIntent("");
+      setAgentExpectedSpecialists("");
       setAgentFingerprint("");
     } catch (err) {
       setStartError(
@@ -865,6 +884,34 @@ export default function EvaluationsPage() {
                     onChange={setAgentExpectedAutoExecute}
                     label="Expected auto-execute"
                   />
+                  <Field label="Expected intent">
+                    <select
+                      value={agentExpectedIntent}
+                      onChange={(event) => setAgentExpectedIntent(event.target.value)}
+                      className="h-10 rounded-[12px] border border-slate-200 bg-white px-3.5 text-sm text-slate-800 shadow-sm outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100 disabled:opacity-50"
+                    >
+                      {AGENT_INTENT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Expected specialist path">
+                    <select
+                      value={agentExpectedSpecialists}
+                      onChange={(event) =>
+                        setAgentExpectedSpecialists(event.target.value)
+                      }
+                      className="h-10 rounded-[12px] border border-slate-200 bg-white px-3.5 text-sm text-slate-800 shadow-sm outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100 disabled:opacity-50"
+                    >
+                      {SPECIALIST_PATH_PRESETS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
                   <Field label="Fingerprint (optional)">
                     <TextInput
                       value={agentFingerprint}

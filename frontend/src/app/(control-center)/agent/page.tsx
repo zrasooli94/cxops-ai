@@ -87,6 +87,9 @@ type AgentAnalysis = {
   decision: AgentDecision;
   sources: KnowledgeSource[];
   workflow_path: string[];
+  specialist_path: string[];
+  specialist_path_valid: boolean;
+  specialist_path_issues: string[];
   tool_plan: ToolPlanItem[];
   auto_queued: boolean;
   job_id: number | null;
@@ -159,6 +162,44 @@ function formatText(value: string) {
         part.slice(1),
     )
     .join(" ");
+}
+
+// Specialist trace (Phase 1K.2): a compact interpretation of the raw
+// workflow-path markers as the Coordinator → Knowledge → Action specialist
+// chain actually executed. Derived read-only from data already returned; no
+// new endpoint and nothing beyond the marker labels is ever shown.
+const SPECIALIST_MARKERS: ReadonlyArray<{ marker: string; label: string }> = [
+  { marker: "coordinator", label: "Coordinator" },
+  { marker: "retrieve_knowledge", label: "Knowledge" },
+  { marker: "knowledge_specialist", label: "Knowledge" },
+  { marker: "decide_action", label: "Action" },
+  { marker: "action_specialist", label: "Action" },
+];
+
+function agentSpecialistPath(workflowPath: string[]): string[] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  workflowPath.forEach((step) => {
+    const label = SPECIALIST_MARKERS.find((entry) => entry.marker === step)?.label;
+    if (label !== undefined && !seen.has(label)) {
+      seen.add(label);
+      order.push(label);
+    }
+  });
+  return order;
+}
+
+function specialistVariant(label: string): BadgeVariant {
+  switch (label) {
+    case "Coordinator":
+      return "info";
+    case "Knowledge":
+      return "success";
+    case "Action":
+      return "violet";
+    default:
+      return "default";
+  }
 }
 
 function actionVariant(
@@ -1043,6 +1084,81 @@ export default function AgentPage() {
                           ),
                         )}
                       </div>
+                    </section>
+
+                    <section className="app-panel rounded-[22px] p-6 md:p-7">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-500">
+                          <Bot className="h-5 w-5" />
+                        </div>
+
+                        <div>
+                          <h2 className="font-medium text-slate-900">
+                            Agent path
+                          </h2>
+
+                          <p className="text-xs text-slate-400">
+                            Specialist chain the
+                            coordinator executed
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 flex flex-wrap items-center gap-2">
+                        {agentSpecialistPath(
+                          analysis.workflow_path,
+                        ).length > 0 ? (
+                          agentSpecialistPath(
+                            analysis.workflow_path,
+                          ).map((label, index) => (
+                            <div
+                              key={label}
+                              className="flex items-center gap-2"
+                            >
+                              <Badge
+                                variant={specialistVariant(
+                                  label,
+                                )}
+                              >
+                                {label}
+                              </Badge>
+
+                              {index <
+                                agentSpecialistPath(
+                                  analysis.workflow_path,
+                                ).length -
+                                  1 && (
+                                <ChevronRight className="h-4 w-4 text-slate-300" />
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-xs text-slate-400">
+                            No specialist markers
+                            recorded for this run.
+                          </p>
+                        )}
+                      </div>
+
+                      {analysis.specialist_path_valid ===
+                        false && (
+                        <div className="mt-4 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+                          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+
+                          <div>
+                            <p className="text-sm font-medium text-amber-800">
+                              Agent path is
+                              inconsistent.
+                            </p>
+
+                            <p className="mt-1 text-xs leading-5 text-amber-700">
+                              {analysis.specialist_path_issues.length > 0
+                                ? analysis.specialist_path_issues.join(". ")
+                                : "The recorded specialist chain does not match the expected execution flow."}
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </section>
 
                     <section className="app-panel rounded-[22px] p-6 md:p-7">

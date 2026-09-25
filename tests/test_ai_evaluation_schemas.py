@@ -8,9 +8,9 @@ any read schema.
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
-
 from app.schemas.evaluation import (
+    EvalAgentCaseInput,
+    EvalAgentCaseInputs,
     EvaluationBaselineCreate,
     EvaluationBaselineRead,
     EvaluationCaseCreate,
@@ -22,6 +22,7 @@ from app.schemas.evaluation import (
     EvaluationRunListResponse,
     EvaluationRunRead,
 )
+from pydantic import ValidationError
 
 _RUN_PAYLOAD = {
     "run_id": "run-123",
@@ -259,3 +260,108 @@ def test_evaluation_run_comparison_rejects_extra_fields():
             candidate=identity,
             magic_score=0.9,
         )
+
+
+def test_eval_agent_case_input_optional_expected_intent():
+    base = {
+        "ticket_id": 1,
+        "expected_action": "respond",
+        "expected_retrieval": True,
+        "expected_tool": "zendesk.send_reply",
+        "expected_auto_execute": False,
+    }
+    # Omitted intent stays backward compatible.
+    without = EvalAgentCaseInput.model_validate(base)
+    assert without.expected_intent is None
+    assert without.model_dump()["expected_intent"] is None
+
+    # A valid coordinator label is accepted and carries through model_dump.
+    with_intent = EvalAgentCaseInput.model_validate({**base, "expected_intent": "action"})
+    assert with_intent.expected_intent == "action"
+    assert with_intent.model_dump()["expected_intent"] == "action"
+
+    # Invalid labels are rejected, never persisted raw.
+    for bad in ("banana", "refund my account", ""):
+        with pytest.raises(ValidationError):
+            EvalAgentCaseInput.model_validate({**base, "expected_intent": bad})
+
+
+def test_eval_agent_case_inputs_serializes_expected_intent():
+    wrapper = EvalAgentCaseInputs.model_validate(
+        {
+            "cases": [
+                {
+                    "ticket_id": 1,
+                    "expected_action": "respond",
+                    "expected_retrieval": True,
+                    "expected_tool": "zendesk.send_reply",
+                    "expected_auto_execute": False,
+                    "expected_intent": "mixed",
+                }
+            ]
+        }
+    )
+    dumped = wrapper.model_dump()
+    assert dumped["cases"][0]["expected_intent"] == "mixed"
+
+
+def test_eval_agent_case_input_optional_expected_specialists():
+    base = {
+        "ticket_id": 1,
+        "expected_action": "respond",
+        "expected_retrieval": True,
+        "expected_tool": "zendesk.send_reply",
+        "expected_auto_execute": False,
+    }
+    # Omitted specialist path stays backward compatible.
+    without = EvalAgentCaseInput.model_validate(base)
+    assert without.expected_specialists is None
+    assert without.model_dump()["expected_specialists"] is None
+
+    # Bounded specialist labels are accepted and carry through model_dump.
+    with_path = EvalAgentCaseInput.model_validate(
+        {**base, "expected_specialists": ["coordinator", "knowledge", "action"]}
+    )
+    assert with_path.expected_specialists == ["coordinator", "knowledge", "action"]
+    assert with_path.model_dump()["expected_specialists"] == [
+        "coordinator",
+        "knowledge",
+        "action",
+    ]
+
+    # Foreign / free-text labels are rejected, never persisted raw.
+    for bad in (
+        ["coordinator", "intruder-prompt"],
+        ["SELECT * FROM cases"],
+        ["coordinator", "action", "knowledge", "action"],
+        [],
+    ):
+        with pytest.raises(ValidationError):
+            EvalAgentCaseInput.model_validate(
+                {**base, "expected_specialists": bad}
+            )
+
+    # A duplicate bounded label is rejected.
+    with pytest.raises(ValidationError):
+        EvalAgentCaseInput.model_validate(
+            {**base, "expected_specialists": ["coordinator", "coordinator"]}
+        )
+
+
+def test_eval_agent_case_inputs_serializes_expected_specialists():
+    wrapper = EvalAgentCaseInputs.model_validate(
+        {
+            "cases": [
+                {
+                    "ticket_id": 1,
+                    "expected_action": "respond",
+                    "expected_retrieval": True,
+                    "expected_tool": "zendesk.send_reply",
+                    "expected_auto_execute": False,
+                    "expected_specialists": ["coordinator", "action"],
+                }
+            ]
+        }
+    )
+    dumped = wrapper.model_dump()
+    assert dumped["cases"][0]["expected_specialists"] == ["coordinator", "action"]

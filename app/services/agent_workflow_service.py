@@ -25,6 +25,9 @@ from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_auto_approval,
     record_agent_decision,
+    record_agent_handoff,
+    record_agent_specialist_failure,
+    record_agent_specialist_selected,
 )
 from app.core.rbac import AuthorizationContext, Capability
 from app.models.knowledge_chunk import KnowledgeChunk
@@ -59,6 +62,147 @@ class TicketNotFoundError(Exception):
 # fresh analysis instead of reusing a stale fingerprinted run.
 AGENT_DECISION_VERSION = "2"
 
+# Bump this when the multi-agent coordinator contract changes materially:
+# the intent taxonomy, the deterministic coordinator classification rules, the
+# coordinator workflow labels, or the intent routing. It is folded into the
+# analysis fingerprint so a workflow-version change forces a fresh analysis
+# instead of reusing a stale fingerprinted run.
+#
+# 1K.2B changed real routing behavior (action intent now skips retrieval), so
+# v1 fingerprints must not reuse a pre-routing-change analysis.
+AGENT_WORKFLOW_VERSION = "2"
+
+# Deterministic coordinator intent labels (Phase 1K). These are metadata that
+# describe the request; they never gate behaviour on their own.
+AgentIntent = Literal["information", "action", "mixed", "none"]
+
+
+# Maps raw workflow_path step labels to the specialist (Phase 1K) that
+# produced them. Legacy compatibility labels and specialist markers collapse
+# onto the same specialist. Steps that belong to no specialist (e.g.
+# "assess_knowledge_need") are ignored by derivation.
+_SPECIALIST_STEP_LABELS: dict[str, str] = {
+    "coordinator": "coordinator",
+    "retrieve_knowledge": "knowledge",
+    "knowledge_specialist": "knowledge",
+    "decide_action": "action",
+    "action_specialist": "action",
+}
+
+
+def derive_specialist_path(
+    workflow_path: list[str],
+) -> list[str]:
+    """Ordered specialists that actually executed, derived from workflow_path.
+
+    Consecutive duplicates are collapsed (a workflow step plus its specialist
+    marker produce one specialist each), and the function never invents a
+    specialist that has no marker. The result is the ordered specialist chain
+    that Phase 1K.3 validation and evaluation compare against.
+    """
+    derived: list[str] = []
+
+    for step in workflow_path:
+        specialist = _SPECIALIST_STEP_LABELS.get(step)
+
+        if specialist is None:
+            continue
+
+        if derived and derived[-1] == specialist:
+            continue
+
+        derived.append(specialist)
+
+    return derived
+
+
+def validate_specialist_path(
+    workflow_path: list[str],
+    *,
+    intent: AgentIntent | None = None,
+) -> tuple[bool, list[str]]:
+    """Validate a SUCCESSFUL run's derived specialist path.
+
+    Detects only states that are clearly impossible for the current graph:
+
+    * no specialist marker at all for a successful run,
+    * a successful run that never reached the Action Specialist,
+    * the same specialist executing more than once (non-consecutive),
+    * Knowledge marked after the Action Specialist,
+    * an information/mixed request that completed without the Knowledge
+      Specialist (only known when ``intent`` is supplied).
+
+    A run that reached the Action Specialist via Coordinated knowledge is the
+    normal shape; a legacy pure-action path (Coordinator → Action) is valid.
+    ``action containing knowledge`` is NOT flagged: without a coordinator read
+    it is indistinguishable from an information run that gathered grounding.
+    """
+    derived = derive_specialist_path(workflow_path)
+
+    if not derived:
+        return False, ["no specialist markers recorded for a successful run"]
+
+    issues: list[str] = []
+
+    if "action" not in derived:
+        issues.append("the run never reached the action specialist")
+
+    seen: set[str] = set()
+
+    for specialist in derived:
+        if specialist in seen:
+            issues.append(f"duplicate specialist marker: {specialist}")
+        seen.add(specialist)
+
+    if (
+        "knowledge" in derived
+        and "action" in derived
+        and derived.index("knowledge") > derived.index("action")
+    ):
+        issues.append("knowledge specialist is marked after the action specialist")
+
+    if intent in {"information", "mixed"} and "knowledge" not in derived:
+        issues.append("information/mixed request completed without the knowledge specialist")
+
+    return (len(issues) == 0), issues
+
+# Minimal action-phrasing signals. NOTE: fast-path detection (record-only /
+# acknowledgement) wins over these because those branches return early.
+_ACTION_INTENT_MARKERS = (
+    "please",
+    "i need",
+    "i want",
+    "i'd like",
+    "would like",
+    "help me",
+    "fix",
+    "stop",
+    "reset",
+    "cancel",
+    "update",
+    "change",
+    "activate",
+    "send me",
+    "requesting",
+    "investigate",
+)
+
+# Minimal question phrasing signals for knowledge-only informational requests.
+_QUESTION_INTENT_MARKERS = (
+    "what",
+    "how",
+    "can i",
+    "is it",
+    "does ",
+    "when",
+    "which",
+    "why",
+    "am i",
+    "are you",
+    "eligib",
+    "requirement",
+)
+
 logger = get_logger(__name__)
 
 
@@ -74,6 +218,8 @@ class AgentState(TypedDict, total=False):
     needs_knowledge: bool
     knowledge_reason: str
     fast_path_action: str | None
+
+    intent: AgentIntent | None
 
     sources: list[dict]
 
@@ -148,6 +294,7 @@ class AgentWorkflowService:
         ticket_id: int,
         ticket: dict[str, Any],
         agent_decision_version: str,
+        agent_workflow_version: str = AGENT_WORKFLOW_VERSION,
         model: str,
         corpus_revision: dict[str, Any],
         customer_context_digest: str,
@@ -157,12 +304,14 @@ class AgentWorkflowService:
 
         Raw inputs are never logged; only the opaque hash is persisted. The
         fingerprint covers the ticket fields the agent reasons about, the
-        decision/policy version, the model/config version, the tenant
+        decision/policy workflow version, the model/config version, the tenant
         knowledge-corpus revision, a digest of the linked customer context,
         and a digest of the ticket's conversation context (so a new customer
         message invalidates a stale analysis). ``conversation_context_digest``
         defaults to ``""`` for the no-conversation sentinel and for callers
-        that predate the conversation layer.
+        that predate the conversation layer. ``agent_workflow_version``
+        defaults to the current coordinator workflow version so pre-existing
+        callers remain valid while every new analysis records the version.
         """
         payload = "|".join(
             [
@@ -175,6 +324,7 @@ class AgentWorkflowService:
                 str(ticket.get("category") or ""),
                 str(ticket.get("assigned_team") or ""),
                 agent_decision_version,
+                agent_workflow_version,
                 model,
                 str(corpus_revision.get("document_count")),
                 str(corpus_revision.get("chunk_count")),
@@ -371,6 +521,55 @@ class AgentWorkflowService:
     # Decide whether RAG is needed
     # -------------------------------------------------
 
+    @staticmethod
+    def _classify_intent(
+        *,
+        text: str,
+        fast_path_action: str | None,
+        has_policy_signal: bool,
+    ) -> AgentIntent:
+        """Deterministic coordinator intent classification (labeling only).
+
+        * A non-None ``fast_path_action`` (record-only / acknowledgement fast
+          path) is always ``none`` — the request requires no action and no
+          knowledge retrieval.
+        * Otherwise every message runs the knowledge-first graph path today
+          (``needs_knowledge=true``), so the intent describes the *request*:
+            - phrased as a pure operation with no question and no policy
+              signal → ``action``,
+            - phrased as an operation that depends on policy or doubles as a
+              question → ``mixed`` (knowledge first, then action),
+            - a question about policy/procedures → ``information``,
+            - an unknown band (neither an action phrasing nor a question) →
+              ``mixed`` (the graph retrieves first anyway).
+
+        IMPORTANT: Since Phase 1K.2B the ``action`` intent routes directly to
+        the Action Specialist (skipping retrieval). The ``information`` and
+        ``mixed`` intents still route knowledge-first, and missing/legacy
+        intent still branches on ``needs_knowledge`` exactly as before Phase
+        1K, so fast paths and other final decisions are unchanged.
+        """
+        if fast_path_action is not None:
+            return "none"
+
+        is_action_phrased = any(
+            marker in text for marker in _ACTION_INTENT_MARKERS
+        )
+
+        is_question = any(
+            marker in text for marker in _QUESTION_INTENT_MARKERS
+        )
+
+        if is_action_phrased:
+            if not is_question and not has_policy_signal:
+                return "action"
+            return "mixed"
+
+        if is_question:
+            return "information"
+
+        return "mixed"
+
     async def _assess_knowledge_need(
         self,
         state: AgentState,
@@ -495,13 +694,69 @@ class AgentWorkflowService:
             [],
         )
 
+        # The coordinator step records its deterministic intent label. Since
+        # Phase 1K.2B an ``action`` label skips retrieval; ``information`` and
+        # ``mixed`` stay knowledge-first and ``none`` stays the fast path.
+        # ``needs_knowledge`` remains the fallback for legacy/missing intent.
+        intent = self._classify_intent(
+            text=text,
+            fast_path_action=fast_path_action,
+            has_policy_signal=has_policy_signal,
+        )
+
         return {
             "needs_knowledge": (needs_knowledge),
             "knowledge_reason": (reason),
             "fast_path_action": (fast_path_action),
+            "intent": (intent),
             "workflow_path": [
                 *path,
                 "assess_knowledge_need",
+            ],
+        }
+
+    async def _run_coordinator(
+        self,
+        state: AgentState,
+    ) -> dict:
+        """Coordinator boundary: deterministic assessment + intent labeling.
+
+        Phase 1K.1D explicit coordinator node. It wraps the existing
+        ``_assess_knowledge_need`` behavior unchanged (same deterministic RAG
+        gate and deterministic intent label, no LLM call) and records the
+        ``coordinator`` workflow marker. ``needs_knowledge`` remains the
+        fallback routing signal for legacy/missing-intent state and the
+        dominant signal for ``information``/``mixed``; since Phase 1K.2B a
+        ``"action"`` intent skips retrieval entirely.
+
+        Phase 1K.3: a raised exception is recorded as a bounded coordinator
+        failure and re-raised unchanged (fail closed — no downstream
+        specialist runs on a failed coordinator).
+        """
+        record_agent_specialist_selected(
+            specialist="coordinator",
+        )
+
+        try:
+            return await self._run_coordinator_uncaptured(state)
+
+        except Exception:
+            record_agent_specialist_failure(
+                specialist="coordinator",
+            )
+            raise
+
+    async def _run_coordinator_uncaptured(
+        self,
+        state: AgentState,
+    ) -> dict:
+        result = await self._assess_knowledge_need(state)
+
+        return {
+            **result,
+            "workflow_path": [
+                *result["workflow_path"],
+                "coordinator",
             ],
         }
 
@@ -525,17 +780,98 @@ class AgentWorkflowService:
 
         return "decide_action"
 
+    @staticmethod
+    def _route_after_coordinator(
+        state: AgentState,
+    ) -> Literal[
+        "retrieve_knowledge",
+        "decide_action",
+    ]:
+        """Intent-aware router (Phase 1K.2A) with the Phase 1K.2B action change.
+
+        Reads the Coordinator's ``intent``; ``needs_knowledge`` is kept as the
+        compatibility signal for legacy/missing-intent state:
+
+        * ``intent == "none"`` (fast paths: acknowledgement / record-only)
+          → ``decide_action``,
+        * ``intent == "information"`` → ``retrieve_knowledge``,
+        * ``intent == "mixed"`` → ``retrieve_knowledge``,
+        * ``intent == "action"`` → ``decide_action`` (Phase 1K.2B: pure action
+          requests skip the Knowledge Specialist entirely),
+        * missing/unknown intent → fall back to the legacy router.
+
+        Intent never selects a tenant and never enables new LLM calls; it is a
+        routing label only.
+        """
+
+        intent = state.get("intent")
+
+        # Fast paths (acknowledgement / record-only) are deterministic action
+        # destinations and must stay byte-for-byte identical.
+        if intent == "none":
+            return "decide_action"
+
+        if intent == "information":
+            return "retrieve_knowledge"
+
+        if intent == "mixed":
+            return "retrieve_knowledge"
+
+        if intent == "action":
+            # Phase 1K.2B: a clear operation request goes straight to the
+            # Action Specialist. The Knowledge Specialist is skipped — only the
+            # database/vector retrieval step is removed; tool safety, approval,
+            # authorization digest, and durable execution still run afterward.
+            return "decide_action"
+
+        # Legacy / unexpected intent states: defer to the original rule so no
+        # pre-Phase 1K state or test changes behavior.
+        return AgentWorkflowService._route_after_assessment(state)
+
     # -------------------------------------------------
     # Retrieve knowledge
     # -------------------------------------------------
 
     @staticmethod
-    async def _retrieve_knowledge(
+    async def _run_knowledge_specialist(
         state: AgentState,
         *,
         db: AsyncSession,
     ) -> dict:
+        """Knowledge Specialist: tenant-scoped retrieval against the trusted corpus.
 
+        Phase 1K.1B extraction of the pre-existing retrieval node. It performs
+        the same deterministic, tenant-scoped lookup and returns the same
+        sources/evidence. It never consults an LLM and never accepts a tenant
+        from model output, ticket text, specialist results, or tool arguments.
+
+        Phase 1K.3: the ``knowledge → action`` handoff is recorded only AFTER
+        retrieval succeeds (a raised exception is recorded as a bounded
+        knowledge failure and re-raised unchanged — fail closed, so the Action
+        Specialist never runs on an empty/failed knowledge grounding).
+        """
+        record_agent_specialist_selected(
+            specialist="knowledge",
+        )
+
+        try:
+            return await AgentWorkflowService._run_knowledge_specialist_uncaptured(
+                state,
+                db=db,
+            )
+
+        except Exception:
+            record_agent_specialist_failure(
+                specialist="knowledge",
+            )
+            raise
+
+    @staticmethod
+    async def _run_knowledge_specialist_uncaptured(
+        state: AgentState,
+        *,
+        db: AsyncSession,
+    ) -> dict:
         ticket = state.get("ticket")
 
         if not ticket:
@@ -543,6 +879,8 @@ class AgentWorkflowService:
 
         query = f"{ticket['subject']}\n\n{ticket['description']}"
 
+        # The ONLY trusted tenant is the organization_id already present in
+        # the workflow state (derived from the loaded, tenant-owned ticket).
         organization_id = ticket.get("organization_id")
 
         # Fail closed: a ticket without an organization has no trusted tenant
@@ -565,23 +903,84 @@ class AgentWorkflowService:
 
         sources = filter_and_format_sources(matches)
 
+        # The retrieval succeeded, so the run really hands history over to the
+        # Action Specialist. Recording this here (not at the start of this
+        # method) keeps the handoff metric truthful when retrieval fails.
+        record_agent_handoff(
+            from_specialist="knowledge",
+            to_specialist="action",
+        )
+
         return {
             "sources": sources,
             "workflow_path": [
                 *path,
+                # Compatibility label: agent_evaluation_service (Phase 1J) and
+                # the frontend evidence badge match this step by name.
                 "retrieve_knowledge",
+                # Specialist marker: records which specialist produced the
+                # workflow step (Phase 1K observability).
+                "knowledge_specialist",
             ],
         }
+
+    @staticmethod
+    async def _retrieve_knowledge(
+        state: AgentState,
+        *,
+        db: AsyncSession,
+    ) -> dict:
+        """Backward-compatible alias for the Knowledge Specialist.
+
+        The graph runs ``_run_knowledge_specialist`` directly. This private
+        name is kept because dev tooling (``scripts/profile_agent_latency.py``)
+        and architecture docs reference it; it delegates to the same logic.
+        """
+        return await AgentWorkflowService._run_knowledge_specialist(
+            state,
+            db=db,
+        )
 
     # -------------------------------------------------
     # Decide action
     # -------------------------------------------------
 
-    async def _decide_action(
+    async def _run_action_specialist(
         self,
         state: AgentState,
     ) -> dict:
+        """Action Specialist: propose the next action for the workflow state.
 
+        Phase 1K.1C extraction of the pre-existing decision node. Reads only
+        existing workflow state (ticket, sources, customer/conversation
+        context, intent, workflow_path), makes exactly ONE LLM call on the
+        normal path (zero on deterministic fast paths), and returns the
+        existing decision shape unchanged. It never accepts or derives a tenant
+        and never marks tools authorized: ``ToolAuthorizationService`` remains
+        the authorizer in the ``build_tool_plan`` step.
+
+        Phase 1K.3: a raised exception is recorded as a bounded action failure
+        and re-raised unchanged (fail closed — the compiled workflow stops, so
+        ``build_tool_plan``, tool authorization, approval, and execution queue
+        never run after a failed Action Specialist).
+        """
+        record_agent_specialist_selected(
+            specialist="action",
+        )
+
+        try:
+            return await self._run_action_specialist_uncaptured(state)
+
+        except Exception:
+            record_agent_specialist_failure(
+                specialist="action",
+            )
+            raise
+
+    async def _run_action_specialist_uncaptured(
+        self,
+        state: AgentState,
+    ) -> dict:
         decision_started = time.perf_counter()
 
         ticket = state.get("ticket")
@@ -615,6 +1014,7 @@ class AgentWorkflowService:
                 "decision_observability": {
                     "model": "deterministic-fast-path",
                     "llm_called": False,
+                    "coordinator_intent": (state.get("intent")),
                     "grounded": True,
                     "retrieval_count": 0,
                     "best_similarity": None,
@@ -629,6 +1029,7 @@ class AgentWorkflowService:
                 "workflow_path": [
                     *path,
                     "decide_action",
+                    "action_specialist",
                 ],
             }
 
@@ -652,6 +1053,7 @@ class AgentWorkflowService:
                 "decision_observability": {
                     "model": "deterministic-fast-path",
                     "llm_called": False,
+                    "coordinator_intent": (state.get("intent")),
                     "grounded": True,
                     "retrieval_count": 0,
                     "best_similarity": None,
@@ -666,6 +1068,7 @@ class AgentWorkflowService:
                 "workflow_path": [
                     *path,
                     "decide_action",
+                    "action_specialist",
                 ],
             }
 
@@ -854,6 +1257,7 @@ Choose the safest next action.
             "decision_observability": {
                 "model": (settings.chat_model),
                 "llm_called": True,
+                "coordinator_intent": (state.get("intent")),
                 "grounded": (not needs_knowledge or bool(sources)),
                 "retrieval_count": (len(sources)),
                 "best_similarity": (best_similarity),
@@ -868,8 +1272,22 @@ Choose the safest next action.
             "workflow_path": [
                 *path,
                 "decide_action",
+                "action_specialist",
             ],
         }
+
+    async def _decide_action(
+        self,
+        state: AgentState,
+    ) -> dict:
+        """Backward-compatible alias for the Action Specialist.
+
+        The graph ``decide_action`` node and dev tooling
+        (``scripts/profile_agent_latency.py``) reference this name; it
+        delegates to ``_run_action_specialist`` and returns the identical
+        decision, workflow_path, and observability payload.
+        """
+        return await self._run_action_specialist(state)
 
     # -------------------------------------------------
     # Build explicit tool plan
@@ -975,6 +1393,132 @@ Choose the safest next action.
         }
 
     # -------------------------------------------------
+    # Build the analysis workflow (explicit specialist wiring)
+    # -------------------------------------------------
+
+    def _build_workflow(
+        self,
+        db: AsyncSession,
+    ):
+        """Compile the multi-specialist LangGraph workflow.
+
+        Phase 1K.1D: each persisted graph node name calls its explicit specialist
+        boundary rather than a legacy alias:
+
+        * ``assess_knowledge_need`` → ``_run_coordinator``
+        * ``retrieve_knowledge`` → ``_run_knowledge_specialist``
+        * ``decide_action`` → ``_run_action_specialist``
+
+        Node names, the conditional-edge map, and ``_route_after_assessment``
+        are unchanged so ``workflow_path`` labels, Phase 1J evaluation, tests,
+        and profiling scripts keep working. Specialist handoff metrics are
+        recorded at the router decision point so they always reflect the actual
+        routing (Phase 1K.2).
+        """
+
+        def route_after_coordinator_with_metrics(
+            state: AgentState,
+            _config: Any = None,
+        ) -> Literal["retrieve_knowledge", "decide_action"]:
+            destination = self._route_after_coordinator(state)
+            if destination == "retrieve_knowledge":
+                record_agent_handoff(
+                    from_specialist="coordinator",
+                    to_specialist="knowledge",
+                )
+            else:
+                record_agent_handoff(
+                    from_specialist="coordinator",
+                    to_specialist="action",
+                )
+            return destination
+
+        async def load_ticket_node(
+            state: AgentState,
+        ) -> dict:
+
+            return await self._load_ticket(
+                state,
+                db=db,
+            )
+
+        async def retrieve_node(
+            state: AgentState,
+        ) -> dict:
+
+            # The retrieval graph node delegates to the Knowledge Specialist
+            # boundary. The node name and the workflow_path step label stay
+            # "retrieve_knowledge" for compatibility with Phase 1J evaluation
+            # and the frontend evidence badge.
+            return await self._run_knowledge_specialist(
+                state,
+                db=db,
+            )
+
+        graph = StateGraph(AgentState)
+
+        graph.add_node(
+            "load_ticket",
+            load_ticket_node,
+        )
+
+        graph.add_node(
+            "assess_knowledge_need",
+            self._run_coordinator,
+        )
+
+        graph.add_node(
+            "retrieve_knowledge",
+            retrieve_node,
+        )
+
+        graph.add_node(
+            "decide_action",
+            self._run_action_specialist,
+        )
+
+        graph.add_node(
+            "build_tool_plan",
+            self._build_tool_plan,
+        )
+
+        graph.add_edge(
+            START,
+            "load_ticket",
+        )
+
+        graph.add_edge(
+            "load_ticket",
+            "assess_knowledge_need",
+        )
+
+        graph.add_conditional_edges(
+            "assess_knowledge_need",
+            route_after_coordinator_with_metrics,
+            {
+                "retrieve_knowledge": ("retrieve_knowledge"),
+                "decide_action": ("decide_action"),
+            },
+        )
+
+        graph.add_edge(
+            "retrieve_knowledge",
+            "decide_action",
+        )
+
+        graph.add_edge(
+            "decide_action",
+            "build_tool_plan",
+        )
+
+        graph.add_edge(
+            "build_tool_plan",
+            END,
+        )
+
+        return graph.compile()
+
+    # -------------------------------------------------
     # Execute LangGraph analysis
     # -------------------------------------------------
 
@@ -1015,6 +1559,12 @@ Choose the safest next action.
                 fingerprint=fingerprint,
             )
             if existing_run is not None:
+                reused_path = existing_run.workflow_path or []
+                (
+                    reused_path_valid,
+                    reused_path_issues,
+                ) = validate_specialist_path(reused_path)
+
                 return {
                     "run_id": existing_run.run_id,
                     "ticket_id": ticket_id,
@@ -1033,88 +1583,12 @@ Choose the safest next action.
                     "job_id": None,
                     "reused": True,
                     "fingerprint": existing_run.fingerprint,
+                    "specialist_path": derive_specialist_path(reused_path),
+                    "specialist_path_valid": reused_path_valid,
+                    "specialist_path_issues": reused_path_issues,
                 }
 
-        async def load_ticket_node(
-            state: AgentState,
-        ) -> dict:
-
-            return await self._load_ticket(
-                state,
-                db=db,
-            )
-
-        async def retrieve_node(
-            state: AgentState,
-        ) -> dict:
-
-            return await self._retrieve_knowledge(
-                state,
-                db=db,
-            )
-
-        graph = StateGraph(AgentState)
-
-        graph.add_node(
-            "load_ticket",
-            load_ticket_node,
-        )
-
-        graph.add_node(
-            "assess_knowledge_need",
-            self._assess_knowledge_need,
-        )
-
-        graph.add_node(
-            "retrieve_knowledge",
-            retrieve_node,
-        )
-
-        graph.add_node(
-            "decide_action",
-            self._decide_action,
-        )
-
-        graph.add_node(
-            "build_tool_plan",
-            self._build_tool_plan,
-        )
-
-        graph.add_edge(
-            START,
-            "load_ticket",
-        )
-
-        graph.add_edge(
-            "load_ticket",
-            "assess_knowledge_need",
-        )
-
-        graph.add_conditional_edges(
-            "assess_knowledge_need",
-            self._route_after_assessment,
-            {
-                "retrieve_knowledge": ("retrieve_knowledge"),
-                "decide_action": ("decide_action"),
-            },
-        )
-
-        graph.add_edge(
-            "retrieve_knowledge",
-            "decide_action",
-        )
-
-        graph.add_edge(
-            "decide_action",
-            "build_tool_plan",
-        )
-
-        graph.add_edge(
-            "build_tool_plan",
-            END,
-        )
-
-        workflow = graph.compile()
+        workflow = self._build_workflow(db)
 
         result = await workflow.ainvoke(
             {
@@ -1156,6 +1630,24 @@ Choose the safest next action.
             "decision_observability",
             {},
         )
+
+        # Specialist-path observability (Phase 1K.3): derived purely from the
+        # completed workflow_path, never reclassified from model output.
+        specialist_path = derive_specialist_path(workflow_path)
+
+        (
+            specialist_path_valid,
+            specialist_path_issues,
+        ) = validate_specialist_path(
+            workflow_path,
+            intent=decision_observability.get("coordinator_intent"),
+        )
+
+        decision_observability = dict(decision_observability)
+
+        decision_observability["specialist_path"] = specialist_path
+        decision_observability["specialist_path_valid"] = specialist_path_valid
+        decision_observability["specialist_path_issues"] = specialist_path_issues
 
         # Cross-check: the workflow-loaded ticket must belong to the same org
         # as the pre-loaded ticket used for the fingerprint.
@@ -1460,6 +1952,16 @@ Choose the safest next action.
             "job_id": auto_job_id,
             "reused": False,
             "fingerprint": fingerprint if persist_run else None,
+            # Coordinator intent observability (Phase 1K.2): the label the
+            # Coordinator selected for this ticket, safe to expose and persist
+            # (one of information/action/mixed/none, never raw input text).
+            "coordinator_intent": (decision_observability.get("coordinator_intent")),
+            # Specialist-path observability (Phase 1K.3): which specialists
+            # actually executed and whether their order is consistent with the
+            # current graph. Purely derived from workflow_path.
+            "specialist_path": specialist_path,
+            "specialist_path_valid": specialist_path_valid,
+            "specialist_path_issues": specialist_path_issues,
         }
 
     async def analyze(
@@ -1539,6 +2041,7 @@ Choose the safest next action.
             ticket_id=ticket_id,
             ticket=ticket_data,
             agent_decision_version=AGENT_DECISION_VERSION,
+            agent_workflow_version=AGENT_WORKFLOW_VERSION,
             model=settings.chat_model,
             corpus_revision=corpus_revision,
             customer_context_digest=customer_context_digest,

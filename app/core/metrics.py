@@ -42,6 +42,34 @@ AGENT_RAG_SOURCES_TOTAL = Counter(
 )
 
 
+AGENT_SPECIALIST_SELECTED_TOTAL = Counter(
+    "cxops_agent_specialist_selected_total",
+    "Total times each agent specialist executed.",
+    [
+        "specialist",
+    ],
+)
+
+
+AGENT_HANDOFF_TOTAL = Counter(
+    "cxops_agent_handoff_total",
+    "Specialist handoffs during agent analysis.",
+    [
+        "from_specialist",
+        "to_specialist",
+    ],
+)
+
+
+AGENT_SPECIALIST_FAILURE_TOTAL = Counter(
+    "cxops_agent_specialist_failure_total",
+    "Agent specialist failures. The label is a bounded specialist name.",
+    [
+        "specialist",
+    ],
+)
+
+
 # =====================================================
 # Approval metrics
 # =====================================================
@@ -230,6 +258,38 @@ def record_agent_approval(
 
     AGENT_APPROVALS_TOTAL.labels(
         result=result,
+    ).inc()
+
+
+def record_agent_specialist_selected(
+    *,
+    specialist: str,
+) -> None:
+
+    AGENT_SPECIALIST_SELECTED_TOTAL.labels(
+        specialist=specialist,
+    ).inc()
+
+
+def record_agent_handoff(
+    *,
+    from_specialist: str,
+    to_specialist: str,
+) -> None:
+
+    AGENT_HANDOFF_TOTAL.labels(
+        from_specialist=from_specialist,
+        to_specialist=to_specialist,
+    ).inc()
+
+
+def record_agent_specialist_failure(
+    *,
+    specialist: str,
+) -> None:
+
+    AGENT_SPECIALIST_FAILURE_TOTAL.labels(
+        specialist=specialist,
     ).inc()
 
 

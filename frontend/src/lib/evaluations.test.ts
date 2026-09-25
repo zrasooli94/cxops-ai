@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { CAPABILITIES } from "./authorization/capabilities.ts";
 import { createAuthorizationView } from "./authorization/helpers.ts";
 import {
+  AGENT_INTENT_OPTIONS,
+  SPECIALIST_PATH_PRESETS,
   EVALUATION_DECISION_APPROVED_MESSAGE,
   EVALUATION_DECISION_BLOCKED_MESSAGE,
   EVALUATION_DECISION_ERROR,
@@ -49,6 +51,7 @@ import {
   reviewReleaseDecision,
   runDisplayRow,
   runStatusLabel,
+  specialistPathForPreset,
   startAgentEvaluation,
   startRagEvaluation,
   targetTypeLabel,
@@ -354,6 +357,79 @@ describe("case dimensions", () => {
     ]);
   });
 
+  it("renders the Intent dimension only when the case was intent-scored", () => {
+    const withIntent = dimensionsForCase("agent", {
+      action_pass: true,
+      intent_pass: true,
+      overall_pass: true,
+    });
+    assert.deepEqual(withIntent, [
+      { label: "Action", value: "true" },
+      { label: "Intent", value: "true" },
+      { label: "Overall", value: "true" },
+    ]);
+
+    // Unscored cases never carry the dimension in the response.
+    const withoutIntent = dimensionsForCase("agent", {
+      action_pass: true,
+      overall_pass: true,
+    });
+    assert.deepEqual(withoutIntent, [
+      { label: "Action", value: "true" },
+      { label: "Overall", value: "true" },
+    ]);
+
+    // A scored-and-failed intent still renders verbatim (backend dimensions).
+    const failedIntent = dimensionsForCase("agent", {
+      action_pass: true,
+      intent_pass: false,
+      overall_pass: false,
+    });
+    assert.deepEqual(failedIntent, [
+      { label: "Action", value: "true" },
+      { label: "Intent", value: "false" },
+      { label: "Overall", value: "false" },
+    ]);
+  });
+
+  it("does not invent an Intent dimension for old uncharted agent runs", () => {
+    const dimensions = dimensionsForCase("agent", {
+      action_pass: true,
+      overall_pass: true,
+    });
+    assert.deepEqual(dimensions, [
+      { label: "Action", value: "true" },
+      { label: "Overall", value: "true" },
+    ]);
+  });
+
+  it("renders the Specialist path dimension between Intent and Overall", () => {
+    const dimensions = dimensionsForCase("agent", {
+      action_pass: true,
+      intent_pass: true,
+      specialist_path_pass: true,
+      overall_pass: true,
+    });
+    assert.deepEqual(dimensions, [
+      { label: "Action", value: "true" },
+      { label: "Intent", value: "true" },
+      { label: "Specialist path", value: "true" },
+      { label: "Overall", value: "true" },
+    ]);
+
+    // Unscored cases never carry the dimension in the response.
+    const unscored = dimensionsForCase("agent", {
+      action_pass: true,
+      intent_pass: true,
+      overall_pass: true,
+    });
+    assert.deepEqual(unscored, [
+      { label: "Action", value: "true" },
+      { label: "Intent", value: "true" },
+      { label: "Overall", value: "true" },
+    ]);
+  });
+
   it("ignores sensitive-looking keys that are not part of the dimension contract", () => {
     const dimensions = dimensionsForCase("rag", {
       customer_email: "a@b.co",
@@ -595,6 +671,41 @@ describe("metric comparison rows", () => {
   it("does not invent metrics when none were compared", () => {
     assert.deepEqual(metricComparisonRows([]), []);
   });
+
+  it("renders the intent_accuracy metric generically when the backend compares it", () => {
+    const rows = metricComparisonRows([
+      {
+        metric: "intent_accuracy",
+        baseline: 0.8,
+        candidate: 1,
+        delta: 0.2,
+        direction: "improved",
+      },
+    ]);
+    assert.deepEqual(rows[0], {
+      metric: "intent_accuracy",
+      baselineLabel: "0.8",
+      candidateLabel: "1",
+      deltaLabel: "+0.2",
+      direction: "improved",
+      directionLabel: "Improved",
+    });
+  });
+
+  it("never invents an intent_accuracy row when only the candidate scored it", () => {
+    // The backend skips metrics absent on either side; None is never sent.
+    const rows = metricComparisonRows([
+      {
+        metric: "auto_execute_safety_accuracy",
+        baseline: 0.9,
+        candidate: 1,
+        delta: 0.1,
+        direction: "improved",
+      },
+    ]);
+    assert.equal(rows[0].metric, "auto_execute_safety_accuracy");
+    assert.equal(rows.some((row) => row.metric === "intent_accuracy"), false);
+  });
 });
 
 describe("version identity rendering", () => {
@@ -785,6 +896,65 @@ describe("start RAG evaluation", () => {
   });
 });
 
+describe("agent intent expectation options", () => {
+  it("mirrors the backend AgentIntent literal plus the no-expectation option", () => {
+    assert.deepEqual(AGENT_INTENT_OPTIONS, [
+      { value: "", label: "Not specified" },
+      { value: "information", label: "Information" },
+      { value: "action", label: "Action" },
+      { value: "mixed", label: "Mixed" },
+      { value: "none", label: "None" },
+    ]);
+  });
+
+  it("exposes only the four backend labels as selectable intents", () => {
+    const values = AGENT_INTENT_OPTIONS.map((option) => option.value);
+    assert.equal(
+      values
+        .filter((value) => value !== "")
+        .every((value) =>
+          ["information", "action", "mixed", "none"].includes(value),
+        ),
+      true,
+    );
+  });
+});
+
+describe("specialist path expectation presets", () => {
+  it("mirrors the backend specialist literals as two fixed presets plus none", () => {
+    assert.deepEqual(SPECIALIST_PATH_PRESETS, [
+      { value: "", label: "Not specified", path: null },
+      {
+        value: "action",
+        label: "Coordinator → Action",
+        path: ["coordinator", "action"],
+      },
+      {
+        value: "full",
+        label: "Coordinator → Knowledge → Action",
+        path: ["coordinator", "knowledge", "action"],
+      },
+    ]);
+  });
+
+  it("resolves only bounded backend literals and never free text", () => {
+    assert.deepEqual(specialistPathForPreset("action"), [
+      "coordinator",
+      "action",
+    ]);
+    assert.deepEqual(specialistPathForPreset("full"), [
+      "coordinator",
+      "knowledge",
+      "action",
+    ]);
+
+    // "Not specified" and any unknown value yield no expectation.
+    assert.equal(specialistPathForPreset(""), null);
+    assert.equal(specialistPathForPreset("refund my account"), null);
+    assert.equal(specialistPathForPreset("intruder"), null);
+  });
+});
+
 describe("start Agent evaluation", () => {
   it("posts to the Agent run URL", async () => {
     const calls: RequestInfo[] = [];
@@ -886,6 +1056,155 @@ describe("start Agent evaluation", () => {
     );
     const body = postedJsonBody(init);
     assert.equal(body.cases[0].fingerprint, "agent-case-001");
+  });
+
+  it("sends expected_intent only when supplied", async () => {
+    const calls: RequestInfo[] = [];
+    const init: RequestInit = {};
+    const fetcher = (async (
+      input: RequestInfo | URL,
+      opts?: RequestInit,
+    ): Promise<Response> => {
+      calls.push(input);
+      Object.assign(init, opts);
+      return jsonResponse({
+        run_id: "run-agent",
+        target_type: "agent",
+        status: "queued",
+        model: "gpt-4o",
+        job_id: 8,
+        job_status: "queued",
+      });
+    }) as typeof fetch;
+
+    await startAgentEvaluation(
+      [
+        {
+          ticket_id: 1,
+          expected_action: "x",
+          expected_retrieval: false,
+          expected_tool: "y",
+          expected_auto_execute: false,
+          expected_intent: "action",
+        },
+      ],
+      fetcher,
+    );
+    assert.equal(postedJsonBody(init).cases[0].expected_intent, "action");
+  });
+
+  it("omits expected_intent entirely when not specified", async () => {
+    const calls: RequestInfo[] = [];
+    const init: RequestInit = {};
+    const fetcher = (async (
+      input: RequestInfo | URL,
+      opts?: RequestInit,
+    ): Promise<Response> => {
+      calls.push(input);
+      Object.assign(init, opts);
+      return jsonResponse({
+        run_id: "run-agent",
+        target_type: "agent",
+        status: "queued",
+        model: "gpt-4o",
+        job_id: 8,
+        job_status: "queued",
+      });
+    }) as typeof fetch;
+
+    await startAgentEvaluation(
+      [
+        {
+          ticket_id: 1,
+          expected_action: "x",
+          expected_retrieval: false,
+          expected_tool: "y",
+          expected_auto_execute: false,
+        },
+      ],
+      fetcher,
+    );
+    const body = postedJsonBody(init);
+    assert.equal("expected_intent" in body.cases[0], false);
+    assert.equal(JSON.stringify(body).includes("expected_intent"), false);
+  });
+
+  it("sends expected_specialists only when supplied", async () => {
+    const calls: RequestInfo[] = [];
+    const init: RequestInit = {};
+    const fetcher = (async (
+      input: RequestInfo | URL,
+      opts?: RequestInit,
+    ): Promise<Response> => {
+      calls.push(input);
+      Object.assign(init, opts);
+      return jsonResponse({
+        run_id: "run-agent",
+        target_type: "agent",
+        status: "queued",
+        model: "gpt-4o",
+        job_id: 8,
+        job_status: "queued",
+      });
+    }) as typeof fetch;
+
+    await startAgentEvaluation(
+      [
+        {
+          ticket_id: 1,
+          expected_action: "x",
+          expected_retrieval: false,
+          expected_tool: "y",
+          expected_auto_execute: false,
+          expected_specialists: ["coordinator", "knowledge", "action"],
+        },
+      ],
+      fetcher,
+    );
+    assert.deepEqual(postedJsonBody(init).cases[0].expected_specialists, [
+      "coordinator",
+      "knowledge",
+      "action",
+    ]);
+  });
+
+  it("omits expected_specialists entirely when not specified", async () => {
+    const calls: RequestInfo[] = [];
+    const init: RequestInit = {};
+    const fetcher = (async (
+      input: RequestInfo | URL,
+      opts?: RequestInit,
+    ): Promise<Response> => {
+      calls.push(input);
+      Object.assign(init, opts);
+      return jsonResponse({
+        run_id: "run-agent",
+        target_type: "agent",
+        status: "queued",
+        model: "gpt-4o",
+        job_id: 8,
+        job_status: "queued",
+      });
+    }) as typeof fetch;
+
+    await startAgentEvaluation(
+      [
+        {
+          ticket_id: 1,
+          expected_action: "x",
+          expected_retrieval: false,
+          expected_tool: "y",
+          expected_auto_execute: false,
+        },
+      ],
+      fetcher,
+    );
+    const body = postedJsonBody(init);
+    assert.equal("expected_specialists" in body.cases[0], false);
+    assert.equal(
+      JSON.stringify(body).includes("expected_specialists"),
+      false,
+    );
   });
 });
 

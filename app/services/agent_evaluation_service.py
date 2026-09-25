@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.agent_workflow_service import (
     agent_workflow_service,
+    derive_specialist_path,
 )
 
 
@@ -18,6 +19,8 @@ class AgentEvaluationService:
         expected_retrieval: bool,
         expected_tool: str,
         expected_auto_execute: bool,
+        expected_intent: str | None = None,
+        expected_specialists: list[str] | None = None,
     ) -> dict:
 
         started = time.perf_counter()
@@ -54,6 +57,12 @@ class AgentEvaluationService:
         actual_action = decision.get("action")
 
         actual_retrieval = "retrieve_knowledge" in workflow_path
+
+        # The real Coordinator result is the source of truth for intent; the
+        # evaluator never re-classifies the ticket itself (Phase 1K.2).
+        actual_intent = result.get(
+            "coordinator_intent",
+        )
 
         actual_tools = [tool.get("tool") for tool in tool_plan]
 
@@ -96,6 +105,26 @@ class AgentEvaluationService:
 
         auto_execute_pass = actual_auto_execute == expected_auto_execute
 
+        # Optional Coordinator-intent dimension: scored only when the case
+        # supplied an expected intent; never fails a case that did not.
+        intent_pass = (
+            (actual_intent == expected_intent)
+            if expected_intent is not None
+            else None
+        )
+
+        # Optional specialist-path dimension (Phase 1K.3): the actual path is
+        # derived from the REAL workflow_path the workflow executed — the
+        # evaluator never re-classifies. Scored only when the case supplied an
+        # expected path; never fails a case that did not.
+        actual_specialists = derive_specialist_path(workflow_path)
+
+        specialist_path_pass = (
+            (actual_specialists == expected_specialists)
+            if expected_specialists is not None
+            else None
+        )
+
         overall_pass = all(
             [
                 action_pass,
@@ -119,6 +148,12 @@ class AgentEvaluationService:
             "actual_tools": (actual_tools),
             "expected_auto_execute": (expected_auto_execute),
             "actual_auto_execute": (actual_auto_execute),
+            "expected_intent": (expected_intent),
+            "actual_intent": (actual_intent),
+            "intent_pass": (intent_pass),
+            "expected_specialists": (expected_specialists),
+            "actual_specialists": (actual_specialists),
+            "specialist_path_pass": (specialist_path_pass),
             "action_pass": (action_pass),
             "retrieval_pass": (retrieval_pass),
             "tool_pass": (tool_pass),

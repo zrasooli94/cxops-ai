@@ -2,6 +2,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, validator
 
+# Deterministic Coordinator intent labels (mirrors agent_workflow_service).
+AgentIntent = Literal["information", "action", "mixed", "none"]
+
+# Bounded specialist labels (Phase 1K.3). Only these four values are valid in
+# a specialist path; anything else is rejected by the schema.
+AgentSpecialist = Literal["coordinator", "knowledge", "action"]
+
 
 class AgentDecision(BaseModel):
     action: Literal[
@@ -105,6 +112,17 @@ class AgentAnalysisResponse(BaseModel):
     reused: bool = False
 
     fingerprint: str | None = None
+
+    # Coordinator intent observability (Phase 1K.2): the deterministic label
+    # the Coordinator selected. Safe to expose (never raw ticket text).
+    coordinator_intent: AgentIntent | None = None
+
+    # Specialist-path observability (Phase 1K.3): the ordered list of
+    # specialists that actually executed, and whether the path is consistent
+    # with the current graph. Purely derived from workflow_path.
+    specialist_path: list[AgentSpecialist] = Field(default_factory=list)
+    specialist_path_valid: bool = True
+    specialist_path_issues: list[str] = Field(default_factory=list)
 
 
 class AgentReviewRequest(BaseModel):

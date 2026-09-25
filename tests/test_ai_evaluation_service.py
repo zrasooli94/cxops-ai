@@ -8,8 +8,6 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
-
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.ai_evaluation_case import AIEvaluationCase
@@ -18,6 +16,7 @@ from app.repositories.ai_evaluation_repository import AIEvaluationRepository
 from app.services.agent_evaluation_service import AgentEvaluationService
 from app.services.ai_evaluation_service import AIEvaluationService
 from app.services.rag_evaluation_service import RAGEvaluationService
+from sqlalchemy import select
 
 
 @pytest_asyncio.fixture
@@ -139,6 +138,8 @@ def _agent_base_result(
     expected_retrieval: bool,
     expected_tool: str,
     expected_auto_execute: bool,
+    expected_intent: str | None = None,
+    expected_specialists: list[str] | None = None,
 ) -> dict:
     return {
         "ticket_id": ticket_id,
@@ -150,6 +151,20 @@ def _agent_base_result(
         "actual_tools": [expected_tool],
         "expected_auto_execute": expected_auto_execute,
         "actual_auto_execute": expected_auto_execute,
+        "expected_intent": expected_intent,
+        "actual_intent": (expected_intent),
+        "intent_pass": (
+            (expected_intent is not None)
+            if expected_intent is not None
+            else None
+        ),
+        "expected_specialists": expected_specialists,
+        "actual_specialists": (expected_specialists),
+        "specialist_path_pass": (
+            (expected_specialists is not None)
+            if expected_specialists is not None
+            else None
+        ),
         "action_pass": True,
         "retrieval_pass": True,
         "tool_pass": True,
@@ -177,6 +192,8 @@ def _fake_agent_evaluate_case(
         expected_retrieval,
         expected_tool,
         expected_auto_execute,
+        expected_intent=None,
+        expected_specialists=None,
     ):
         calls.append(
             {
@@ -186,6 +203,8 @@ def _fake_agent_evaluate_case(
                 "expected_retrieval": expected_retrieval,
                 "expected_tool": expected_tool,
                 "expected_auto_execute": expected_auto_execute,
+                "expected_intent": expected_intent,
+                "expected_specialists": expected_specialists,
             }
         )
 
@@ -199,6 +218,8 @@ def _fake_agent_evaluate_case(
             expected_retrieval=expected_retrieval,
             expected_tool=expected_tool,
             expected_auto_execute=expected_auto_execute,
+            expected_intent=expected_intent,
+            expected_specialists=expected_specialists,
         )
         if isinstance(stated, dict):
             for key, value in stated.items():
@@ -318,6 +339,267 @@ async def test_agent_case_results_persisted(db):
             assert "description" not in bucket
             assert "body" not in bucket
             assert "ticket" not in bucket
+
+
+# ---------------------------------------------------------------------------
+# Agent: 1K.2 — optional Coordinator-intent dimension scores + persists
+
+
+@pytest.mark.asyncio
+async def test_agent_intent_dimension_scored_and_persisted(db):
+    org = await _make_org(db, "agent-intent")
+    cases = [
+        _agent_case(301, expected_intent="action"),
+        _agent_case(302, expected_intent="information"),
+    ]
+    calls: list[dict] = []
+    fake = _fake_agent_evaluate_case(
+        {302: {"actual_intent": "mixed", "intent_pass": False}},
+        calls,
+    )
+
+    with patch.object(AgentEvaluationService, "evaluate_case", side_effect=fake):
+        run = await AIEvaluationService.run_agent_evaluation(
+            db, organization_id=org.id, cases=cases
+        )
+
+    assert run.metrics["intent_accuracy"] == 0.5
+    assert [c["ticket_id"] for c in calls] == [301, 302]
+    assert [c["expected_intent"] for c in calls] == ["action", "information"]
+
+    rows = {row.case_id: row for row in await _cases_for_org(db, organization_id=org.id)}
+    row = rows["302"]
+    assert row.expected["expected_intent"] == "information"
+    assert row.actual["actual_intent"] == "mixed"
+    assert row.dimensions["intent_pass"] is False
+    assert (
+        "intent_pass" not in rows["301"].dimensions
+        or rows["301"].dimensions["intent_pass"] is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_intent_accuracy_none_when_no_expected_intent(db):
+    org = await _make_org(db, "agent-no-intent")
+
+    with patch.object(
+        AgentEvaluationService,
+        "evaluate_case",
+        side_effect=_fake_agent_evaluate_case(),
+    ):
+        run = await AIEvaluationService.run_agent_evaluation(
+            db,
+            organization_id=org.id,
+            cases=[_agent_case(401), _agent_case(402)],
+        )
+
+    assert run.metrics["intent_accuracy"] is None
+    assert run.metrics["action_accuracy"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Agent: 1K.2 — summary aggregates intent only over scored cases
+
+
+def test_agent_summary_intent_accuracy_denominator():
+    def summary(results):
+        return AIEvaluationService._build_agent_summary(results)
+
+    all_scored = [
+        {
+            "latency_ms": 5.0,
+            "overall_pass": True,
+            "action_pass": True,
+            "retrieval_pass": True,
+            "tool_pass": True,
+            "auto_execute_pass": True,
+            "expected_intent": "action",
+            "actual_intent": "action",
+            "intent_pass": True,
+        },
+        {
+            "latency_ms": 5.0,
+            "overall_pass": True,
+            "action_pass": True,
+            "retrieval_pass": True,
+            "tool_pass": True,
+            "auto_execute_pass": True,
+            "expected_intent": "information",
+            "actual_intent": "mixed",
+            "intent_pass": False,
+        },
+    ]
+    s = summary(all_scored)
+    assert s["intent_accuracy"] == 0.5
+
+    unsored_case = dict(all_scored[0])
+    unsored_case["expected_intent"] = None
+    unsored_case["actual_intent"] = None
+    unsored_case["intent_pass"] = None
+    s = summary([all_scored[0], unsored_case])
+    # Only the scored case counts toward the denominator.
+    assert s["intent_accuracy"] == 1.0
+
+    s = summary([unsored_case])
+    assert s["intent_accuracy"] is None
+
+
+# ---------------------------------------------------------------------------
+# Agent: 1K.3 — optional specialist-path dimension scores + persists
+
+
+@pytest.mark.asyncio
+async def test_agent_specialist_path_dimension_scored_and_persisted(db):
+    org = await _make_org(db, "agent-path")
+    cases = [
+        _agent_case(601, expected_specialists=["coordinator", "knowledge", "action"]),
+        _agent_case(602, expected_specialists=["coordinator", "action"]),
+    ]
+    calls: list[dict] = []
+    fake = _fake_agent_evaluate_case(
+        {
+            602: {
+                "actual_specialists": ["coordinator", "knowledge", "action"],
+                "specialist_path_pass": False,
+            }
+        },
+        calls,
+    )
+
+    with patch.object(AgentEvaluationService, "evaluate_case", side_effect=fake):
+        run = await AIEvaluationService.run_agent_evaluation(
+            db, organization_id=org.id, cases=cases
+        )
+
+    assert run.metrics["specialist_path_accuracy"] == 0.5
+    assert [c["ticket_id"] for c in calls] == [601, 602]
+    assert [c["expected_specialists"] for c in calls] == [
+        ["coordinator", "knowledge", "action"],
+        ["coordinator", "action"],
+    ]
+
+    rows = {row.case_id: row for row in await _cases_for_org(db, organization_id=org.id)}
+    row = rows["602"]
+    assert row.expected["expected_specialists"] == ["coordinator", "action"]
+    assert row.actual["actual_specialists"] == [
+        "coordinator",
+        "knowledge",
+        "action",
+    ]
+    assert row.dimensions["specialist_path_pass"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_specialist_path_accuracy_none_when_no_expected_specialists(db):
+    org = await _make_org(db, "agent-no-path")
+
+    with patch.object(
+        AgentEvaluationService,
+        "evaluate_case",
+        side_effect=_fake_agent_evaluate_case(),
+    ):
+        run = await AIEvaluationService.run_agent_evaluation(
+            db,
+            organization_id=org.id,
+            cases=[_agent_case(701), _agent_case(702)],
+        )
+
+    assert run.metrics["specialist_path_accuracy"] is None
+    assert run.metrics["action_accuracy"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Agent: 1K.3 — summary aggregates specialist path only over scored cases
+
+
+def test_agent_summary_specialist_path_accuracy_denominator():
+    def summary(results):
+        return AIEvaluationService._build_agent_summary(results)
+
+    def base_case(overrides):
+        case = {
+            "latency_ms": 5.0,
+            "overall_pass": True,
+            "action_pass": True,
+            "retrieval_pass": True,
+            "tool_pass": True,
+            "auto_execute_pass": True,
+            "expected_specialists": ["coordinator", "action"],
+            "actual_specialists": ["coordinator", "action"],
+            "specialist_path_pass": True,
+        }
+        case.update(overrides)
+        return case
+
+    all_scored = [
+        base_case({}),
+        base_case(
+            {
+                "expected_specialists": ["coordinator", "action"],
+                "actual_specialists": ["coordinator", "knowledge", "action"],
+                "specialist_path_pass": False,
+            }
+        ),
+    ]
+    s = summary(all_scored)
+    assert s["specialist_path_accuracy"] == 0.5
+
+    unscored_case = base_case(
+        {
+            "expected_specialists": None,
+            "actual_specialists": ["coordinator", "action"],
+            "specialist_path_pass": None,
+        }
+    )
+    s = summary([all_scored[0], unscored_case])
+    # Only the scored case counts toward the denominator.
+    assert s["specialist_path_accuracy"] == 1.0
+
+    s = summary([unscored_case])
+    assert s["specialist_path_accuracy"] is None
+
+
+# ---------------------------------------------------------------------------
+# Agent: 1K.3 — durable input only keeps the bounded specialist labels
+
+
+def test_agent_sanitize_case_whitelists_expected_specialists():
+    dirty = {
+        "ticket_id": 42,
+        "expected_action": "respond",
+        "expected_retrieval": True,
+        "expected_tool": "zendesk.send_reply",
+        "expected_auto_execute": False,
+        "expected_specialists": [
+            "coordinator",
+            "knowledge",
+            "action",
+            "intruder-prompt",
+            "SELECT * FROM cases",
+        ],
+        "subject": "please ignore",
+        "description": "secret body",
+    }
+    sanitized = AIEvaluationService._sanitize_agent_case(dirty)
+    assert sanitized["expected_specialists"] == [
+        "coordinator",
+        "knowledge",
+        "action",
+    ]
+    assert "subject" not in sanitized
+    assert "description" not in sanitized
+
+
+def test_agent_sanitize_case_drops_expected_specialists_when_absent():
+    clean = {
+        "ticket_id": 43,
+        "expected_action": "no_action",
+        "expected_retrieval": False,
+        "expected_tool": "none",
+        "expected_auto_execute": False,
+    }
+    sanitized = AIEvaluationService._sanitize_agent_case(clean)
+    assert "expected_specialists" not in sanitized
 
 
 # ---------------------------------------------------------------------------

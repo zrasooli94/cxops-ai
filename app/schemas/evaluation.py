@@ -7,7 +7,9 @@ phone, raw ticket/conversation bodies) is ever represented.
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.agent import AgentIntent, AgentSpecialist
 
 TargetType = Literal["rag", "agent", "repeatability", "latency"]
 
@@ -78,9 +80,29 @@ class EvalAgentCaseInput(BaseModel):
     expected_retrieval: bool
     expected_tool: str = Field(min_length=1, max_length=100)
     expected_auto_execute: bool
+    # Optional Coordinator intent expectation (Phase 1K.2). Absence keeps the
+    # case fully backward compatible: no intent dimension is scored.
+    expected_intent: AgentIntent | None = Field(default=None)
+    # Optional specialist-path expectation (Phase 1K.3). Absence keeps the case
+    # fully backward compatible: no specialist-path dimension is scored. When
+    # supplied, only the three bounded specialist labels are accepted.
+    expected_specialists: list[AgentSpecialist] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=3,
+    )
     fingerprint: str | None = Field(default=None, max_length=64)
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("expected_specialists")
+    @classmethod
+    def expected_specialists_must_be_unique(cls, value):
+        if value is None:
+            return value
+        if len(set(value)) != len(value):
+            raise ValueError("expected_specialists must not contain duplicates")
+        return value
 
 
 class EvalRAGCaseInputs(BaseModel):

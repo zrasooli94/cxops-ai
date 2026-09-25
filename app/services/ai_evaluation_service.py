@@ -84,6 +84,8 @@ _AGENT_METRIC_KEYS = (
     "tool_accuracy",
     "auto_execute_safety_accuracy",
     "average_latency_ms",
+    "intent_accuracy",
+    "specialist_path_accuracy",
 )
 
 _EMPTY_CASES_ERROR = "No RAG cases were provided for the evaluation run."
@@ -134,6 +136,17 @@ class AIEvaluationService:
         }
         if case.get("fingerprint"):
             sanitized["fingerprint"] = str(case["fingerprint"])
+        if case.get("expected_intent") is not None:
+            sanitized["expected_intent"] = case["expected_intent"]
+        if case.get("expected_specialists") is not None:
+            # Only the bounded specialist labels are durable; anything else is
+            # dropped so no free text reaches the persisted run input.
+            allowed_specialists = ("coordinator", "knowledge", "action")
+            sanitized["expected_specialists"] = [
+                str(specialist)
+                for specialist in case["expected_specialists"]
+                if str(specialist) in allowed_specialists
+            ]
         return sanitized
 
     @staticmethod
@@ -441,6 +454,8 @@ class AIEvaluationService:
                     expected_retrieval=case["expected_retrieval"],
                     expected_tool=case["expected_tool"],
                     expected_auto_execute=case["expected_auto_execute"],
+                    expected_intent=case.get("expected_intent"),
+                    expected_specialists=case.get("expected_specialists"),
                 )
                 results.append(result)
 
@@ -458,12 +473,32 @@ class AIEvaluationService:
                         "expected_retrieval": result["expected_retrieval"],
                         "expected_tool": result["expected_tool"],
                         "expected_auto_execute": result["expected_auto_execute"],
+                        **(
+                            {"expected_intent": result["expected_intent"]}
+                            if result.get("expected_intent") is not None
+                            else {}
+                        ),
+                        **(
+                            {"expected_specialists": list(result["expected_specialists"])}
+                            if result.get("expected_specialists") is not None
+                            else {}
+                        ),
                     },
                     actual={
                         "actual_action": result["actual_action"],
                         "actual_retrieval": result["actual_retrieval"],
                         "actual_tools": list(result["actual_tools"]),
                         "actual_auto_execute": result["actual_auto_execute"],
+                        **(
+                            {"actual_intent": result["actual_intent"]}
+                            if result.get("actual_intent") is not None
+                            else {}
+                        ),
+                        **(
+                            {"actual_specialists": list(result["actual_specialists"])}
+                            if result.get("actual_specialists") is not None
+                            else {}
+                        ),
                     },
                     dimensions={
                         "action_pass": bool(result["action_pass"]),
@@ -471,6 +506,16 @@ class AIEvaluationService:
                         "tool_pass": bool(result["tool_pass"]),
                         "auto_execute_pass": bool(result["auto_execute_pass"]),
                         "overall_pass": bool(result["overall_pass"]),
+                        **(
+                            {"intent_pass": bool(result["intent_pass"])}
+                            if result.get("expected_intent") is not None
+                            else {}
+                        ),
+                        **(
+                            {"specialist_path_pass": bool(result["specialist_path_pass"])}
+                            if result.get("expected_specialists") is not None
+                            else {}
+                        ),
                     },
                     latency_ms=result["latency_ms"],
                     total_tokens=result.get("total_tokens"),
@@ -660,6 +705,24 @@ class AIEvaluationService:
         total = len(results)
         total_latency = sum(result["latency_ms"] for result in results)
 
+        # The intent dimension is scored only when the operator supplied an
+        # expected intent; cases that omit it are excluded from the accuracy
+        # denominator entirely (Phase 1K.2).
+        intent_scored = [
+            bool(result["intent_pass"])
+            for result in results
+            if result.get("expected_intent") is not None
+        ]
+
+        # The specialist-path dimension is scored only when the operator
+        # supplied an expected path; cases that omit it are excluded from the
+        # accuracy denominator entirely (Phase 1K.3).
+        specialist_path_scored = [
+            bool(result["specialist_path_pass"])
+            for result in results
+            if result.get("expected_specialists") is not None
+        ]
+
         return {
             "total": total,
             "passed": sum(bool(result["overall_pass"]) for result in results),
@@ -672,6 +735,14 @@ class AIEvaluationService:
                 [bool(result["auto_execute_pass"]) for result in results]
             ),
             "average_latency_ms": (round(total_latency / total, 2) if total else 0.0),
+            # None (not 0.0) when no case supplied an expected intent: there is
+            # nothing to measure. The frontend renders None as "n/a".
+            "intent_accuracy": (rate(intent_scored) if intent_scored else None),
+            # None (not 0.0) when no case supplied an expected specialist path:
+            # there is nothing to measure. The frontend renders None as "n/a".
+            "specialist_path_accuracy": (
+                rate(specialist_path_scored) if specialist_path_scored else None
+            ),
         }
 
     @staticmethod

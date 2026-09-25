@@ -368,7 +368,65 @@ export interface EvalAgentCaseInput {
   expected_tool: string;
   expected_auto_execute: boolean;
   fingerprint?: string | null;
+  /** Optional Coordinator-intent expectation (Phase 1K.2). Omit to skip. */
+  expected_intent?: string | null;
+  /**
+   * Optional specialist-path expectation (Phase 1K.3). Only the bounded
+   * backend literals coordinator/knowledge/action survive; the UI sends
+   * presets only, never free text.
+   */
+  expected_specialists?: string[] | null;
 }
+
+/**
+ * Specialist-path expectation presets. The empty value is "no expectation"
+ * and is omitted from the payload so cases stay backward compatible with runs
+ * that do not score the specialist path. The two non-empty presets are fixed
+ * and bounded — there is no free-text path input, so unknown values can never
+ * be sent.
+ */
+export const SPECIALIST_PATH_PRESETS: ReadonlyArray<{
+  value: string;
+  label: string;
+  path: readonly string[] | null;
+}> = [
+  { value: "", label: "Not specified", path: null },
+  {
+    value: "action",
+    label: "Coordinator → Action",
+    path: ["coordinator", "action"],
+  },
+  {
+    value: "full",
+    label: "Coordinator → Knowledge → Action",
+    path: ["coordinator", "knowledge", "action"],
+  },
+];
+
+/**
+ * Resolve a preset value to the specialist-path payload, or null when the
+ * selection is "Not specified" (or unknown, which cannot be sent by the UI).
+ * A null result MUST be omitted from the payload — never serialized.
+ */
+export function specialistPathForPreset(presetValue: string): readonly string[] | null {
+  const preset = SPECIALIST_PATH_PRESETS.find(
+    (option) => option.value === presetValue,
+  );
+  return preset?.path ?? null;
+}
+
+/**
+ * Coordinator-intent expectation options, mirroring the backend `AgentIntent`
+ * literal exactly. The empty value is "no expectation" and is omitted from the
+ * payload so cases stay backward compatible with runs that do not score intent.
+ */
+export const AGENT_INTENT_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "", label: "Not specified" },
+  { value: "information", label: "Information" },
+  { value: "action", label: "Action" },
+  { value: "mixed", label: "Mixed" },
+  { value: "none", label: "None" },
+];
 
 /** Mirrors `EvaluationRunQueuedResponse`. */
 export interface EvaluationRunQueued {
@@ -746,6 +804,8 @@ const AGENT_DIMENSIONS = [
   { key: "retrieval_pass", label: "Retrieval" },
   { key: "tool_pass", label: "Tool" },
   { key: "auto_execute_pass", label: "Auto-execute" },
+  { key: "intent_pass", label: "Intent" },
+  { key: "specialist_path_pass", label: "Specialist path" },
   { key: "overall_pass", label: "Overall" },
 ] as const;
 

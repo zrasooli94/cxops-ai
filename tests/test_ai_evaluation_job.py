@@ -15,8 +15,6 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
-
 from app.core.database import AsyncSessionLocal
 from app.models.ai_evaluation_case import AIEvaluationCase
 from app.models.ai_evaluation_run import AIEvaluationRun
@@ -28,6 +26,7 @@ from app.services.agent_evaluation_service import AgentEvaluationService
 from app.services.ai_evaluation_service import AIEvaluationService
 from app.services.integration_job_service import IntegrationJobService
 from app.services.rag_evaluation_service import RAGEvaluationService
+from sqlalchemy import select
 
 
 @pytest_asyncio.fixture
@@ -127,6 +126,8 @@ def _agent_base_result(
     expected_retrieval: bool,
     expected_tool: str,
     expected_auto_execute: bool,
+    expected_intent: str | None = None,
+    expected_specialists: list[str] | None = None,
 ) -> dict:
     return {
         "ticket_id": ticket_id,
@@ -138,6 +139,20 @@ def _agent_base_result(
         "actual_tools": [expected_tool],
         "expected_auto_execute": expected_auto_execute,
         "actual_auto_execute": expected_auto_execute,
+        "expected_intent": expected_intent,
+        "actual_intent": expected_intent,
+        "intent_pass": (
+            (expected_intent is not None)
+            if expected_intent is not None
+            else None
+        ),
+        "expected_specialists": expected_specialists,
+        "actual_specialists": expected_specialists,
+        "specialist_path_pass": (
+            (expected_specialists is not None)
+            if expected_specialists is not None
+            else None
+        ),
         "action_pass": True,
         "retrieval_pass": True,
         "tool_pass": True,
@@ -161,6 +176,8 @@ def _fake_agent_evaluate_case(calls: list | None = None):
         expected_retrieval,
         expected_tool,
         expected_auto_execute,
+        expected_intent=None,
+        expected_specialists=None,
     ):
         calls.append(
             {
@@ -175,6 +192,8 @@ def _fake_agent_evaluate_case(calls: list | None = None):
             expected_retrieval=expected_retrieval,
             expected_tool=expected_tool,
             expected_auto_execute=expected_auto_execute,
+            expected_intent=expected_intent,
+            expected_specialists=expected_specialists,
         )
 
     return evaluate_case
@@ -247,7 +266,7 @@ async def test_job_payload_and_run_input_carry_no_customer_content(db):
     org = await _make_org(db, "pii")
     run_id = _new_run_id("pii")
     leaked_text = "Subject: Refund please. Body: my account password is secret"
-    juicy_case = _agent_case(701, fingerprint="fp-701")
+    juicy_case = _agent_case(701, fingerprint="fp-701", expected_intent="action")
     juicy_case["subject"] = leaked_text
     juicy_case["description"] = leaked_text
     juicy_case["body"] = leaked_text
@@ -280,6 +299,9 @@ async def test_job_payload_and_run_input_carry_no_customer_content(db):
     assert first["ticket_id"] == 701
     assert first["fingerprint"] == "fp-701"
     assert first["expected_action"] == "respond"
+    # Phase 1K.2: the operator-authored intent expectation is sanitized-safe and
+    # survives (a coordinator label, never raw ticket text).
+    assert first["expected_intent"] == "action"
     for forbidden in ("subject", "description", "body", leaked_text):
         assert forbidden not in first
         assert forbidden not in str(run.input)
