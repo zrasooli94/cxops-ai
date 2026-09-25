@@ -35,21 +35,21 @@ os.environ["ENVIRONMENT"] = "development"
 
 warnings.filterwarnings("ignore")
 
-from app.core.config import reset_settings_cache, settings  # noqa: E402
-from app.core.database import AsyncSessionLocal  # noqa: E402
-from app.core.rbac import OrganizationRole  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models.agent_run import AgentRun  # noqa: E402
-from app.models.ai_request_log import AIRequestLog  # noqa: E402
-from app.models.conversation import Conversation  # noqa: E402
-from app.models.conversation_message import ConversationMessage  # noqa: E402
-from app.models.organization import Organization  # noqa: E402
-from app.models.organization_membership import (  # noqa: E402
+from app.core.config import reset_settings_cache, settings
+from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
+from app.main import app
+from app.models.agent_run import AgentRun
+from app.models.ai_request_log import AIRequestLog
+from app.models.conversation import Conversation
+from app.models.conversation_message import ConversationMessage
+from app.models.organization import Organization
+from app.models.organization_membership import (
     OrganizationMembership,
 )
-from app.models.service_escalation import ServiceEscalation  # noqa: E402
-from app.models.service_queue import ServiceQueue  # noqa: E402
-from app.models.ticket import Ticket  # noqa: E402
+from app.models.service_escalation import ServiceEscalation
+from app.models.service_queue import ServiceQueue
+from app.models.ticket import Ticket
 
 TEST_SECRET = "z" * 32
 TEST_ISSUER = "test-xtf-issuer"
