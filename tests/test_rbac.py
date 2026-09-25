@@ -196,6 +196,8 @@ def test_supervisor_matrix():
         Capability.MEMBER_READ,
         Capability.EVALUATION_READ,
         Capability.EVALUATION_MANAGE,
+        Capability.TRANSFORMATION_SIMULATION_READ,
+        Capability.TRANSFORMATION_SIMULATION_MANAGE,
     }
     assert ROLE_CAPABILITIES[OrganizationRole.SUPERVISOR] == frozenset(expected)
 
@@ -225,6 +227,25 @@ def test_evaluation_capabilities_fail_closed():
     )
     assert not has_capability(authz, Capability.EVALUATION_READ)
     assert not has_capability(authz, Capability.EVALUATION_MANAGE)
+
+
+def test_simulation_capabilities_matrix():
+    assert Capability.TRANSFORMATION_SIMULATION_READ in ALL_CAPABILITIES
+    assert Capability.TRANSFORMATION_SIMULATION_MANAGE in ALL_CAPABILITIES
+
+    for role in (OrganizationRole.OWNER, OrganizationRole.ADMIN):
+        caps = capabilities_for_role(role)
+        assert Capability.TRANSFORMATION_SIMULATION_READ in caps
+        assert Capability.TRANSFORMATION_SIMULATION_MANAGE in caps
+
+    caps = capabilities_for_role(OrganizationRole.SUPERVISOR)
+    assert Capability.TRANSFORMATION_SIMULATION_READ in caps
+    assert Capability.TRANSFORMATION_SIMULATION_MANAGE in caps
+
+    for role in (OrganizationRole.AGENT, OrganizationRole.VIEWER):
+        caps = capabilities_for_role(role)
+        assert Capability.TRANSFORMATION_SIMULATION_READ not in caps
+        assert Capability.TRANSFORMATION_SIMULATION_MANAGE not in caps
 
 
 def test_agent_matrix():
