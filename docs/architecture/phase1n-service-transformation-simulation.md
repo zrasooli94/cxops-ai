@@ -189,3 +189,81 @@ AI recommendations / LLM explanations, predictive forecasting, Monte Carlo,
 staffing optimize, CSAT/FCR/employee/customer prediction, and real financial
 forecasting. Recommended follow-up: **Phase 1N.2 — Executive Decision Workspace
 & Scenario Comparison**.
+---
+
+## Phase 1N.2 — Executive Decision Workspace & Scenario Comparison (frontend)
+
+Status: **IMPLEMENTED** (pending final review) · Phase: 1N.2 · Depends on:
+Phase 1N.1 API. Backend change: **none**.
+
+### Scope
+
+The Next.js control center gains an executive-facing workspace built entirely
+on the 1N.1 API surface (`/service-operations/simulations` through the existing
+BFF proxy `/api/backend`). It ships a scenario library, a create flow, a
+three-section detail view, a 2–4 scenario comparison matrix, a deterministic
+executive summary, and print via CSS print rules.
+
+### What the frontend does and does not recompute
+
+- **Does not recompute.** Projections, ROI, rates, and deltas come from the
+  backend response contracts (`ServiceTransformationScenarioRead`,
+  `ServiceTransformationScenarioEvaluateResponse`). The only arithmetic in the
+  workspace is `presentationDelta` (a presentation-only observed→projected
+  difference used purely for a delta column on deep-linked rows; it never feeds
+  any metric) and KPI formatting. Rates render with `formatRate`, which formats
+  backend values as-is (a backend `40` renders `40%`, never `4000%`).
+- **Never ×100.** Assumption targets travel as 0–100 percentages untouched.
+- **Unavailable ≠ zero.** ROI and any null measured value render as `—`, never
+  `0`, `NaN`, `undefined`, or `Infinity`; formatters fail safe on non-finite
+  input.
+- **No LLM anywhere.** The executive summary is a deterministic rendering of the
+  persisted row + measurement status via `buildExecutiveSummary`.
+- **No ranking.** Comparison and summary never rank or recommend scenarios.
+
+### Capabilities and auth
+
+- `transformation.simulation.read` guards the route (`ROUTE_REQUIREMENTS`)
+  and the nav entry; `transformation.simulation.manage` gates create, evaluate,
+  re-evaluate, and archive actions. `deriveSimulationExperience` yields
+  `readOnly` for a reader; management affordances never render for a
+  read-only subject.
+- The backend remains authoritative for every request. Failed mutations parse
+  backend `detail` through `planClientAuthorizationResponse` /
+  `authorizationFeedback`, and a capability denial refreshes authorization.
+
+### Frontend modules
+
+| path | purpose |
+| --- | --- |
+| `src/lib/simulation/simulation.ts` | pure lib: mirrored types, fetch client, payload builder, validators, formatters, comparison warnings, executive summary |
+| `src/app/(control-center)/simulations/layout.tsx` | route guard + metadata |
+| `src/app/(control-center)/simulations/page.tsx` | library, Active/Archived filter, create flow, compare selection → `/simulations/compare?ids=…` |
+| `src/app/(control-center)/simulations/[scenarioId]/page.tsx` | detail: Observed / Assumptions / Projected, Value & ROI, limitations, executive summary, print, evaluate/archive |
+| `src/app/(control-center)/simulations/compare/page.tsx` | 2–4 scenario matrix over existing GET detail responses |
+| `src/app/globals.css` | `@media print` rules hiding chrome (`no-print`) and keeping `print-area` content clean |
+
+### Comparison contract
+
+- Selection is 2–4 scenarios (client-side bounds mirror the spec).
+- Warnings are rendered verbatim from constants: different observed windows
+  ("These scenarios use different observed windows and are not directly
+  comparable."), different formula versions, and unevaluated participants.
+  They are never suppressed or strengthened.
+- Deltas are presentation differences only and the matrix states it never ranks
+  or recommends.
+
+### Tests
+
+`src/lib/simulation/simulation.test.ts` (added to `test:auth`) covers
+capability gates, create-payload semantics (enabled-only keys, values untouched,
+no `organization_id`, unsupported fields rejected, window fallback, non-finite
+dropped), validators, formatters/never-NaN contract, fetch URLs/methods/bodies,
+`SimulationRequestError` status/detail, comparison warnings/bounds, and
+executive-summary determinism/ROI states. `navigation.test.ts` gained
+`/simulations` visibility and requirement tests.
+
+### Print/export
+
+Print uses `window.print()` + CSS print rules only — no new dependency, no
+backend PDF endpoint, no async export job.

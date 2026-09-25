@@ -30,6 +30,8 @@ export const CAPABILITIES = {
   OBSERVABILITY_READ: "observability.read",
   EVALUATION_READ: "evaluation.read",
   EVALUATION_MANAGE: "evaluation.manage",
+  TRANSFORMATION_SIMULATION_READ: "transformation.simulation.read",
+  TRANSFORMATION_SIMULATION_MANAGE: "transformation.simulation.manage",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];

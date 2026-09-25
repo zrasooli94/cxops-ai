@@ -24,7 +24,8 @@ export type NavigationIconName =
   | "layers"
   | "clipboard-check"
   | "route"
-  | "car";
+  | "car"
+  | "sliders-horizontal";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -41,6 +42,7 @@ export type ControlCenterRoute =
   | "/operations"
   | "/evaluations"
   | "/transformation"
+  | "/simulations"
   | "/automotive-pilot";
 
 /**
@@ -66,6 +68,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/operations": CAPABILITIES.TICKET_READ,
   "/evaluations": CAPABILITIES.EVALUATION_READ,
   "/transformation": CAPABILITIES.TICKET_READ,
+  "/simulations": CAPABILITIES.TRANSFORMATION_SIMULATION_READ,
   "/automotive-pilot": CAPABILITIES.TICKET_READ,
 };
 
@@ -129,6 +132,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Service value analytics",
     icon: "route",
     requiredCapability: ROUTE_REQUIREMENTS["/transformation"],
+  },
+  {
+    href: "/simulations",
+    label: "Simulations",
+    description: "Service transformation scenarios",
+    icon: "sliders-horizontal",
+    requiredCapability: ROUTE_REQUIREMENTS["/simulations"],
   },
   {
     href: "/automotive-pilot",
