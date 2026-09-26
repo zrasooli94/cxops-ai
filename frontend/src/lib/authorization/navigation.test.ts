@@ -88,6 +88,32 @@ describe("capability-driven navigation", () => {
     );
   });
 
+  it("simulations destination is shown only with transformation.simulation.read", () => {
+    assert.equal(visibleHrefs([]).includes("/simulations"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/simulations"),
+      false,
+    );
+    assert.equal(
+      visibleHrefs([CAPABILITIES.AGENT_RUN]).includes("/simulations"),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.TRANSFORMATION_SIMULATION_READ]).includes(
+        "/simulations",
+      ),
+    );
+  });
+
+  it("transformation.simulation.manage alone never reveals the simulations destination", () => {
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TRANSFORMATION_SIMULATION_MANAGE]).includes(
+        "/simulations",
+      ),
+      false,
+    );
+  });
+
   it("customer.write alone never reveals the customers destination", () => {
     assert.equal(
       visibleHrefs([CAPABILITIES.CUSTOMER_WRITE]).includes("/customers"),
@@ -232,6 +258,7 @@ describe("control-center route requirements", () => {
     ["/operations", CAPABILITIES.TICKET_READ],
     ["/evaluations", CAPABILITIES.EVALUATION_READ],
     ["/transformation", CAPABILITIES.TICKET_READ],
+    ["/simulations", CAPABILITIES.TRANSFORMATION_SIMULATION_READ],
     ["/automotive-pilot", CAPABILITIES.TICKET_READ],
   ];
 

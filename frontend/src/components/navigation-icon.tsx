@@ -10,6 +10,7 @@ import {
   Layers,
   Route,
   ShieldCheck,
+  SlidersHorizontal,
   Ticket,
   Users,
   Workflow,
@@ -31,6 +32,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   "clipboard-check": ClipboardCheck,
   route: Route,
   car: Car,
+  "sliders-horizontal": SlidersHorizontal,
 };
 
 export default function NavigationIcon({

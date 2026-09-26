@@ -130,3 +130,35 @@ a {
     transition-duration: 0.01ms !important;
   }
 }
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+  }
+
+  .xl\:pl-\[230px\] {
+    padding-left: 0 !important;
+  }
+
+  .print-area {
+    padding-top: 1rem !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .print-area .app-panel,
+  .print-area > section {
+    box-shadow: none !important;
+    border-color: #e2e8f0 !important;
+    break-inside: avoid;
+  }
+
+  .print-summary {
+    page-break-inside: auto;
+  }
+}
