@@ -357,7 +357,7 @@ def test_alembic_single_head():
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
     assert len(heads) == 1, heads
-    assert heads[0] == "8520421279e1"
+    assert heads[0] == "c3f9a1d2b7e4"
 
 
 def test_scenario_model_org_not_null_and_constraints():

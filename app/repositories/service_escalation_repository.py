@@ -311,6 +311,62 @@ class ServiceEscalationRepository:
 
 
     @staticmethod
+    async def breached_counts_for_window(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        start: datetime,
+        end: datetime,
+        queue_id: int | None = None,
+    ) -> dict[str, int]:
+        """Canonical Phase 1L SLA-breach counts over an explicit bounded window.
+
+        Uses the SAME persisted evidence and counting condition as
+        ``windowed_summary_for_tenant``'s milestone buckets: rows triggered in
+        the window whose current stage is ``breached``, split by milestone. This
+        keeps experiment SLA outcomes comparable with Phase 1L dashboards and
+        Phase 1N scenario projections, which are derived from the same metric.
+
+        For queue scope the Ticket join binds ``organization_id`` and restricts
+        ``service_queue_id`` to the trusted tenant-owned queue, so cross-tenant
+        and cross-queue escalation rows cannot contribute.
+
+        Returns ``first_response_sla_breaches``, ``resolution_sla_breaches``
+        and their sum ``total_sla_breaches``.
+        """
+        from sqlalchemy import func
+
+        stmt = (
+            select(
+                ServiceEscalation.milestone.label("milestone"),
+                func.count().label("breached"),
+            )
+            .where(
+                ServiceEscalation.organization_id == organization_id,
+                ServiceEscalation.triggered_at >= start,
+                ServiceEscalation.triggered_at <= end,
+                ServiceEscalation.stage == "breached",
+            )
+            .group_by(ServiceEscalation.milestone)
+        )
+        if queue_id is not None:
+            stmt = stmt.join(
+                Ticket,
+                (Ticket.id == ServiceEscalation.ticket_id)
+                & (Ticket.organization_id == organization_id),
+            ).where(Ticket.service_queue_id == queue_id)
+        result = await db.execute(stmt)
+        counts: dict[str, int] = {"first_response": 0, "resolution": 0}
+        for row in result.all():
+            if row.milestone in counts:
+                counts[row.milestone] = int(row.breached)
+        return {
+            "first_response_sla_breaches": counts["first_response"],
+            "resolution_sla_breaches": counts["resolution"],
+            "total_sla_breaches": counts["first_response"] + counts["resolution"],
+        }
+
+    @staticmethod
     async def windowed_summary_for_tenant(
         db: AsyncSession,
         *,

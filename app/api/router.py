@@ -11,6 +11,9 @@ from app.api.routes.observability import router as observability_router
 from app.api.routes.organizations import router as organizations_router
 from app.api.routes.service_operations import router as service_operations_router
 from app.api.routes.service_queues import router as service_queues_router
+from app.api.routes.service_transformation_experiments import (
+    router as service_transformation_experiments_router,
+)
 from app.api.routes.service_transformation_simulation import (
     router as service_transformation_simulation_router,
 )
@@ -41,5 +44,6 @@ api_router.include_router(service_operations_router)
 api_router.include_router(service_queues_router)
 api_router.include_router(sla_policies_router)
 api_router.include_router(service_transformation_simulation_router)
+api_router.include_router(service_transformation_experiments_router)
 api_router.include_router(agent_router)
 api_router.include_router(evaluations_router)

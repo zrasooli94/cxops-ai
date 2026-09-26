@@ -198,6 +198,8 @@ def test_supervisor_matrix():
         Capability.EVALUATION_MANAGE,
         Capability.TRANSFORMATION_SIMULATION_READ,
         Capability.TRANSFORMATION_SIMULATION_MANAGE,
+        Capability.TRANSFORMATION_EXPERIMENT_READ,
+        Capability.TRANSFORMATION_EXPERIMENT_MANAGE,
     }
     assert ROLE_CAPABILITIES[OrganizationRole.SUPERVISOR] == frozenset(expected)
 

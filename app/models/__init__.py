@@ -18,6 +18,9 @@ from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.service_escalation import ServiceEscalation
 from app.models.service_queue import ServiceQueue
+from app.models.service_transformation_experiment import (
+    ServiceTransformationExperiment,
+)
 from app.models.service_transformation_scenario import ServiceTransformationScenario
 from app.models.sla_policy import SLAPolicy
 from app.models.ticket import Ticket
@@ -47,6 +50,7 @@ __all__ = [
     "SLAPolicy",
     "ServiceEscalation",
     "ServiceQueue",
+    "ServiceTransformationExperiment",
     "ServiceTransformationScenario",
     "Ticket",
     "TicketEvent",

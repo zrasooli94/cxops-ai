@@ -83,6 +83,10 @@ class Capability(str, Enum):
     TRANSFORMATION_SIMULATION_READ = "transformation.simulation.read"
     TRANSFORMATION_SIMULATION_MANAGE = "transformation.simulation.manage"
 
+    # Service transformation experiments (Phase 1O)
+    TRANSFORMATION_EXPERIMENT_READ = "transformation.experiment.read"
+    TRANSFORMATION_EXPERIMENT_MANAGE = "transformation.experiment.manage"
+
 
 ALL_CAPABILITIES: frozenset[Capability] = frozenset(Capability)
 
@@ -128,6 +132,8 @@ ROLE_CAPABILITIES: dict[OrganizationRole, frozenset[Capability]] = {
         Capability.EVALUATION_MANAGE,
         Capability.TRANSFORMATION_SIMULATION_READ,
         Capability.TRANSFORMATION_SIMULATION_MANAGE,
+        Capability.TRANSFORMATION_EXPERIMENT_READ,
+        Capability.TRANSFORMATION_EXPERIMENT_MANAGE,
     }),
     OrganizationRole.AGENT: frozenset({
         Capability.CUSTOMER_READ,

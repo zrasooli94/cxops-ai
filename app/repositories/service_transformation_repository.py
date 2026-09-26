@@ -105,13 +105,17 @@ class ServiceTransformationRepository:
         organization_id: int,
         start: datetime,
         end: datetime,
+        queue_id: int | None = None,
     ) -> int:
+        where = [
+            Ticket.organization_id == organization_id,
+            Ticket.created_at >= start,
+            Ticket.created_at <= end,
+        ]
+        if queue_id is not None:
+            where.append(Ticket.service_queue_id == queue_id)
         result = await db.execute(
-            select(func.count()).select_from(Ticket).where(
-                Ticket.organization_id == organization_id,
-                Ticket.created_at >= start,
-                Ticket.created_at <= end,
-            )
+            select(func.count()).select_from(Ticket).where(*where)
         )
         return int(result.scalar_one())
 
@@ -122,7 +126,17 @@ class ServiceTransformationRepository:
         organization_id: int,
         start: datetime,
         end: datetime,
+        queue_id: int | None = None,
     ) -> dict:
+        where = [
+            Ticket.organization_id == organization_id,
+            Ticket.first_response_at.isnot(None),
+            Ticket.first_response_due_at.isnot(None),
+            Ticket.first_response_at >= start,
+            Ticket.first_response_at <= end,
+        ]
+        if queue_id is not None:
+            where.append(Ticket.service_queue_id == queue_id)
         result = await db.execute(
             select(
                 func.count().label("count"),
@@ -152,13 +166,7 @@ class ServiceTransformationRepository:
                     ),
                     0,
                 ).label("breached"),
-            ).where(
-                Ticket.organization_id == organization_id,
-                Ticket.first_response_at.isnot(None),
-                Ticket.first_response_due_at.isnot(None),
-                Ticket.first_response_at >= start,
-                Ticket.first_response_at <= end,
-            )
+            ).where(*where)
         )
         row = result.one()
         count = int(row._mapping["count"])
@@ -176,7 +184,17 @@ class ServiceTransformationRepository:
         organization_id: int,
         start: datetime,
         end: datetime,
+        queue_id: int | None = None,
     ) -> dict:
+        where = [
+            Ticket.organization_id == organization_id,
+            Ticket.resolved_at.isnot(None),
+            Ticket.resolution_due_at.isnot(None),
+            Ticket.resolved_at >= start,
+            Ticket.resolved_at <= end,
+        ]
+        if queue_id is not None:
+            where.append(Ticket.service_queue_id == queue_id)
         result = await db.execute(
             select(
                 func.count().label("count"),
@@ -203,13 +221,7 @@ class ServiceTransformationRepository:
                     ),
                     0,
                 ).label("breached"),
-            ).where(
-                Ticket.organization_id == organization_id,
-                Ticket.resolved_at.isnot(None),
-                Ticket.resolution_due_at.isnot(None),
-                Ticket.resolved_at >= start,
-                Ticket.resolved_at <= end,
-            )
+            ).where(*where)
         )
         row = result.one()
         count = int(row._mapping["count"])
@@ -227,25 +239,31 @@ class ServiceTransformationRepository:
         organization_id: int,
         start: datetime,
         end: datetime,
+        queue_id: int | None = None,
     ) -> dict:
         """Reopen events are the persisted, evidence-backed reopen trail: a
         previous escalation resolved with reason ``ticket_reopened`` inside the
         window. No inference from ``status=resolved``.
         """
-        result = await db.execute(
-            select(
-                func.count(func.distinct(ServiceEscalation.ticket_id)).label(
-                    "distinct_tickets"
-                ),
-                func.count().label("events"),
-            ).where(
-                ServiceEscalation.organization_id == organization_id,
-                ServiceEscalation.resolution_reason == "ticket_reopened",
-                ServiceEscalation.resolved_at.isnot(None),
-                ServiceEscalation.resolved_at >= start,
-                ServiceEscalation.resolved_at <= end,
-            )
+        stmt = select(
+            func.count(func.distinct(ServiceEscalation.ticket_id)).label(
+                "distinct_tickets"
+            ),
+            func.count().label("events"),
+        ).where(
+            ServiceEscalation.organization_id == organization_id,
+            ServiceEscalation.resolution_reason == "ticket_reopened",
+            ServiceEscalation.resolved_at.isnot(None),
+            ServiceEscalation.resolved_at >= start,
+            ServiceEscalation.resolved_at <= end,
         )
+        if queue_id is not None:
+            stmt = stmt.join(
+                Ticket,
+                (Ticket.id == ServiceEscalation.ticket_id)
+                & (Ticket.organization_id == organization_id),
+            ).where(Ticket.service_queue_id == queue_id)
+        result = await db.execute(stmt)
         row = result.one()
         return {
             "distinct_tickets": int(row.distinct_tickets),
@@ -259,74 +277,80 @@ class ServiceTransformationRepository:
         organization_id: int,
         start: datetime,
         end: datetime,
+        queue_id: int | None = None,
     ) -> dict:
-        result = await db.execute(
-            select(
-                func.count(AgentRun.id).label("runs"),
-                func.count(func.distinct(AgentRun.ticket_id)).label(
-                    "distinct_tickets"
-                ),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (
-                                AgentRun.requires_human_approval.is_(True)
-                                & AgentRun.authorization_source.is_distinct_from(
-                                    "policy_auto"
-                                ),
-                                1,
+        stmt = select(
+            func.count(AgentRun.id).label("runs"),
+            func.count(func.distinct(AgentRun.ticket_id)).label(
+                "distinct_tickets"
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            AgentRun.requires_human_approval.is_(True)
+                            & AgentRun.authorization_source.is_distinct_from(
+                                "policy_auto"
                             ),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("approval_required"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (AgentRun.authorization_source == "policy_auto", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("autonomous"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (AgentRun.authorization_source == "human_approval", 1),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label("human_approved"),
-                func.coalesce(
-                    func.sum(
-                        case((AgentRun.status == "rejected", 1), else_=0)
-                    ),
-                    0,
-                ).label("human_rejected"),
-                func.coalesce(
-                    func.sum(case((AgentRun.status == "executed", 1), else_=0)),
-                    0,
-                ).label("executed"),
-                func.coalesce(
-                    func.sum(
-                        case((AgentRun.status == "execution_failed", 1), else_=0)
-                    ),
-                    0,
-                ).label("execution_failed"),
-                func.coalesce(
-                    func.sum(
-                        case((AgentRun.action == "no_action", 1), else_=0)
-                    ),
-                    0,
-                ).label("no_action"),
-            ).where(
-                AgentRun.organization_id == organization_id,
-                AgentRun.created_at >= start,
-                AgentRun.created_at <= end,
-            )
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("approval_required"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (AgentRun.authorization_source == "policy_auto", 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("autonomous"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (AgentRun.authorization_source == "human_approval", 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("human_approved"),
+            func.coalesce(
+                func.sum(
+                    case((AgentRun.status == "rejected", 1), else_=0)
+                ),
+                0,
+            ).label("human_rejected"),
+            func.coalesce(
+                func.sum(case((AgentRun.status == "executed", 1), else_=0)),
+                0,
+            ).label("executed"),
+            func.coalesce(
+                func.sum(
+                    case((AgentRun.status == "execution_failed", 1), else_=0)
+                ),
+                0,
+            ).label("execution_failed"),
+            func.coalesce(
+                func.sum(
+                    case((AgentRun.action == "no_action", 1), else_=0)
+                ),
+                0,
+            ).label("no_action"),
+        ).where(
+            AgentRun.organization_id == organization_id,
+            AgentRun.created_at >= start,
+            AgentRun.created_at <= end,
         )
+        if queue_id is not None:
+            stmt = stmt.join(
+                Ticket,
+                (Ticket.id == AgentRun.ticket_id)
+                & (Ticket.organization_id == organization_id),
+            ).where(Ticket.service_queue_id == queue_id)
+        result = await db.execute(stmt)
         row = result.one()
         return {
             "runs": int(row.runs),
@@ -347,14 +371,20 @@ class ServiceTransformationRepository:
         organization_id: int,
         start: datetime,
         end: datetime,
+        queue_id: int | None = None,
     ) -> list[list[str]]:
-        result = await db.execute(
-            select(AgentRun.workflow_path).where(
-                AgentRun.organization_id == organization_id,
-                AgentRun.created_at >= start,
-                AgentRun.created_at <= end,
-            )
+        stmt = select(AgentRun.workflow_path).where(
+            AgentRun.organization_id == organization_id,
+            AgentRun.created_at >= start,
+            AgentRun.created_at <= end,
         )
+        if queue_id is not None:
+            stmt = stmt.join(
+                Ticket,
+                (Ticket.id == AgentRun.ticket_id)
+                & (Ticket.organization_id == organization_id),
+            ).where(Ticket.service_queue_id == queue_id)
+        result = await db.execute(stmt)
         return [list(path) for path in result.scalars().all()]
 
     @staticmethod
