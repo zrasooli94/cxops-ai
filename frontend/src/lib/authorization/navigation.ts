@@ -25,7 +25,8 @@ export type NavigationIconName =
   | "clipboard-check"
   | "route"
   | "car"
-  | "sliders-horizontal";
+  | "sliders-horizontal"
+  | "flask";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -43,7 +44,8 @@ export type ControlCenterRoute =
   | "/evaluations"
   | "/transformation"
   | "/simulations"
-  | "/automotive-pilot";
+  | "/automotive-pilot"
+  | "/experiments";
 
 /**
  * Single source of truth for what each route requires. Sidebar visibility
@@ -70,6 +72,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/transformation": CAPABILITIES.TICKET_READ,
   "/simulations": CAPABILITIES.TRANSFORMATION_SIMULATION_READ,
   "/automotive-pilot": CAPABILITIES.TICKET_READ,
+  "/experiments": CAPABILITIES.TRANSFORMATION_EXPERIMENT_READ,
 };
 
 export interface NavigationItem {
@@ -139,6 +142,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Service transformation scenarios",
     icon: "sliders-horizontal",
     requiredCapability: ROUTE_REQUIREMENTS["/simulations"],
+  },
+  {
+    href: "/experiments",
+    label: "Experiments",
+    description: "Transformation experiment workspace",
+    icon: "flask",
+    requiredCapability: ROUTE_REQUIREMENTS["/experiments"],
   },
   {
     href: "/automotive-pilot",

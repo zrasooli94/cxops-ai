@@ -114,6 +114,34 @@ describe("capability-driven navigation", () => {
     );
   });
 
+  it("experiments destination is shown only with transformation.experiment.read", () => {
+    assert.equal(visibleHrefs([]).includes("/experiments"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/experiments"),
+      false,
+    );
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TRANSFORMATION_SIMULATION_READ]).includes(
+        "/experiments",
+      ),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.TRANSFORMATION_EXPERIMENT_READ]).includes(
+        "/experiments",
+      ),
+    );
+  });
+
+  it("transformation.experiment.manage alone never reveals the experiments destination", () => {
+    assert.equal(
+      visibleHrefs([CAPABILITIES.TRANSFORMATION_EXPERIMENT_MANAGE]).includes(
+        "/experiments",
+      ),
+      false,
+    );
+  });
+
   it("customer.write alone never reveals the customers destination", () => {
     assert.equal(
       visibleHrefs([CAPABILITIES.CUSTOMER_WRITE]).includes("/customers"),
@@ -260,6 +288,7 @@ describe("control-center route requirements", () => {
     ["/transformation", CAPABILITIES.TICKET_READ],
     ["/simulations", CAPABILITIES.TRANSFORMATION_SIMULATION_READ],
     ["/automotive-pilot", CAPABILITIES.TICKET_READ],
+    ["/experiments", CAPABILITIES.TRANSFORMATION_EXPERIMENT_READ],
   ];
 
   for (const [route, requirement] of expected) {

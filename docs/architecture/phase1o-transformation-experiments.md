@@ -234,3 +234,139 @@ disclaimer is present verbatim; no positive causal-claim phrasing appears).
 Apply with `alembic upgrade head`; the revision is a single head off
 `8520421279e1` and touches no Phase 1N table. No commit, push, or deploy was
 performed as part of this milestone.
+
+# Phase 1O.2 — Experiment Executive Workspace & Outcome Review
+
+## Scope
+
+Phase 1O.2 delivers the **frontend** for the Phase 1O.1 experiment API: the
+`/experiments` library and the `/experiments/[experimentId]` outcome-review
+workspace in the Control Center app.
+
+The workspace is **presentation-only**. Every number rendered (baseline,
+target, observed, deltas, projected values, value/ROI, limitations) is the
+backend output from Phase 1O.1, transported verbatim through the existing BFF
+proxy (`frontend/src/app/api/backend/[...path]/route.ts`). The frontend never
+recomputes a comparison, a percentage-point difference, a net-savings figure,
+or an ROI, and it never renders ranking, verdict, or causal-claim wording.
+
+## Routes and authorization
+
+- `frontend/src/app/(control-center)/experiments/layout.tsx` — page metadata
+  (title "Transformation Experiments") and a `CapabilityRouteGuard` keyed on
+  `ROUTE_REQUIREMENTS["/experiments"]` →
+  `Capability.TRANSFORMATION_EXPERIMENT_READ`.
+- `frontend/src/app/(control-center)/experiments/page.tsx` — library with
+  filters (All / Active / Completed / Cancelled / Archived), the create form,
+  and row lifecycle actions for managers.
+- `frontend/src/app/(control-center)/experiments/[experimentId]/page.tsx` —
+  outcome-review workspace (lifecycle, executive summary, immutable baseline,
+  targets, observed outcome, comparison, value/ROI, limitations, metadata) with
+  print support.
+
+Navigation registration mirrors the simulations workspace:
+`frontend/src/lib/authorization/capabilities.ts` adds
+`TRANSFORMATION_EXPERIMENT_READ` and `TRANSFORMATION_EXPERIMENT_MANAGE`; the
+`/experiments` route, a primary-navigation item (icon `flask` →
+`FlaskConical`), and its capability requirement are registered in
+`frontend/src/lib/authorization/navigation.ts` /
+`frontend/src/components/navigation-icon.tsx`. Route-auth coverage lives in
+`navigation.test.ts` (read reveals the destination; manage alone — without
+read — does not).
+
+## Client surface (`frontend/src/lib/experiments/experiments.ts`)
+
+All requests go to `/api/backend/service-operations/experiments` (and
+`/api/backend/service-queues` for the queue picker). The module mirrors the
+backend schemas and:
+
+- composes the strict create body — `organization_id`, `baseline_snapshot`,
+  `observed_outcome`, `outcome_comparison`, and `measurement_status` are never
+  client-sent (validated by tests);
+- validates the same target-metric rules the schema enforces (at least one
+  target, rates 0–100, non-negative non-ROI values, ROI unbounded, queue scope
+  excluding value/ROI metrics);
+- exposes the lifecycle action map exactly per the backend state machine
+  (`draft` → capture-baseline/cancel/archive, `ready` → start/cancel/archive,
+  `running` → complete/cancel, `completed` → archive, `cancelled` → archive,
+  `archived` → read-only);
+- formats values and deltas by wire unit only: rates render `35%` (0–100,
+  never rescaled), rate differences render `-3.0 pp` (percentage points,
+  never `%`), minutes as `-12 min`, USD signed/dollar, counts signed — all
+  presentational, no arithmetic;
+- builds a deterministic executive summary and narrative from persisted
+  comparison cells (e.g. "Autonomous execution was 24% at baseline, the target
+  was 40%, and the observed rate was 35%. The observed value was +11
+  percentage points from baseline and -5 percentage points from target."); and
+- defines the prominent non-causal disclosure, empty/state hints, and
+  status/measurement labels (`EXPERIMENT_CAUSALITY_DISCLAIMER`,
+  `experimentStatusHint`, `experimentStatusLabel`, …).
+
+## Baseline / Target / Observed / Projection separation
+
+The workspace keeps each layer visually and semantically distinct:
+
+- **Immutable baseline** — `baseline_snapshot`, labeled "Immutable baseline".
+- **Target** — `target_metrics` recorded at creation, with any operator-declared
+  `expected_direction`.
+- **Observed outcome** — `observed_outcome`, labeled "Observed outcome" with the
+  helper "Measured change during the experiment window."
+- **Source projection** — `source_scenario_snapshot` rendered as "Source
+  projection" with the explanation that linking does not apply the scenario to
+  production. Only `evaluated` scenarios are selectable in the create form.
+
+## Comparison semantics
+
+`outcome_comparison.metrics` rows render baseline / target / observed /
+change-from-baseline / variance-from-target, plus projected and
+variance-from-projection columns whenever any row carries a projection.
+Direction verbs (`increased`, `decreased`, `unchanged`, `not_applicable`) are
+rendered as neutral badges — never as favourable or losing semantics, and
+never ranked. Rate deltas are labelled explicitly in percentage points.
+
+## Value / ROI
+
+Value/ROI rows show projected vs observed vs variance, taken only from the
+backend comparison (`projected_value`, `observed_value`,
+`variance_from_projection`). When a measurement status other than `measured`
+applies, the panel explains the backend reason and an unavailable ROI renders
+as "—" — never zero, never recomputed.
+
+## Causality safety
+
+The fixed disclosure "Observed improvement within an experiment window does not
+establish that the intervention caused the improvement." is prominent on the
+library page, above every detail page, and carried into the persisted
+limitations when no comparison exists yet. The executive narrative is
+synthesis of backend numbers only; unit tests assert that forbidden causal /
+verdict / ranking phrasing never appears.
+
+## Print behavior
+
+Reuses the existing `no-print` fixed header + `print-area` main pattern with
+`window.print()`; `globals.css` media-print rules remain unchanged.
+
+## Tests
+
+`frontend/src/lib/experiments/experiments.test.ts` (wired into the `test:auth`
+script) covers capability gating, create-payload strictness (no tenant /
+snapshot / measurement fields), target validation, the lifecycle matrix, the
+pp-vs-% formatting contract, the deterministic executive summary / narrative,
+value-row sourcing from backend cells, and error propagation (409 details).
+`navigation.test.ts` covers the new route authorization rules.
+
+## Files
+
+- `frontend/src/lib/experiments/experiments.ts`
+- `frontend/src/lib/experiments/experiments.test.ts`
+- `frontend/src/app/(control-center)/experiments/layout.tsx`
+- `frontend/src/app/(control-center)/experiments/page.tsx`
+- `frontend/src/app/(control-center)/experiments/[experimentId]/page.tsx`
+- `frontend/src/components/experiments/status-badge.tsx`
+- `frontend/src/lib/authorization/capabilities.ts` (experiment read/manage
+  capabilities)
+- `frontend/src/lib/authorization/navigation.ts` / `navigation.test.ts`
+- `frontend/src/components/navigation-icon.tsx` (`flask`)
+- `frontend/package.json` (`test:auth` script)
+
+No backend file was modified in Phase 1O.2.

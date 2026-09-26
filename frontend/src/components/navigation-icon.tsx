@@ -5,6 +5,7 @@ import {
   BrainCircuit,
   Car,
   ClipboardCheck,
+  FlaskConical,
   Gauge,
   Inbox,
   Layers,
@@ -33,6 +34,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   route: Route,
   car: Car,
   "sliders-horizontal": SlidersHorizontal,
+  flask: FlaskConical,
 };
 
 export default function NavigationIcon({

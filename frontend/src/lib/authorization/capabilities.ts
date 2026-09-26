@@ -32,6 +32,8 @@ export const CAPABILITIES = {
   EVALUATION_MANAGE: "evaluation.manage",
   TRANSFORMATION_SIMULATION_READ: "transformation.simulation.read",
   TRANSFORMATION_SIMULATION_MANAGE: "transformation.simulation.manage",
+  TRANSFORMATION_EXPERIMENT_READ: "transformation.experiment.read",
+  TRANSFORMATION_EXPERIMENT_MANAGE: "transformation.experiment.manage",
 } as const;
 
 export type Capability = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
