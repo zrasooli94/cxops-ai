@@ -40,6 +40,7 @@ import {
   formatCount,
   formatDelta,
   formatMoney,
+  formatNumber,
   formatMeasurementStatusLabel,
   formatRate,
   formatTimestamp,
@@ -676,22 +677,27 @@ export default function ScenarioDetailPage() {
                             {
                               label: "Estimated minutes saved (projected)",
                               value: scenario.projected_result.value.estimated_minutes_saved,
+                              kind: "number",
                             },
                             {
                               label: "Estimated hours saved (projected)",
                               value: scenario.projected_result.value.estimated_hours_saved,
+                              kind: "number",
                             },
                             {
                               label: "Estimated labor savings (projected)",
                               value: scenario.projected_result.value.estimated_labor_savings_usd,
+                              kind: "money",
                             },
                             {
                               label: "Projected AI cost",
                               value: scenario.projected_result.value.agent_ai_cost_usd,
+                              kind: "money",
                             },
                             {
                               label: "Estimated net savings (projected)",
                               value: scenario.projected_result.value.estimated_net_savings_usd,
+                              kind: "money",
                             },
                           ] as const
                         ).map((row) => (
@@ -703,7 +709,9 @@ export default function ScenarioDetailPage() {
                               {row.label}
                             </span>
                             <span className="text-sm font-medium tabular-nums text-slate-900">
-                              {formatMoney(row.value)}
+                              {row.kind === "money"
+                                ? formatMoney(row.value)
+                                : formatNumber(row.value)}
                             </span>
                           </div>
                         ))}

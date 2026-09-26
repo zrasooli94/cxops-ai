@@ -33,6 +33,7 @@ import {
   formatDelta,
   formatMeasurementStatusLabel,
   formatMoney,
+  formatNumber,
   formatMoneyDelta,
   formatRate,
   formatStatusLabel,
@@ -376,6 +377,14 @@ describe("rate and value formatting", () => {
     assert.equal(formatMoney(null), "—");
   });
 
+  it("formats time quantities without a currency marker", () => {
+    assert.equal(formatNumber(1120), "1,120");
+    assert.equal(formatNumber(16.5), "16.5");
+    assert.equal(formatNumber(18.67), "18.67");
+    assert.equal(formatNumber(null), "—");
+    assert.equal(formatNumber(undefined), "—");
+  });
+
   it("formats signed money deltas without double signs", () => {
     assert.equal(formatMoneyDelta(45.1), "+$45.1");
     assert.equal(formatMoneyDelta(0), "$0");
@@ -655,6 +664,19 @@ describe("executive summary", () => {
     const labels = summary.value?.map((row) => row.label) ?? [];
     assert.ok(labels.includes("Estimated net savings (projected)"));
     assert.equal(labels.includes("Estimated net savings"), false);
+  });
+
+  it("never presents time rows as currency", () => {
+    const summary = buildExecutiveSummary(scenarioFixture());
+    const minutes = summary.value?.find(
+      (row) => row.label === "Estimated minutes saved (projected)",
+    );
+    const hours = summary.value?.find(
+      (row) => row.label === "Estimated hours saved (projected)",
+    );
+    assert.ok(minutes && hours);
+    assert.equal(minutes.value.includes("$"), false);
+    assert.equal(hours.value.includes("$"), false);
   });
 
   it("lists the base determinism limitation plus per-assumption caveats", () => {

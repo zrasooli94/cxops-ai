@@ -544,6 +544,20 @@ export function formatCount(value: number | null | undefined): string {
   return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
+/**
+ * Render a plain quantity (minutes, hours) with up to two fraction digits and
+ * no currency marker; time values are never presented as money.
+ */
+export function formatNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "—";
+  }
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
 /** Render an integer delta with an explicit sign ("+19", "-3", "0"). */
 export function formatDelta(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -875,8 +889,8 @@ export function buildExecutiveSummary(scenario: ServiceTransformationScenario): 
 
   const valueRows: ExecutiveValueRow[] | null = evaluated
     ? [
-        { label: "Estimated minutes saved (projected)", value: formatMoney(projected.value.estimated_minutes_saved) },
-        { label: "Estimated hours saved (projected)", value: formatMoney(projected.value.estimated_hours_saved) },
+        { label: "Estimated minutes saved (projected)", value: formatNumber(projected.value.estimated_minutes_saved) },
+        { label: "Estimated hours saved (projected)", value: formatNumber(projected.value.estimated_hours_saved) },
         { label: "Estimated labor savings (projected)", value: formatMoney(projected.value.estimated_labor_savings_usd) },
         { label: "Projected AI cost", value: formatMoney(projected.value.agent_ai_cost_usd) },
         { label: "Estimated net savings (projected)", value: formatMoney(projected.value.estimated_net_savings_usd) },
