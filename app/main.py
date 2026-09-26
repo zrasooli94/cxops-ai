@@ -28,6 +28,28 @@ app = FastAPI(
 app.add_middleware(RequestCorrelationMiddleware)
 
 
+@app.middleware("http")
+async def public_chat_security_headers(
+    request: Request,
+    call_next,
+):
+    """Scope minimal security headers to the public web-chat API.
+
+    Public chat responses are tenant-identifying chat data for anonymous
+    visitors, so they are never cached; they carry no raw provider payloads and
+    no IPs. Headers are deliberately NOT applied globally (control-center
+    behavior stays unchanged).
+    """
+    if not request.url.path.startswith("/public/chat"):
+        return await call_next(request)
+
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 @app.exception_handler(AuthorizationError)
 async def authorization_error_handler(
     request: Request,

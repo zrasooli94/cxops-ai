@@ -108,6 +108,33 @@ class Settings(BaseSettings):
     minutes_saved_per_autonomous_execution: float = 8.0
     roi_min_autonomous_samples: int = 20
 
+    # Public web chat (Phase 1P.1)
+    public_chat_session_token_entropy_bytes: int = 32
+    public_chat_max_active_sessions_per_config: int = 2000
+    public_chat_max_messages_per_minute_per_config: int = 600
+    public_chat_new_sessions_per_hour_per_config: int = 120
+
+    @field_validator("public_chat_session_token_entropy_bytes", mode="after")
+    @classmethod
+    def _public_chat_token_entropy_bounded(cls, value: int) -> int:
+        if not 16 <= value <= 64:
+            raise ValueError(
+                "public_chat_session_token_entropy_bytes must be between 16 and 64"
+            )
+        return value
+
+    @field_validator(
+        "public_chat_max_active_sessions_per_config",
+        "public_chat_max_messages_per_minute_per_config",
+        "public_chat_new_sessions_per_hour_per_config",
+        mode="after",
+    )
+    @classmethod
+    def _public_chat_limits_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Public chat per-config limits must be positive")
+        return value
+
     @field_validator(
         "database_url",
         mode="before",

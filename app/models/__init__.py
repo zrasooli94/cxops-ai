@@ -16,6 +16,7 @@ from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
+from app.models.public_chat import PublicChatConfiguration, PublicChatSession
 from app.models.service_escalation import ServiceEscalation
 from app.models.service_queue import ServiceQueue
 from app.models.service_transformation_experiment import (
@@ -47,6 +48,8 @@ __all__ = [
     "KnowledgeDocument",
     "Organization",
     "OrganizationMembership",
+    "PublicChatConfiguration",
+    "PublicChatSession",
     "SLAPolicy",
     "ServiceEscalation",
     "ServiceQueue",
