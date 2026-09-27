@@ -4,11 +4,9 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     generate_latest,
 )
-from sqlalchemy import text
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal
 from app.core.logging import configure_logging, get_logger
 from app.core.rbac import AuthorizationError, MissingCapabilityError
 from app.core.request_context import (
@@ -78,21 +76,12 @@ async def authorization_error_handler(
 
 app.include_router(api_router)
 
-
-@app.get(
-    "/health",
-    include_in_schema=False,
-)
-async def healthcheck():
-    async with AsyncSessionLocal() as db:
-        await db.execute(text("SELECT 1"))
-
-    return {
-        "status": "ok",
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "database": "ok",
-    }
+# NOTE (Phase 1P.3): liveness (/health), readiness (/ready), and build identity
+# (/version) all live in app/api/routes/health.py. An earlier database-aware
+# /health was registered here *after* the router, so the router's static route
+# shadowed it and the database check was unreachable dead code - which also made
+# scripts/check_live_demo_readiness.py fail against a live server. Do not
+# re-add a /health here; add probe behaviour to the health router instead.
 
 
 @app.get(

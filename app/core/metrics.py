@@ -425,3 +425,77 @@ def record_escalation_acknowledged(
 
 def record_service_transformation_request() -> None:
     SERVICE_TRANSFORMATION_REQUESTS_TOTAL.inc()
+
+
+# =====================================================
+# Public chat metrics (Phase 1P.3)
+# =====================================================
+#
+# These carry lifecycle labels only. No customer identifier, session token,
+# widget key, message body, IP address, or origin is ever used as a metric label:
+# labels are a cardinality and privacy hazard, and an unbounded value there
+# would both leak PII and grow the scrape response without limit.
+
+PUBLIC_CHAT_SESSIONS_TOTAL = Counter(
+    "cxops_public_chat_sessions_total",
+    "Public chat sessions created.",
+    [
+        "outcome",
+    ],
+)
+
+
+PUBLIC_CHAT_MESSAGES_TOTAL = Counter(
+    "cxops_public_chat_messages_total",
+    "Customer messages processed by the public widget.",
+    [
+        "outcome",
+    ],
+)
+
+
+PUBLIC_CHAT_HANDOFF_REQUESTS_TOTAL = Counter(
+    "cxops_public_chat_handoff_requests_total",
+    "Customer-initiated human handoff requests.",
+    [
+        "outcome",
+    ],
+)
+
+
+PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL = Counter(
+    "cxops_public_chat_sessions_closed_total",
+    "Public chat sessions closed, by the closing party.",
+    [
+        "closed_by",
+    ],
+)
+
+
+PUBLIC_CHAT_REJECTIONS_TOTAL = Counter(
+    "cxops_public_chat_rejections_total",
+    "Public chat requests refused before any work was done.",
+    [
+        "reason",
+    ],
+)
+
+
+def record_public_chat_session(*, outcome: str) -> None:
+    PUBLIC_CHAT_SESSIONS_TOTAL.labels(outcome=outcome).inc()
+
+
+def record_public_chat_message(*, outcome: str) -> None:
+    PUBLIC_CHAT_MESSAGES_TOTAL.labels(outcome=outcome).inc()
+
+
+def record_public_chat_handoff(*, outcome: str) -> None:
+    PUBLIC_CHAT_HANDOFF_REQUESTS_TOTAL.labels(outcome=outcome).inc()
+
+
+def record_public_chat_session_closed(*, closed_by: str) -> None:
+    PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL.labels(closed_by=closed_by).inc()
+
+
+def record_public_chat_rejection(*, reason: str) -> None:
+    PUBLIC_CHAT_REJECTIONS_TOTAL.labels(reason=reason).inc()

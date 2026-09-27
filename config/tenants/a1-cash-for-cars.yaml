@@ -1,0 +1,105 @@
+# A1 Cash for Cars - live pilot tenant (Phase 1P.3)
+#
+# This file is the declarative source of truth for the A1 pilot tenant. It is
+# applied by:
+#
+#     .venv/bin/python scripts/onboard_tenant.py \
+#         --manifest config/tenants/a1-cash-for-cars.yaml --dry-run
+#     .venv/bin/python scripts/onboard_tenant.py \
+#         --manifest config/tenants/a1-cash-for-cars.yaml
+#
+# The command is idempotent: re-running it changes nothing and never mints a new
+# public widget key unless you pass --rotate-widget-key.
+#
+# SECURITY: this file is committed. It must never contain credentials, API keys,
+# connection strings, webhook secrets, or staff tokens. The loader rejects
+# credential-shaped keys and values outright. The A1 integration is an explicit
+# local_demo provider: the pilot exercises the full chat, handoff, and tool
+# pipeline, but no real A1 valuation, quote, or pickup is ever performed.
+
+schema_version: 1
+
+tenant:
+  # Stable tenant slug. Stored in organizations.external_id (unique, <=100 chars)
+  # and used in commands, logs, and rollback instructions.
+  slug: a1-cash-for-cars
+  name: A1 Cash for Cars
+  industry: Automotive retail
+
+public_chat:
+  enabled: true
+  display_name: A1 Cash for Cars
+  welcome_message: >-
+    Hi! Ask us about buying or selling your vehicle. For a real appraisal our
+    team reviews your details during business hours.
+  # Exact origins only. No wildcards, no paths, no trailing slashes. The
+  # embedding origin is matched server-side against the request referrer; an
+  # origin that is not listed here is rejected before a session is created.
+  allowed_origins:
+    - https://www.a1cashforcars.example
+  # Opaque token rendered from a closed set of known mappings. Free-form CSS or
+  # arbitrary markup is deliberately not supported.
+  theme_token: a1-dark
+  max_message_length: 2000
+  max_messages_per_minute: 12
+  session_ttl_hours: 24
+
+business_integrations:
+  - provider: a1_cash_for_cars
+    enabled: true
+    # Explicitly a local demo. This is the only provider_mode this build ships;
+    # there is no real A1 backend wired up, and every tool result is tagged
+    # local_demo so simulated data can never be read as a live quote.
+    provider_mode: local_demo
+    config:
+      demo_currency: USD
+      demo_region: us-east
+
+knowledge:
+  - source_id: a1-pilot-overview
+    version: 1
+    title: "A1 Cash for Cars - pilot overview and boundaries"
+    department: pilot
+    content: >-
+      A1 Cash for Cars buys and sells used vehicles. During this pilot the
+      assistant answers general questions about how the process works, explains
+      what paperwork is typically needed, and hands a request to a human when a
+      question needs a real appraisal, a firm offer, or scheduling.
+
+      The assistant does not quote a price, does not value a specific vehicle,
+      and does not confirm that a pickup is booked. Those steps are always
+      completed by a human team member. Any request for an exact figure is
+      collected and handed off rather than answered with an estimate.
+
+  - source_id: a1-pilot-required-documents
+    version: 1
+    title: "Documents typically needed to sell a vehicle"
+    department: pilot
+    content: >-
+      Sellers usually need the vehicle title or registration, proof of
+      ownership, a valid driver licence, and proof of current insurance. If the
+      vehicle has an outstanding loan, the lender payoff information is
+      usually needed as well. Requirements vary by state, so the assistant
+      confirms the details with the customer and hands the request to a human
+      rather than treating this list as final.
+
+  - source_id: a1-pilot-handoff-policy
+    version: 1
+    title: "When a conversation is handed to a human"
+    department: pilot
+    content: >-
+      A conversation is handed to a human when the customer asks for an exact
+      price or appraisal, asks about financing or payment, disputes a decision,
+      becomes upset, explicitly asks for a person, or asks anything the
+      assistant cannot answer from approved pilot information. The assistant
+      tells the customer that a team member will review the request and does
+      not promise a response time.
+
+pilot:
+  # Documentation-only marker. It records the intended posture for operators
+  # and reviewers; it has no runtime effect on the app.
+  state: local_demo
+  notes: >-
+    Pilot scope: public widget, AI conversation, human handoff, and the
+    A1 local-demo tools. Not in scope: real valuations, firm quotes, booking a
+    pickup, payments, and any customer-identifying export.

@@ -4,6 +4,7 @@
 # so the success path is exercised through a probe app that mounts the same
 # signature dependency (no external services, no migrations required).
 
+import base64
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,16 @@ def _configure(monkeypatch, **overrides) -> None:
         "TICKET_EVENT_WEBHOOK_SECRET": TEST_SECRET,
         "ENVIRONMENT": "development",
         "GENERIC_WEBHOOK_REPLAY_WINDOW_SECONDS": "300",
+        # Production Settings additionally require these; supply valid ones so
+        # each test isolates the behaviour it actually asserts.
+        "AUTH_MODE": "jwks",
+        "AUTH_JWKS_URL": "https://example.com/.well-known/jwks.json",
+        "AUTH_JWT_ALGORITHM": "RS256",
+        "AUTH_DEV_MODE": "False",
+        "FRONTEND_BASE_URL": "https://www.example.com",
+        "BACKEND_PUBLIC_URL": "https://api.example.com",
+        "ENCRYPTION_KEYS": base64.urlsafe_b64encode(b"0" * 32).decode(),
+        "DEBUG": "false",
     }
     values.update(overrides)
     for key, value in values.items():

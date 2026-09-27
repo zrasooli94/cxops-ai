@@ -1,0 +1,60 @@
+# RISPU - generic multi-tenant example (Phase 1P.3)
+#
+# This is a TEMPLATE, not a live tenant. It exists to document the manifest
+# shape for a second customer on the shared platform without leaking anything
+# A1-specific. It is deliberately inert:
+#
+#   * public_chat is present but disabled, with an empty origin allowlist.
+#   * there are no business_integrations.
+#   * there is no knowledge.
+#   * pilot.state is "disabled".
+#
+# The loader enforces that inertness: a public_chat block that is enabled must
+# list at least one exact HTTPS origin, and business integrations must name a
+# known provider mode. So this file cannot be onboarded into a half-working
+# widget by accident - fix the tenant block, add real origins, and re-validate
+# before applying.
+#
+# To use it for a real tenant: copy the file, set tenant.slug and tenant.name,
+# list that tenant's own embedding origins, set public_chat.enabled to true,
+# and add only the providers and documents that tenant actually owns.
+#
+#     cp config/tenants/rispu.example.yaml config/tenants/<your-slug>.yaml
+#     .venv/bin/python scripts/onboard_tenant.py \
+#         --manifest config/tenants/<your-slug>.yaml --dry-run
+#
+# SECURITY: same rule as every manifest - no credentials, keys, connection
+# strings, or staff tokens.
+
+schema_version: 1
+
+tenant:
+  slug: rispu-example
+  name: RISPU (example tenant)
+  industry: Software
+
+public_chat:
+  # Disabled and with no origins. Enabling this block requires adding the
+  # tenant's own exact HTTPS origins below.
+  enabled: false
+  display_name: RISPU Support
+  welcome_message: >-
+    Hi! How can we help? Leave a message and our team will get back to you.
+  allowed_origins: []
+  theme_token: default
+  max_message_length: 2000
+  max_messages_per_minute: 12
+  session_ttl_hours: 24
+
+# No business_integrations: a tenant on the shared platform gets no provider
+# tools until an integration is explicitly onboarded for it. Core
+# customer.send_reply stays available because it is provider-less, not because
+# of this file.
+
+# No knowledge: documents are added per tenant once real content exists.
+
+pilot:
+  state: disabled
+  notes: >-
+    Inert example tenant. Onboarding this file creates a disabled tenant with
+    no widget origins, no provider tools, and no knowledge documents.

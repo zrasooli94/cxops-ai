@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
+from app.core.metrics import record_public_chat_handoff
 from app.models.public_chat import PublicChatSession
 from app.repositories.business_action_repository import BusinessActionRepository
 from app.repositories.public_chat_repository import PublicChatRepository
@@ -120,12 +121,18 @@ class PublicChatStaffService:
             raise PublicChatStaffAssignmentError(
                 "Only a human-requested session can be assigned."
             )
+        # subject is the IdP's pseudonymous end-user identifier, not a name,
+        # email, or message. It is kept deliberately: an assignment is a staff
+        # action on one specific customer conversation, and without it an
+        # incident cannot be tied back to the person who reported it. Nothing
+        # that identifies the customer in the clear is logged.
         log.info(
             "public_chat_session_assigned",
             session_id=session_id,
             organization_id=organization_id,
             subject=subject,
         )
+        record_public_chat_handoff(outcome="assigned")
         return cls._session_summary(assigned)
 
     @classmethod
@@ -163,6 +170,7 @@ class PublicChatStaffService:
             session_id=session_id,
             organization_id=organization_id,
         )
+        record_public_chat_handoff(outcome="released")
         return cls._session_summary(released)
 
     @staticmethod

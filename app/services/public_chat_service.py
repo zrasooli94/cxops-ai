@@ -551,6 +551,19 @@ class PublicChatService:
             client_message_id=client_message_id,
         )
 
+        # The identifiers are logged, never returned: the public response schema
+        # is deliberately free of anything a caller could use to address another
+        # tenant's session, but an operator still needs to find this exact
+        # conversation when a pilot customer reports a bad reply.
+        log.info(
+            "public_chat_reply_sent",
+            organization_id=session.organization_id,
+            session_id=session.id,
+            message_id=inbound.id,
+            status=session.status,
+            handoff=handoff,
+        )
+
         return {
             "message_id": inbound.id,
             "reply": reply_text,

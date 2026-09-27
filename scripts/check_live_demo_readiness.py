@@ -3,8 +3,10 @@
 
 Checks, without ever running a migration or writing to any store:
 
-1. The CXOps backend answers ``GET /health`` (which also validates the
-   database connection with a ``SELECT 1``).
+1. The CXOps backend separates liveness from readiness: ``GET /health`` proves
+   the process is serving, ``GET /ready`` proves the database path works with a
+   ``SELECT 1`` (503 when it does not), and ``GET /version`` confirms the build
+   identity that is actually deployed.
 2. The frontend answers its entry-point and lets the browser form a session
    (any 2xx/3xx response counts - an unauthenticated 200 or a redirect to /login
    are both healthy).
@@ -69,6 +71,13 @@ def check_backend_health(
     timeout: float,
     results: list[str],
 ) -> bool:
+    """Check liveness, then readiness, then build identity.
+
+    ``/health`` is liveness only and never touches the database, so it cannot
+    answer "is this instance actually able to serve traffic". ``/ready`` is the
+    load-balancer contract: 200 only when PostgreSQL answers SELECT 1, 503
+    otherwise. Probing readiness is what proves the database path really works.
+    """
     try:
         status, payload = _http_json(f"{backend_url}/health", timeout)
     except urllib.error.HTTPError as exc:
@@ -81,10 +90,46 @@ def check_backend_health(
     if status != 200:
         results.append(f"FAIL  backend /health returned HTTP {status}")
         return False
-    if payload.get("status") != "ok" or payload.get("database") != "ok":
+    if payload.get("status") != "healthy":
         results.append(f"FAIL  backend /health payload unexpected: {payload!r}")
         return False
-    results.append("ok    backend /health answers; database select works")
+    results.append("ok    backend /health answers 200 (liveness, no database check)")
+
+    # Readiness: 503 is a legitimate, actionable answer, so an HTTPError carries
+    # a response body we can read instead of collapsing straight to FAIL.
+    try:
+        ready_status, ready_payload = _http_json(f"{backend_url}/ready", timeout)
+    except urllib.error.HTTPError as exc:
+        results.append(f"FAIL  backend /ready -> HTTP {exc.code}")
+        return False
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        results.append(f"FAIL  backend /ready unreachable: {exc}")
+        return False
+
+    if ready_status != 200:
+        results.append(
+            f"FAIL  backend /ready returned HTTP {ready_status} "
+            f"(status={ready_payload.get('status')!r}); not eligible for traffic"
+        )
+        return False
+    if ready_payload.get("status") != "ready" or ready_payload.get("checks", {}).get("database") != "ok":
+        results.append(f"FAIL  backend /ready payload unexpected: {ready_payload!r}")
+        return False
+    results.append("ok    backend /ready answers 200; database select works")
+
+    try:
+        version_status, version_payload = _http_json(f"{backend_url}/version", timeout)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+        version_status, version_payload = 0, {}
+
+    if version_status == 200 and version_payload.get("version"):
+        results.append(
+            f"ok    backend /version reports {version_payload.get('environment')} "
+            f"version {version_payload['version']}"
+        )
+    else:
+        results.append("WARN  backend /version did not answer 200; build identity unconfirmed")
+
     return True
 
 

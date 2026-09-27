@@ -60,6 +60,14 @@ def _configure(monkeypatch, **overrides) -> None:
         "AUTH_JWT_AUDIENCE": TEST_AUDIENCE,
         "AUTH_JWT_SECRET": TEST_SECRET,
         "AUTH_DEV_MODE": "False",
+        # app/core/config.py refuses to build production Settings without
+        # https public URLs, so every production case must supply them.
+        "FRONTEND_BASE_URL": "https://www.example.com",
+        "BACKEND_PUBLIC_URL": "https://api.example.com",
+        "ENCRYPTION_KEYS": base64.urlsafe_b64encode(b"0" * 32).decode(),
+        # A production Settings refuses DEBUG, so a production case must pin it
+        # rather than inherit whatever the developer's .env happens to say.
+        "DEBUG": "false",
     }
     values.update(overrides)
     for key, value in values.items():

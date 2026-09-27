@@ -19,6 +19,14 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.logging import get_logger
+from app.core.metrics import (
+    record_public_chat_handoff,
+    record_public_chat_message,
+    record_public_chat_rejection,
+    record_public_chat_session,
+    record_public_chat_session_closed,
+)
 from app.schemas.public_chat import (
     PublicChatCloseResponse,
     PublicChatConfigResponse,
@@ -54,6 +62,23 @@ DatabaseSession = Annotated[
 ]
 
 EMBEDDING_ORIGIN_HEADER = "x-embedding-origin"
+
+log = get_logger(__name__)
+
+# Stable, low-cardinality reason names for metrics and logs. Exception text is
+# never used as a metric label: it can embed a DSN or a customer string, and it
+# would create unbounded label cardinality.
+REJECTION_REASONS: dict[type[Exception], str] = {
+    PublicChatConfigurationNotFoundError: "config_not_found",
+    PublicChatWidgetDisabledError: "widget_disabled",
+    PublicChatOriginNotAllowedError: "origin_not_allowed",
+    PublicChatSessionNotFoundError: "session_not_found",
+    PublicChatSessionExpiredError: "session_expired",
+    PublicChatSessionClosedError: "session_closed",
+    PublicChatRateLimitedError: "rate_limited",
+    PublicChatInputTooLongError: "input_too_long",
+    PublicChatMessageInFlightError: "message_in_flight",
+}
 
 
 def embedding_origin(request: Request) -> str | None:
@@ -105,6 +130,18 @@ class PublicChatRouteErrors:
         http_code = cls._STATUSES.get(type(exc))
         if http_code is None:
             raise exc
+        # A refused request is a real operational signal: during a pilot it is
+        # the first visible symptom of a wrong origin, an exhausted rate limit,
+        # or a rotated key. The type name is the only thing logged, so a
+        # customer string in an exception message cannot reach the log sink.
+        record_public_chat_rejection(
+            reason=REJECTION_REASONS.get(type(exc), "unknown")
+        )
+        log.info(
+            "public_chat_request_rejected",
+            reason=REJECTION_REASONS.get(type(exc), "unknown"),
+            status_code=http_code,
+        )
         raise HTTPException(
             status_code=http_code,
             detail=str(exc),
@@ -168,6 +205,15 @@ async def create_public_chat_session(
     ) as exc:
         PublicChatRouteErrors.raise_checked(exc)
 
+    record_public_chat_session(outcome="created")
+    # request_id is added to every record by the logging formatter, so these
+    # low-cardinality identifiers are what turn a pilot failure into a
+    # findable conversation. Never the session token, key, or message text.
+    log.info(
+        "public_chat_session_created",
+        organization_id=result["configuration"].organization_id,
+        session_id=result["session"].id,
+    )
     configuration = result["configuration"]
     return PublicChatSessionCreateResponse(
         config=_config_response(configuration),
@@ -209,6 +255,16 @@ async def send_public_chat_message(
     ) as exc:
         PublicChatRouteErrors.raise_checked(exc)
 
+    record_public_chat_message(outcome=result.get("status", "processed"))
+    # No message text, no session token, no widget key: identifiers and the
+    # outcome are the whole record.
+    # The response contract carries no session identifiers, so only the message
+    # id and the outcome are logged here; the service logs the session it used.
+    log.info(
+        "public_chat_message_processed",
+        message_id=result.get("message_id"),
+        status=result.get("status", "processed"),
+    )
     return PublicChatMessageSendResponse(**result)
 
 
@@ -251,6 +307,13 @@ async def request_human_support(
     ) as exc:
         PublicChatRouteErrors.raise_checked(exc)
 
+    record_public_chat_handoff(outcome="requested")
+    log.info(
+        "public_chat_handoff_requested",
+        organization_id=session.organization_id,
+        session_id=session.id,
+        session_status=session.status,
+    )
     return PublicChatHumanRequestResponse(**result)
 
 
@@ -271,5 +334,13 @@ async def close_public_chat_session(
         PublicChatSessionClosedError,
     ) as exc:
         PublicChatRouteErrors.raise_checked(exc)
+
+    record_public_chat_session_closed(closed_by="customer")
+    log.info(
+        "public_chat_session_closed",
+        organization_id=session.organization_id,
+        session_id=session.id,
+        closed_by="customer",
+    )
 
     return PublicChatCloseResponse(**result)

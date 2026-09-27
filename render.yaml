@@ -1,0 +1,135 @@
+# CXOps AI - Render blueprint (Phase 1P.3 live pilot).
+#
+# Topology:
+#   web  -> FastAPI on Render, stateless, scaled horizontally
+#   worker -> durable integration-job consumer, exactly one per deployment
+#
+# Migrations are intentionally NOT part of any service start command. Every web
+# replica runs its start command at boot, so a migration there would race across
+# replicas. Run scripts/run_migrations.sh once per deploy from a one-off shell
+# or CI job, then confirm with scripts/validate_production_config.py.
+#
+# Secrets: every value below marked sync:false must be set in the Render
+# dashboard. They are intentionally absent rather than defaulted to a
+# placeholder, because a placeholder that reaches production is a silent outage
+# or, worse, a working default key.
+
+databases:
+  - name: cxops-db
+    databaseName: cxops
+    user: cxops
+    plan: basic-256mb
+    postgresMajorVersion: "16"
+    # pgvector is required by the knowledge_chunks.embedding column.
+    # An empty allow list means internal-only: only the web and worker services
+    # on this Render account can open a socket, so a leaked DATABASE_URL is not
+    # reachable from the public internet.
+    ipAllowList: []
+
+services:
+  - type: web
+    name: cxops-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Run the start script rather than the image CMD so the API honours $PORT
+    # and trusts Render's proxy headers (https scheme for redirects and
+    # secure cookies). Without this the Dockerfile CMD serves the app but
+    # builds http:// URLs behind TLS termination.
+    dockerCommand: /app/scripts/start_render_api.sh
+    healthCheckPath: /ready
+    plan: starter
+    autoDeploy: false
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: PYTHONPATH
+        value: /app
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cxops-db
+          property: connectionString
+      # Public URLs must be https in production; the app refuses to boot
+      # otherwise (app/core/config.py
+      # _require_https_public_urls_in_production).
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false
+      # Render terminates TLS and forwards; trust the proxy so the app sees
+      # https and the correct scheme for redirects and secure cookies.
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
+      # --- Authentication: production requires JWKS, never dev/hs256. ---
+      - key: AUTH_MODE
+        value: jwks
+      - key: AUTH_JWKS_URL
+        sync: false
+      - key: AUTH_JWT_AUDIENCE
+        sync: false
+      - key: AUTH_JWT_ISSUER
+        sync: false
+      - key: AUTH_DEV_MODE
+        value: "false"
+      - key: ENCRYPTION_KEYS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ZENDESK_WEBHOOK_SECRET
+        sync: false
+      - key: TICKET_EVENT_WEBHOOK_SECRET
+        sync: false
+      - key: ZENDESK_SUBDOMAIN
+        sync: false
+      - key: ZENDESK_CLIENT_ID
+        sync: false
+      - key: ZENDESK_CLIENT_SECRET
+        sync: false
+      - key: ZENDESK_REDIRECT_URI
+        sync: false
+
+  - type: worker
+    name: cxops-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    autoDeploy: false
+    dockerCommand: /app/scripts/start_render_worker.sh
+    # The worker imports app.core.config, whose production validation is
+    # process-wide: it refuses to import at all without https public URLs,
+    # AUTH_MODE=jwks with a real JWKS URL, AUTH_DEV_MODE=false, and
+    # ENCRYPTION_KEYS. These are repeated here rather than inherited, because a
+    # missing variable here is a crash loop, not a degraded feature. The values
+    # are the same as the web service's.
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: PYTHONPATH
+        value: /app
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cxops-db
+          property: connectionString
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: AUTH_MODE
+        value: jwks
+      - key: AUTH_JWKS_URL
+        sync: false
+      - key: AUTH_DEV_MODE
+        value: "false"
+      - key: ENCRYPTION_KEYS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ZENDESK_WEBHOOK_SECRET
+        sync: false
+      - key: TICKET_EVENT_WEBHOOK_SECRET
+        sync: false

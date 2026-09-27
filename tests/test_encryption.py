@@ -241,8 +241,14 @@ class TestConfiguration:
 class TestProductionValidation:
     def test_production_requires_encryption_keys(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("AUTH_MODE", "jwks")
         monkeypatch.setenv("AUTH_JWKS_URL", "https://example.com/.well-known/jwks.json")
+        monkeypatch.setenv("DEBUG", "false")
+        monkeypatch.setenv("AUTH_JWT_ALGORITHM", "RS256")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("ENCRYPTION_KEYS", "")
         from app.core.config import Settings
 
@@ -251,8 +257,14 @@ class TestProductionValidation:
 
     def test_production_starts_with_keys(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("AUTH_MODE", "jwks")
         monkeypatch.setenv("AUTH_JWKS_URL", "https://example.com/.well-known/jwks.json")
+        monkeypatch.setenv("DEBUG", "false")
+        monkeypatch.setenv("AUTH_JWT_ALGORITHM", "RS256")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("ENCRYPTION_KEYS", TEST_KEY)
         from app.core.config import Settings
 
@@ -261,8 +273,14 @@ class TestProductionValidation:
 
     def test_production_rejects_malformed_keys(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("AUTH_MODE", "jwks")
         monkeypatch.setenv("AUTH_JWKS_URL", "https://example.com/.well-known/jwks.json")
+        monkeypatch.setenv("DEBUG", "false")
+        monkeypatch.setenv("AUTH_JWT_ALGORITHM", "RS256")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("ENCRYPTION_KEYS", "not-a-valid-key")
         from app.core.config import Settings
 
@@ -271,8 +289,14 @@ class TestProductionValidation:
 
     def test_production_rejects_empty_key_list(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("AUTH_MODE", "jwks")
         monkeypatch.setenv("AUTH_JWKS_URL", "https://example.com/.well-known/jwks.json")
+        monkeypatch.setenv("DEBUG", "false")
+        monkeypatch.setenv("AUTH_JWT_ALGORITHM", "RS256")
+        monkeypatch.setenv("FRONTEND_BASE_URL", "https://www.example.com")
+        monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
         monkeypatch.setenv("ENCRYPTION_KEYS", ", ,")
         from app.core.config import Settings
 

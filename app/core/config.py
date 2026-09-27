@@ -96,6 +96,37 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _reject_debug_in_production(self) -> "Settings":
+        """DEBUG=true leaks stack traces and SQL to HTTP responses and logs.
+
+        The pilot customer is a third party, so a misconfigured deploy must
+        fail at boot rather than serve internal error detail to the widget.
+        """
+        if self.environment == "production" and self.debug:
+            raise ValueError(
+                "DEBUG cannot be enabled when ENVIRONMENT=production"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_https_public_urls_in_production(self) -> "Settings":
+        """Embed snippets and pilot links are customer-facing.
+
+        A non-HTTPS public URL in production would emit insecure embed markup and
+        leak session-bearing query strings over plaintext, so the app refuses to
+        boot rather than hand an operator a broken pilot.
+        """
+        if self.environment != "production":
+            return self
+        for label, value in (
+            ("FRONTEND_BASE_URL", self.frontend_base_url),
+            ("BACKEND_PUBLIC_URL", self.backend_public_url),
+        ):
+            if not value.startswith("https://"):
+                raise ValueError(f"{label} must use https in production")
+        return self
+
     rag_top_k: int = 5
     rag_min_similarity: float = 0.35
     rag_similarity_margin: float = 0.12
@@ -107,6 +138,28 @@ class Settings(BaseSettings):
     support_hourly_cost_usd: float = 25.0
     minutes_saved_per_autonomous_execution: float = 8.0
     roi_min_autonomous_samples: int = 20
+
+    # Deployment topology (Phase 1P.3). Both are operator-facing public URLs
+    # used to build embed snippets and to print links in onboarding output.
+    # They are never used for authorization and carry no credentials.
+    frontend_base_url: str = "http://127.0.0.1:3000"
+    backend_public_url: str = "http://127.0.0.1:8000"
+
+    @field_validator("frontend_base_url", "backend_public_url", mode="after")
+    @classmethod
+    def _require_absolute_base_url(cls, value: str) -> str:
+        candidate = value.strip().rstrip("/")
+        parts = urlsplit(candidate)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(
+                "base URLs must be absolute http(s) origins without a path, "
+                "for example https://app.example.com"
+            )
+        if parts.path or parts.query or parts.fragment or parts.username or parts.password:
+            raise ValueError(
+                "base URLs must not include a path, query, fragment, or credentials"
+            )
+        return candidate
 
     # Public web chat (Phase 1P.1)
     public_chat_session_token_entropy_bytes: int = 32

@@ -6,6 +6,7 @@ import {
   BrainCircuit,
   Gauge,
   MessageSquareText,
+  Settings,
   ShieldCheck,
   Ticket,
   Workflow,
@@ -36,6 +37,11 @@ const items = [
     href: "/public-chat",
     label: "Public Chat",
     icon: MessageSquareText,
+  },
+  {
+    href: "/settings/public-chat",
+    label: "Settings",
+    icon: Settings,
   },
 ];
 
