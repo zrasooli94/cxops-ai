@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
@@ -39,7 +40,7 @@ from app.repositories.public_chat_repository import PublicChatRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.services.agent_workflow_service import agent_workflow_service
 from app.services.conversation_ingestion_service import ConversationIngestionService
-from app.services.public_chat_rate_limiter import public_chat_rate_limiter
+from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
 from app.services.ticket_routing_service import TicketRoutingService
 
 LOCAL_PROVIDER = "cxops"
@@ -111,7 +112,18 @@ def _truncate(value: str, max_length: int) -> str:
     return value[: max_length - 3] + "..."
 
 
+log = get_logger(__name__)
+
+
 class PublicChatService:
+    @staticmethod
+    async def _maybe_prune_rate_buckets(db: AsyncSession) -> None:
+        """Opportunistically prune stale rate-limit buckets; never blocks."""
+        try:
+            await public_chat_rate_limiter_db.prune(db)
+        except Exception:
+            log.exception("public_chat_rate_bucket_prune_failed")
+
     @staticmethod
     def generate_session_token() -> str:
         return secrets.token_urlsafe(settings.public_chat_session_token_entropy_bytes)
@@ -191,7 +203,9 @@ class PublicChatService:
         configuration = await cls.resolve_config(db, public_widget_key)
         cls.validate_embedding_origin(configuration, embedding_origin)
 
-        if not public_chat_rate_limiter.allow(
+        await cls._maybe_prune_rate_buckets(db)
+        if not await public_chat_rate_limiter_db.allow(
+            db,
             scope="public_chat_sessions_per_hour",
             key=f"config:{configuration.id}",
             limit=settings.public_chat_new_sessions_per_hour_per_config,
@@ -408,7 +422,9 @@ class PublicChatService:
                 f"Messages are limited to {configuration.max_message_length} characters."
             )
 
-        if not public_chat_rate_limiter.allow(
+        await cls._maybe_prune_rate_buckets(db)
+        if not await public_chat_rate_limiter_db.allow(
+            db,
             scope="session_messages",
             key=f"session:{session.id}",
             limit=configuration.max_messages_per_minute,
@@ -417,7 +433,8 @@ class PublicChatService:
             raise PublicChatRateLimitedError(
                 "You are sending messages too quickly. Please wait a moment."
             )
-        if not public_chat_rate_limiter.allow(
+        if not await public_chat_rate_limiter_db.allow(
+            db,
             scope="config_messages",
             key=f"config:{configuration.id}",
             limit=settings.public_chat_max_messages_per_minute_per_config,

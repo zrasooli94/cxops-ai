@@ -19,6 +19,7 @@ from app.api.routes.service_transformation_simulation import (
     router as service_transformation_simulation_router,
 )
 from app.api.routes.sla_policies import router as sla_policies_router
+from app.api.routes.staff_public_chat import router as staff_public_chat_router
 from app.api.routes.tenant import router as tenant_router
 from app.api.routes.tickets import router as tickets_router
 from app.api.routes.webhooks import router as webhooks_router
@@ -49,3 +50,4 @@ api_router.include_router(service_transformation_experiments_router)
 api_router.include_router(agent_router)
 api_router.include_router(evaluations_router)
 api_router.include_router(public_chat_router)
+api_router.include_router(staff_public_chat_router)

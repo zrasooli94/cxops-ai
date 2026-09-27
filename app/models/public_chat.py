@@ -271,6 +271,24 @@ class PublicChatSession(Base):
         nullable=True,
     )
 
+    # --- Phase 1P.2 human-handoff assignment (staff) ---
+    # Populated by the staff assign/release endpoints; ``human_requested`` ->
+    # ``human_assigned`` transitions require a principal subject here.
+    assigned_to_subject: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    assigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -332,3 +350,49 @@ class PublicChatSession(Base):
     @property
     def handoff_requested(self) -> bool:
         return self.status in {"human_requested", "human_assigned"}
+
+
+class PublicChatRateLimitBucket(Base):
+    """DB-backed sliding-window counter for public-chat rate limits.
+
+    Phase 1P.2 replaces the process-local in-memory limiter so limits hold
+    across instances. One row per (composite key, fixed window bucket); the
+    composite key is ``scope + ':' + key`` (e.g. ``session_messages:session:12``).
+    A rejected request is not charged (the ``allow`` implementation only
+    increments when the count is under the limit), and stale buckets are pruned
+    opportunistically. This is a burst guard, not an admission authority.
+    """
+
+    __tablename__ = "public_chat_rate_limit_buckets"
+
+    __table_args__ = (
+        Index(
+            "ix_public_chat_rate_limit_buckets_window_start",
+            "window_start",
+        ),
+    )
+
+    key_cache: Mapped[str] = mapped_column(
+        String(255),
+        primary_key=True,
+        nullable=False,
+    )
+
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        primary_key=True,
+        nullable=False,
+    )
+
+    count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

@@ -22,7 +22,9 @@ import type {
 //
 // The widget mirrors backend state transitions: launcher -> connecting ->
 // ai_active; ai_active may move to human_requested (handoff) after a message
-// or a manual human request; the session ends in error or closed.
+// or a manual human request; a staff member may then claim the session
+// (human_assigned) or return it to the queue (back to human_requested); the
+// session ends in error or closed.
 //
 // Security: the embedding origin is derived from document.referrer and sent in
 // X-Embedding-Origin for server-side allow-listing. Every tenant-supplied
@@ -34,6 +36,7 @@ type WidgetState =
   | "connecting"
   | "ai_active"
   | "human_requested"
+  | "human_assigned"
   | "error"
   | "closed";
 
@@ -86,6 +89,10 @@ export function PublicChatWidget({
       if (nextState.status === "human_requested") {
         setState("human_requested");
         return "human_requested";
+      }
+      if (nextState.status === "human_assigned") {
+        setState("human_assigned");
+        return "human_assigned";
       }
       if (nextState.status === "closed") {
         setState("closed");
@@ -254,6 +261,8 @@ export function PublicChatWidget({
         }
         if (result.handoff) {
           setState("human_requested");
+        } else if (result.status === "human_assigned") {
+          setState("human_assigned");
         } else {
           setState("ai_active");
         }
@@ -334,7 +343,11 @@ export function PublicChatWidget({
   }, [sessionToken]);
 
   useEffect(() => {
-    if (state !== "ai_active" && state !== "human_requested") {
+    if (
+      state !== "ai_active" &&
+      state !== "human_requested" &&
+      state !== "human_assigned"
+    ) {
       return;
     }
     const token = sessionTokenRef.current;
@@ -584,6 +597,21 @@ export function PublicChatWidget({
         >
           A support team member will review your request.
           Closing this window does not cancel it.
+        </p>
+      )}
+
+      {state === "human_assigned" && (
+        <p
+          style={{
+            margin: 0,
+            padding: "8px 16px",
+            background: "#eff6ff",
+            color: "#1e40af",
+            fontSize: "13px",
+          }}
+        >
+          A support team member has joined this
+          conversation and will respond here shortly.
         </p>
       )}
 

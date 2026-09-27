@@ -5,6 +5,7 @@ import {
   Bot,
   BrainCircuit,
   Gauge,
+  MessageSquareText,
   ShieldCheck,
   Ticket,
   Workflow,
@@ -30,6 +31,11 @@ const items = [
     href: "/observability",
     label: "Observability",
     icon: Activity,
+  },
+  {
+    href: "/public-chat",
+    label: "Public Chat",
+    icon: MessageSquareText,
   },
 ];
 

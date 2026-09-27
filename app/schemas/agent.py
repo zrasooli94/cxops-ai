@@ -38,6 +38,13 @@ class AgentDecision(BaseModel):
 
     requires_human_approval: bool = True
 
+    # Phase 1P.2: explicit business tool selection. Only names in the
+    # organization's enabled business-tool set are accepted by the workflow;
+    # the server validates the name and channel before it becomes a tool plan.
+    business_tool: str | None = None
+
+    business_arguments: dict[str, Any] | None = None
+
     model_config = {"extra": "forbid"}
 
 
@@ -53,6 +60,13 @@ class AgentToolCall(BaseModel):
         "zendesk.update_ticket",
         "zendesk.add_internal_note",
         "zendesk.send_reply",
+        "customer.send_reply",
+        "a1.create_vehicle_lead",
+        "a1.update_vehicle_details",
+        "a1.request_vehicle_photos",
+        "a1.get_quote_status",
+        "a1.check_pickup_availability",
+        "a1.create_pickup_request",
         "human.review",
         "none",
     ]

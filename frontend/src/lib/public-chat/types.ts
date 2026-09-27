@@ -56,3 +56,41 @@ export type PublicChatSessionStatus =
   | "human_requested"
   | "human_assigned"
   | "closed";
+
+// Staff-facing handoff API types (Phase 1P.2).
+//
+// Mirrors app/schemas/staff_public_chat.py. Consumed through the authenticated
+// control-center proxy at /api/backend/staff/public-chat/... — never through
+// the public widget routes.
+
+export interface StaffHandoffSession {
+  session_id: number;
+  conversation_id: number;
+  ticket_id: number;
+  customer_id: number | null;
+  status: PublicChatSessionStatus;
+  assigned_to_subject: string | null;
+  assigned_at: string | null;
+  released_at: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StaffHandoffSessionsResponse {
+  sessions: StaffHandoffSession[];
+}
+
+export interface StaffBusinessAction {
+  id: number;
+  request_type: string;
+  status: string;
+  reference_id: string | null;
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StaffBusinessActionsResponse {
+  actions: StaffBusinessAction[];
+}

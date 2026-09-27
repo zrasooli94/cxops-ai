@@ -43,6 +43,9 @@ from app.services.sla_escalation_scanner_service import (
     SLA_ESCALATION_JOB_TYPE,
 )
 from app.services.ticket_sla_service import TicketSLAService
+from app.services.tool_authorization_service import (
+    ToolAuthorizationService,
+)
 from app.services.zendesk_webhook_service import (
     ZendeskWebhookService,
 )
@@ -74,6 +77,12 @@ class IntegrationJobService:
 
         if run is None:
             raise AgentExecutionQueueBlockedError(f"Agent run {run_id} was not found.")
+
+        # Business-only plans (Phase 1P.2) execute against local persistence
+        # and must not be blocked by the Zendesk-target gate. Zendesk-requiring
+        # plans keep the strict external-target validation below.
+        if not ToolAuthorizationService.plan_requires_zendesk(run.tool_plan or []):
+            return
 
         result = await db.execute(
             select(Ticket).where(

@@ -7,6 +7,8 @@ from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.automation_rule import AutomationRule
 from app.models.base import Base
+from app.models.business_action import BusinessAction
+from app.models.business_integration import BusinessIntegrationConfiguration
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.customer import Customer
@@ -16,7 +18,11 @@ from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
-from app.models.public_chat import PublicChatConfiguration, PublicChatSession
+from app.models.public_chat import (
+    PublicChatConfiguration,
+    PublicChatRateLimitBucket,
+    PublicChatSession,
+)
 from app.models.service_escalation import ServiceEscalation
 from app.models.service_queue import ServiceQueue
 from app.models.service_transformation_experiment import (
@@ -39,6 +45,8 @@ __all__ = [
     "AgentRun",
     "AutomationRule",
     "Base",
+    "BusinessAction",
+    "BusinessIntegrationConfiguration",
     "Conversation",
     "ConversationMessage",
     "Customer",
@@ -49,6 +57,7 @@ __all__ = [
     "Organization",
     "OrganizationMembership",
     "PublicChatConfiguration",
+    "PublicChatRateLimitBucket",
     "PublicChatSession",
     "SLAPolicy",
     "ServiceEscalation",

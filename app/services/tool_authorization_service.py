@@ -109,6 +109,84 @@ class ToolAuthorizationService:
         },
     }
 
+    _REGISTRATION_KEYS = frozenset(
+        {
+            "risk_level",
+            "requires_approval",
+            "auto_authorize",
+            "required_capability",
+            "argument_schema",
+            "business_tool",
+            "provider",
+            "description",
+        }
+    )
+
+    @classmethod
+    def register_policy(
+        cls,
+        tool_name: str,
+        policy: dict[str, Any],
+    ) -> None:
+        """Register (or extend) a tool policy entry (Phase 1P.2).
+
+        Business providers register their tools' policies here at import time so
+        the authorization pipeline (authorize_plan / compute_run_digest /
+        assert_executable / preflight) governs them identically to the static
+        Zendesk tools. The extra keys ``business_tool`` and ``provider`` are
+        policy-controlled metadata for target derivation and tenant scoping;
+        they are not part of the digest payload (only risk/approval/capability
+        and arguments are). Registration is idempotent per tool name but
+        refuses to silently change an existing entry's policy-controlled keys.
+        """
+        existing = cls.POLICIES.get(tool_name)
+        if existing is not None:
+            for key in ("risk_level", "requires_approval", "required_capability"):
+                if existing.get(key) != policy.get(key):
+                    raise ValueError(
+                        f"Refusing to re-register tool '{tool_name}' with a "
+                        f"different {key}."
+                    )
+            merged = dict(existing)
+            merged.update(policy)
+            cls.POLICIES[tool_name] = merged
+            return
+        unexpected = set(policy.keys()) - cls._REGISTRATION_KEYS
+        if unexpected:
+            raise ValueError(
+                f"Policy for '{tool_name}' has unknown keys: {sorted(unexpected)}"
+            )
+        cls.POLICIES[tool_name] = dict(policy)
+
+    @staticmethod
+    def plan_requires_zendesk(tool_plan: list[dict[str, Any]]) -> bool:
+        """Whether a tool plan needs an external Zendesk execution target.
+
+        Business tools are executed against local persistence (their results
+        are mirrored into the local conversation) and must NOT be blocked by
+        the Zendesk-target gate; any other executable tool does require the
+        Zendesk ticket. Unknown tools are treated as Zendesk-requiring so the
+        existing preflight keeps failing closed for them.
+        """
+        for raw_tool in tool_plan:
+            tool_name = raw_tool.get("tool", "")
+            if tool_name in {"none", "human.review"}:
+                continue
+            policy = ToolAuthorizationService.POLICIES.get(tool_name)
+            if policy is None:
+                continue  # rejected later by preflight
+            if not bool(policy.get("business_tool", False)):
+                return True
+        return False
+
+    @classmethod
+    def business_tool_names(cls) -> set[str]:
+        return {
+            name
+            for name, policy in cls.POLICIES.items()
+            if bool(policy.get("business_tool", False))
+        }
+
     @classmethod
     def authorize_plan(
         cls,

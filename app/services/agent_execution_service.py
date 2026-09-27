@@ -17,6 +17,7 @@ from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import (
     AgentRunRepository,
 )
+from app.services.business_action_service import BusinessActionService
 from app.services.conversation_ingestion_service import (
     ConversationIngestionService,
 )
@@ -33,6 +34,37 @@ from app.services.zendesk_target_service import (
 )
 
 log = get_logger(__name__)
+
+# Identity-bearing parent identifiers that a tool plan may never carry as an
+# argument. Executors derive all of these from the trusted persisted run,
+# ticket, and conversation, so a value supplied by the model (or by a tampered
+# plan) can only ever be a decoy — never a routing target. Blocking them here
+# keeps a model from redirecting an approved action at another tenant's or
+# another conversation's record.
+#
+# No registered tool policy declares any of these as a legitimate argument
+# (the static Zendesk tools use reason/team/priority/body), so this is a pure
+# hardening of the deny-list rather than a functional restriction.
+FORBIDDEN_TOOL_ARGUMENT_IDENTITY_FIELDS: frozenset[str] = frozenset(
+    {
+        # Tenant / ownership identity.
+        "organization_id",
+        "org_id",
+        "tenant_id",
+        # Business-integration identity (credentials must never travel in args).
+        "integration_id",
+        "credential_id",
+        # Parent record identity.
+        "ticket_id",
+        "conversation_id",
+        "customer_id",
+        "session_id",
+        "public_chat_session_id",
+        # External-system identity.
+        "zendesk_ticket_id",
+        "external_ticket_id",
+    }
+)
 
 
 class AgentExecutionError(Exception):
@@ -400,14 +432,7 @@ class AgentExecutionService:
             if tool.get("required_capability") != policy["required_capability"]:
                 raise AgentExecutionError("Tool " + tool_name + " required_capability mismatch")
             # Check forbidden args
-            forbidden = {
-                "organization_id",
-                "tenant_id",
-                "integration_id",
-                "credential_id",
-                "zendesk_ticket_id",
-                "external_ticket_id",
-            }
+            forbidden = FORBIDDEN_TOOL_ARGUMENT_IDENTITY_FIELDS
             for key in tool.get("arguments", {}):
                 if key in forbidden:
                     raise AgentExecutionError(
@@ -481,6 +506,13 @@ class AgentExecutionService:
                 f"Action '{existing_run.action}' does not require external execution."
             )
 
+        # Whether this plan needs an external Zendesk target. Business tools
+        # execute against local persistence and must NOT be blocked by the
+        # Zendesk-target gate (Phase 1P.2).
+        requires_zendesk = ToolAuthorizationService.plan_requires_zendesk(
+            existing_run.tool_plan or []
+        )
+
         # -----------------------------------------
         # Valid execution states
         # -----------------------------------------
@@ -514,13 +546,15 @@ class AgentExecutionService:
                 "Agent run and ticket tenant ownership mismatch."
             )
 
-        zendesk_ticket_id = resolve_zendesk_execution_target(ticket)
+        zendesk_ticket_id = None
+        if requires_zendesk:
+            zendesk_ticket_id = resolve_zendesk_execution_target(ticket)
 
-        if zendesk_ticket_id is None:
-            raise AgentExecutionStateError(
-                "External execution is unavailable because this ticket is not "
-                "linked to a supported Zendesk target."
-            )
+            if zendesk_ticket_id is None:
+                raise AgentExecutionStateError(
+                    "External execution is unavailable because this ticket is not "
+                    "linked to a supported Zendesk target."
+                )
 
         # -----------------------------------------
         # Retry previously failed execution
@@ -579,12 +613,15 @@ class AgentExecutionService:
             # Idempotency / crash recovery
             # -------------------------------------
 
-            already_written = await self._already_written(
-                db,
-                zendesk_ticket_id=(zendesk_ticket_id),
-                run_id=run_id,
-                organization_id=organization_id,
-            )
+            already_written = False
+            if requires_zendesk:
+                assert zendesk_ticket_id is not None
+                already_written = await self._already_written(
+                    db,
+                    zendesk_ticket_id=(zendesk_ticket_id),
+                    run_id=run_id,
+                    organization_id=organization_id,
+                )
 
             if already_written:
                 await AgentRunRepository.mark_executed(
@@ -654,25 +691,37 @@ class AgentExecutionService:
                 )
                 raise AgentExecutionError("Agent run contains no executable tool plan.")
 
-            for tool_call in tool_plan:
-                await self._execute_tool(
+            if requires_zendesk:
+                assert zendesk_ticket_id is not None
+                for tool_call in tool_plan:
+                    await self._execute_tool(
+                        db,
+                        run=run,
+                        ticket=ticket,
+                        zendesk_ticket_id=(zendesk_ticket_id),
+                        tool_call=tool_call,
+                        organization_id=organization_id,
+                    )
+            else:
+                await BusinessActionService.execute(
                     db,
                     run=run,
                     ticket=ticket,
-                    zendesk_ticket_id=(zendesk_ticket_id),
-                    tool_call=tool_call,
                     organization_id=organization_id,
+                    tool_plan=tool_plan,
                 )
 
             # -------------------------------------
-            # Synchronize external state
+            # Synchronize external state (Zendesk plans only)
             # -------------------------------------
 
-            await ZendeskSyncService.sync_ticket_for_tenant(
-                db,
-                zendesk_ticket_id,
-                organization_id=organization_id,
-            )
+            if requires_zendesk:
+                assert zendesk_ticket_id is not None
+                await ZendeskSyncService.sync_ticket_for_tenant(
+                    db,
+                    zendesk_ticket_id,
+                    organization_id=organization_id,
+                )
 
             # -------------------------------------
             # Finish execution

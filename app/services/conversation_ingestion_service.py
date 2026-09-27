@@ -495,6 +495,7 @@ class ConversationIngestionService:
         visibility: str,
         body: str,
         external_message_id: str | None = None,
+        provider: str = ZENDESK_PROVIDER,
     ) -> ConversationMessage | None:
         """Mirror an agent-executed reply/note into the conversation.
 
@@ -502,6 +503,8 @@ class ConversationIngestionService:
         (recovery path) converges to a single mirrored message and can never
         cause a duplicate external reply. Returns ``None`` when the ticket has
         no conversation yet (legacy tickets get synced on their next sync).
+        ``provider`` defaults to Zendesk for external mirrors; local business
+        tool results pass ``LOCAL_PROVIDER``.
         """
         conversation = await ConversationRepository.get_by_ticket_for_tenant(
             db,
@@ -525,7 +528,7 @@ class ConversationIngestionService:
         message = ConversationMessage(
             organization_id=organization_id,
             conversation_id=conversation.id,
-            provider=ZENDESK_PROVIDER,
+            provider=provider,
             external_message_id=external_message_id,
             dedupe_key=dedupe_key,
             direction=direction,

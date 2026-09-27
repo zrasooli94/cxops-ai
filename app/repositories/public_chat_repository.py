@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_message import ConversationMessage
@@ -176,3 +176,135 @@ class PublicChatRepository:
         )
 
         return list(result.scalars().all())
+
+    @staticmethod
+    async def list_handoff_sessions_for_tenant(
+        db: AsyncSession,
+        organization_id: int,
+        *,
+        limit: int = 100,
+    ) -> list[PublicChatSession]:
+        result = await db.execute(
+            select(PublicChatSession)
+            .where(
+                PublicChatSession.organization_id == organization_id,
+                PublicChatSession.status.in_(
+                    ["human_requested", "human_assigned"]
+                ),
+            )
+            .order_by(PublicChatSession.updated_at.desc())
+            .limit(limit)
+        )
+
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def _read_back_after_transition(
+        db: AsyncSession,
+        session_id: int,
+        organization_id: int,
+    ) -> PublicChatSession | None:
+        """Re-read a row just changed by a conditional UPDATE.
+
+        The transition statement opts out of identity-map synchronization, and
+        the session factory disables ``expire_on_commit``. A plain re-select
+        would therefore hand back the *pre-transition* cached instance, so the
+        read-back must force ``populate_existing`` to overwrite already-loaded
+        attributes with the committed row.
+        """
+        result = await db.execute(
+            select(PublicChatSession)
+            .where(
+                PublicChatSession.id == session_id,
+                PublicChatSession.organization_id == organization_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def assign_session_for_tenant(
+        db: AsyncSession,
+        *,
+        session_id: int,
+        organization_id: int,
+        subject: str,
+        when: datetime,
+    ) -> PublicChatSession | None:
+        """Claim a ``human_requested`` session for a staff subject.
+
+        The transition is a single atomic, tenant-scoped conditional UPDATE:
+        the expected source status is part of the WHERE clause, so the database
+        itself admits exactly one winner. Two concurrent assigns cannot both
+        succeed — the loser matches no row and gets ``None`` back, which the
+        caller surfaces as a 409. Tenant scoping stays in the SQL, so a
+        cross-tenant session id is indistinguishable from a missing one.
+
+        Returns ``None`` when no row matched (absent, foreign tenant, or the
+        status was not ``human_requested``). The caller disambiguates those.
+        """
+        result = await db.execute(
+            update(PublicChatSession)
+            .where(
+                PublicChatSession.id == session_id,
+                PublicChatSession.organization_id == organization_id,
+                PublicChatSession.status == "human_requested",
+            )
+            .values(
+                status="human_assigned",
+                assigned_to_subject=subject,
+                assigned_at=when,
+                released_at=None,
+            )
+            .returning(PublicChatSession.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.mappings().first() is None:
+            return None
+
+        await db.commit()
+        return await PublicChatRepository._read_back_after_transition(
+            db,
+            session_id,
+            organization_id,
+        )
+
+    @staticmethod
+    async def release_session_for_tenant(
+        db: AsyncSession,
+        *,
+        session_id: int,
+        organization_id: int,
+        when: datetime,
+    ) -> PublicChatSession | None:
+        """Return a ``human_assigned`` session to the handoff queue.
+
+        Mirrors :meth:`assign_session_for_tenant`: the expected source status is
+        in the WHERE clause, so a release racing an assign resolves to exactly
+        one legal outcome and there is no last-writer-wins.
+        """
+        result = await db.execute(
+            update(PublicChatSession)
+            .where(
+                PublicChatSession.id == session_id,
+                PublicChatSession.organization_id == organization_id,
+                PublicChatSession.status == "human_assigned",
+            )
+            .values(
+                status="human_requested",
+                assigned_to_subject=None,
+                assigned_at=None,
+                released_at=when,
+            )
+            .returning(PublicChatSession.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.mappings().first() is None:
+            return None
+
+        await db.commit()
+        return await PublicChatRepository._read_back_after_transition(
+            db,
+            session_id,
+            organization_id,
+        )
