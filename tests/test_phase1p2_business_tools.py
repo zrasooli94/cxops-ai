@@ -36,7 +36,7 @@ os.environ["AUTH_MODE"] = "hs256"
 os.environ["AUTH_JWT_SECRET"] = "z" * 32
 os.environ["AUTH_JWT_ALGORITHM"] = "HS256"
 os.environ["AUTH_JWT_ISSUER"] = "test-phase1p2-issuer"
-os.environ["AUTH_JWT_AUDIENCE"] = "test-phase1p2-audience"
+os.environ["AUTH_JWT_AUDIENCE"] = "cxops-unit-test"
 os.environ["AUTH_DEV_MODE"] = "False"
 os.environ["ENVIRONMENT"] = "development"
 
@@ -127,7 +127,7 @@ def _configure_auth(monkeypatch):
         "AUTH_JWT_SECRET": "z" * 32,
         "AUTH_JWT_ALGORITHM": "HS256",
         "AUTH_JWT_ISSUER": "test-phase1p2-issuer",
-        "AUTH_JWT_AUDIENCE": "test-phase1p2-audience",
+        "AUTH_JWT_AUDIENCE": "cxops-unit-test",
         "AUTH_DEV_MODE": "False",
         "ENVIRONMENT": "development",
     }
