@@ -36,6 +36,13 @@ def _reporter(*, strict: bool = False) -> validator.Reporter:
     return validator.Reporter(fail_on_warn=strict)
 
 
+def Fernet_key() -> str:
+    """A valid single Fernet key, for tests that need a real secret value."""
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode()
+
+
 # ----------------------------------------------------------------------
 # Reporter semantics
 # ----------------------------------------------------------------------
@@ -181,17 +188,85 @@ def test_production_settings_pass_url_and_auth_checks():
 
 
 def test_missing_openai_key_fails_the_widget_gate():
-    """Without an OpenAI key the widget cannot answer, so this must block."""
+    """A missing OpenAI key must block the deploy.
+
+    The key is genuinely required at runtime, and not because of any business
+    provider: ``app/services/agent_workflow_service.py`` builds
+    ``AgentWorkflowService()`` at module import and its ``__init__`` constructs
+    ``ChatOpenAI(api_key=SecretStr(settings.openai_api_key))``. With an empty key
+    that raises ``OpenAIError`` during import, so ``import app.main`` fails and the
+    API never starts. See
+    ``test_local_demo_provider_still_requires_the_agent_openai_key``.
+    """
     cfg = _settings_with(
         ENVIRONMENT="production",
         AUTH_MODE="jwks",
         AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+        OPENAI_API_KEY="",
     )
     reporter = _reporter()
     validator.check_secrets(cfg, reporter)
 
     assert reporter.failures >= 1
     assert "OPENAI_API_KEY" in "\n".join(reporter.lines)
+
+
+def test_local_demo_provider_still_requires_the_agent_openai_key():
+    """A1's ``local_demo`` mode removes the *business* provider, not the LLM.
+
+    ``local_demo`` swaps the A1 adapter for a deterministic in-database one
+    (quote status, pickup availability). It does not remove the model: the widget's
+    send-message path calls ``agent_workflow_service.analyze()`` unconditionally,
+    and that module cannot even be imported without an OpenAI key. So a
+    ``local_demo`` pilot still fails when the key is missing, and it fails for the
+    OpenAI reason only when everything else is valid.
+    """
+    cfg = _settings_with(
+        ENVIRONMENT="production",
+        AUTH_MODE="jwks",
+        AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+        OPENAI_API_KEY="",
+    )
+    reporter = _reporter()
+    validator.check_secrets(cfg, reporter)
+
+    # Nothing else in check_secrets may fail for a complete local_demo config, so
+    # the OpenAI requirement is provably the only reason this one fails.
+    assert "OPENAI_API_KEY" in "\n".join(reporter.lines)
+    assert reporter.failures == 1, reporter.lines
+
+
+def test_local_demo_config_with_an_openai_key_has_no_openai_failure():
+    """The inverse: a local_demo pilot is not penalised once the key is present.
+
+    This is the case the A1 pilot actually runs in, and it must come back clean.
+    """
+    cfg = _settings_with(
+        ENVIRONMENT="production",
+        AUTH_MODE="jwks",
+        AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+        OPENAI_API_KEY="sk-test-" + "0" * 40,
+    )
+    reporter = _reporter()
+    validator.check_secrets(cfg, reporter)
+
+    assert reporter.failures == 0, reporter.lines
+    assert "OPENAI_API_KEY - present" in "\n".join(reporter.lines)
+
+
+def test_openai_requirement_is_pinned_to_the_import_time_llm_construction():
+    """Guard the runtime dependency the validator is asserting.
+
+    If someone makes the LLM lazy, the OpenAI requirement stops being a boot
+    requirement, and this assertion is what makes that change a deliberate
+    decision to revisit rather than a silent divergence between the gate and the
+    application.
+    """
+    import inspect
+
+    from app.services.agent_workflow_service import AgentWorkflowService
+
+    assert "openai_api_key" in inspect.getsource(AgentWorkflowService.__init__)
 
 
 def test_configured_openai_key_passes_without_being_printed():
@@ -208,6 +283,69 @@ def test_configured_openai_key_passes_without_being_printed():
 
     assert secret not in rendered
     assert reporter.failures == 0, reporter.lines
+
+
+def test_missing_and_present_openai_keys_are_independent_of_the_environment(
+    monkeypatch,
+):
+    """The two OpenAI outcomes must not depend on the machine running the test.
+
+    This is the CI regression: a runner exporting ``OPENAI_API_KEY`` used to make
+    the missing-key case pass silently.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-leaked-from-ci-environment")
+
+    missing = _reporter()
+    validator.check_secrets(
+        _settings_with(
+            ENVIRONMENT="production",
+            AUTH_MODE="jwks",
+            AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+            OPENAI_API_KEY="",
+        ),
+        missing,
+    )
+    present = _reporter()
+    validator.check_secrets(
+        _settings_with(
+            ENVIRONMENT="production",
+            AUTH_MODE="jwks",
+            AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+            OPENAI_API_KEY="sk-test-" + "0" * 40,
+        ),
+        present,
+    )
+
+    assert "OPENAI_API_KEY" in "\n".join(missing.lines)
+    assert present.failures == 0, present.lines
+
+
+def test_validator_never_prints_any_secret_value():
+    """Presence only, for every secret the gate inspects."""
+    secrets = {
+        "OPENAI_API_KEY": "sk-never-print-this-value",
+        "ENCRYPTION_KEYS": Fernet_key(),
+        "ZENDESK_WEBHOOK_SECRET": "zendesk-never-print",
+        "TICKET_EVENT_WEBHOOK_SECRET": "ticket-never-print",
+        "ZENDESK_CLIENT_SECRET": "client-never-print",
+    }
+    cfg = _settings_with(
+        ENVIRONMENT="production",
+        AUTH_MODE="jwks",
+        AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+        **secrets,
+    )
+    reporter = _reporter()
+    validator.check_secrets(cfg, reporter)
+    rendered = "\n".join(reporter.lines)
+
+    for label, value in secrets.items():
+        assert value not in rendered, f"{label} value reached the report"
+    # Presence is still reported, under the settings attribute name rather than
+    # the env-var casing, so compare case-insensitively.
+    lowered = rendered.lower()
+    for label in secrets:
+        assert label.lower() in lowered, f"{label} presence should still be reported"
 
 
 def test_http_urls_fail_because_the_gate_always_applies_production_rules():
@@ -243,11 +381,14 @@ def test_non_production_environment_is_warned_not_silently_accepted():
 
 
 def _settings_with(**overrides):
-    """Build Settings isolated from the repository .env.
+    """Build Settings isolated from the repository .env *and* the process env.
 
-    ``_env_file=None`` is essential: without it these tests would silently
-    inherit the developer's local .env, so a check could appear to pass or fail
-    for reasons that have nothing to do with the code under test.
+    ``_env_file=None`` alone is not enough. pydantic-settings only stops reading
+    the dotenv file; every unset field still falls through to ``os.environ``. So a
+    CI runner exporting ``OPENAI_API_KEY`` (a common repo secret) satisfied the
+    OpenAI check and the "missing key must fail" test passed or failed depending
+    on the machine it ran on. Every secret this suite reasons about is therefore
+    pinned explicitly here, and a caller must opt in to a value.
     """
     from cryptography.fernet import Fernet
 
@@ -262,6 +403,8 @@ def _settings_with(**overrides):
         "DEBUG": False,
         "FRONTEND_BASE_URL": "https://www.example.com",
         "BACKEND_PUBLIC_URL": "https://api.example.com",
+        # Pinned, not inherited: see the docstring above.
+        "OPENAI_API_KEY": "",
     }
     base.update(overrides)
     return Settings(_env_file=None, **base)
