@@ -1,3 +1,27 @@
+# DEPRECATED - CXOps AI Render blueprint (Phase 1P.3 live pilot).
+#
+# ARCHIVED, NOT AUTHORITATIVE. The production target is Replit as of Phase
+# 1P-Replit. Nothing applies this file: it is not read by any script, and the
+# repository root no longer contains it, so it cannot be applied by accident.
+#
+# Why it is kept rather than deleted: the environment contract it encodes was
+# correct, and the reasoning in the comments below is the record of two
+# production incidents worth not repeating - migrations in a start command that
+# every replica runs, and a worker running inside every web replica. That
+# reasoning is now expressed in a vendor-neutral place:
+#
+#   - config/replit/deployment-env.yaml  the authoritative env contract
+#   - docs/runbooks/replit-production-deployment.md  the deployment procedure
+#   - scripts/start_replit_web.sh         the production web/API start command
+#   - scripts/start_replit_worker.sh      the production worker start command
+#
+# If you are deploying CXOps, use those. Read this file only to understand what
+# the previous topology looked like.
+#
+# ---------------------------------------------------------------------------
+# Original content follows, unchanged.
+# ---------------------------------------------------------------------------
+#
 # CXOps AI - Render blueprint (Phase 1P.3 live pilot).
 #
 # Topology:

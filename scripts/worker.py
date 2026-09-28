@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from datetime import UTC, datetime
 
@@ -43,6 +44,37 @@ SLA_SCAN_INTERVAL_SECONDS = 60
 configure_logging()
 
 log = get_logger("worker")
+
+
+def resolve_metrics_port() -> int | None:
+    """Port for the Prometheus listener, or None to run without it.
+
+    The listener is on by default because "is the worker alive" is the first
+    question during an incident, and a worker that claims no jobs is
+    indistinguishable from a dead one in the logs.
+
+    A deployment whose platform forbids extra listeners sets
+    ``WORKER_METRICS_PORT=0`` rather than being forced to accept a crash. Kept
+    here, next to the binding, so the environment contract in
+    scripts/start_replit_worker.sh cannot drift from the code that implements it.
+    """
+    raw = os.environ.get("WORKER_METRICS_PORT", "").strip()
+    if raw.lower() in ("0", "off", "false", "none"):
+        return None
+    if not raw:
+        return WORKER_METRICS_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        log.warning(
+            "worker_metrics_port_invalid",
+            reason="not an integer; using default",
+        )
+        return WORKER_METRICS_PORT
+    if not 1 <= port <= 65535:
+        log.warning("worker_metrics_port_invalid", reason="out of range; using default")
+        return WORKER_METRICS_PORT
+    return port
 
 
 async def _try_acquire_scanner_lock(
@@ -101,7 +133,11 @@ async def run_sla_scan_cycle() -> None:
 
 async def run_worker() -> None:
 
-    log.info("worker_started", metrics_port=WORKER_METRICS_PORT)
+    _metrics_port = resolve_metrics_port()
+    log.info(
+        "worker_started",
+        metrics_port=_metrics_port if _metrics_port is not None else "disabled",
+    )
 
     last_scan_time = 0.0
 
@@ -225,6 +261,8 @@ async def run_worker() -> None:
 
 
 if __name__ == "__main__":
-    start_http_server(WORKER_METRICS_PORT)
+    _metrics_port = resolve_metrics_port()
+    if _metrics_port is not None:
+        start_http_server(_metrics_port)
 
     asyncio.run(run_worker())

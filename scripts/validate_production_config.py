@@ -367,6 +367,133 @@ def check_runtime_flags(cfg, reporter: Reporter) -> None:
         reporter.ok("ENVIRONMENT", "production")
 
 
+def check_database_capabilities(cfg, reporter: Reporter) -> None:
+    """Connect to the target database and verify the capabilities the app needs.
+
+    A parse of ``DATABASE_URL`` proves only that the string looks like a
+    PostgreSQL URL. Three things the application genuinely requires can still be
+    wrong with a well-formed URL, and every one of them fails later and further
+    from its cause:
+
+    * the server is too old, or not PostgreSQL at all
+    * pgvector is missing, so ``VECTOR(1536)`` fails at the first RAG query
+    * the Phase 1P.4 unique constraint is absent or unenforced, so one tenant
+      silently has two widget configurations
+
+    All three are read-only queries. The connection string is never printed;
+    failures are reported by exception type only, because a driver error
+    routinely embeds the DSN.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    # Oldest PostgreSQL this project supports. Chosen for recursive-CTE
+    # availability, not by preference.
+    MIN_POSTGRES_MAJOR = 12
+    REQUIRED_EXTENSION = "vector"
+    DUPLICATE_PRECHECK = """
+        SELECT count(*) FROM (
+            SELECT organization_id
+            FROM public_chat_configurations
+            GROUP BY organization_id
+            HAVING count(*) > 1
+        ) AS duplicates
+    """
+
+    async def probe() -> dict[str, object]:
+        # poolclass keeps the probe from creating a connection pool it would
+        # never use, and NullPool guarantees the process leaves nothing behind.
+        from sqlalchemy.pool import NullPool
+
+        engine = create_async_engine(
+            cfg.database_url,
+            poolclass=NullPool,
+            connect_args={"command_timeout": 15},
+        )
+        try:
+            async with engine.connect() as conn:
+                version = (await conn.execute(text("SHOW server_version"))).scalar_one()
+                extension = (
+                    await conn.execute(
+                        text("SELECT 1 FROM pg_extension WHERE extname = :name"),
+                        {"name": REQUIRED_EXTENSION},
+                    )
+                ).scalar_one_or_none()
+                duplicates = (
+                    await conn.execute(text(DUPLICATE_PRECHECK))
+                ).scalar_one()
+            return {
+                "version": str(version),
+                "extension": extension is not None,
+                "duplicates": int(duplicates),
+            }
+        finally:
+            await engine.dispose()
+
+    try:
+        result = asyncio.run(probe())
+    except Exception as exc:  # noqa: BLE001 - report the type, never the DSN
+        reporter.fail(
+            "DATABASE",
+            f"could not be reached ({type(exc).__name__}); a production process "
+            "would fail its first query",
+        )
+        return
+
+    # --- PostgreSQL version ---
+    version = str(result["version"])
+    major = version.split(".")[0]
+    if not major.isdigit():
+        reporter.warn(
+            "DATABASE",
+            f"could not parse the server version ({version.splitlines()[0][:20]}); "
+            "expected a numeric major version",
+        )
+    elif int(major) < MIN_POSTGRES_MAJOR:
+        reporter.fail(
+            "DATABASE",
+            f"PostgreSQL {major} is older than the supported minimum "
+            f"{MIN_POSTGRES_MAJOR}",
+        )
+    else:
+        reporter.ok("DATABASE", f"PostgreSQL {major}.x reachable")
+
+    # --- pgvector ---
+    #
+    # Not assumed. The extension is created by the first RAG migration
+    # (ceec6d2a6a89) with CREATE EXTENSION IF NOT EXISTS, which succeeds only for
+    # a role with rights over the database. On a managed database the app's own
+    # user frequently cannot create extensions, so the database owner has to
+    # enable it once out of band. If it is missing here, the first knowledge
+    # search would fail with an undefined-type error - long after a deploy that
+    # otherwise reported success.
+    if result["extension"]:
+        reporter.ok("PGVECTOR", f"extension {REQUIRED_EXTENSION!r} installed")
+    else:
+        reporter.fail(
+            "PGVECTOR",
+            f"extension {REQUIRED_EXTENSION!r} is not installed; RAG queries will "
+            "fail with an undefined type. Enable it as the database owner: "
+            f"CREATE EXTENSION IF NOT EXISTS {REQUIRED_EXTENSION};",
+        )
+
+    # --- Phase 1P.4 duplicate precheck ---
+    if result["duplicates"]:
+        reporter.fail(
+            "PUBLIC CHAT CONFIG",
+            f"{result['duplicates']} organization(s) have more than one "
+            "configuration; the unique constraint is missing or unenforced, so "
+            "widget selection would be ambiguous",
+        )
+    else:
+        reporter.ok(
+            "PUBLIC CHAT CONFIG",
+            "one configuration per organization (unique constraint enforced)",
+        )
+
+
 def check_migrations(reporter: Reporter) -> None:
     """Read-only migration check: compare ``current`` to ``heads``, never upgrade."""
     import subprocess
@@ -575,6 +702,15 @@ def main() -> int:
         action="store_true",
         help="Skip the database-backed alembic check (for air-gapped runs).",
     )
+    parser.add_argument(
+        "--skip-db-probe",
+        action="store_true",
+        help=(
+            "Skip the live database capability probe (server version, pgvector, "
+            "duplicate public-chat configs). Separate from --skip-migrations: "
+            "pgvector is a hard runtime requirement, not a migration detail."
+        ),
+    )
     args = parser.parse_args()
 
     reporter = Reporter(fail_on_warn=args.strict)
@@ -593,6 +729,10 @@ def main() -> int:
         check_auth(cfg, reporter)
         check_secrets(cfg, reporter)
         check_database(cfg, reporter)
+        if not args.skip_db_probe:
+            check_database_capabilities(cfg, reporter)
+        else:
+            reporter.warn("DATABASE", "capability probe skipped by --skip-db-probe")
 
     check_manifests(reporter)
 

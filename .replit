@@ -1,0 +1,104 @@
+# Replit project configuration for CXOps.
+#
+# ONE project, TWO deployments.
+#
+# Replit runs a deployment from a run command defined here, and a project may
+# have several deployments that each pick a different command. That is why this
+# file stays as one Replit project with two deployments rather than becoming two
+# near-duplicate projects: the application source, the migration history, the
+# tenant manifests, and the frontend build are all one repository, and splitting
+# them across projects would mean keeping two checkouts of the same commit in
+# step by hand.
+#
+#   deployment        run command                        published port
+#   ---------------   --------------------------------   ---------------
+#   cxops-web         web                               yes (PORT)
+#   cxops-worker      worker                            no
+#
+# Run commands are also useful locally and for one-off maintenance:
+#
+#   migrate   scripts/run_migrations.sh   exactly once, never from a start command
+#   validate  production configuration gate, read-only, needs secrets + a live database
+#   preflight environment gate, read-only, the one a start command runs
+#   dev       local API with reload (frontend runs separately; see below)
+#
+# The dependency install lives in replit.nix; the language dependency install
+# lives in the start scripts so a Reserved VM is reproducible from the repo
+# alone and a fresh VM needs no separate build step.
+
+modules = ["python3-12", "nodejs-22"]
+
+run = "dev"
+
+# `web` is the command a Reserved VM deployment runs for the public application.
+# It validates the environment, builds the frontend with the canonical origin
+# already present, then supervises Next.js and FastAPI. It runs no migrations.
+[[run]]
+name = "web"
+command = "bash scripts/start_replit_web.sh"
+workdir = "."
+
+# `worker` is a separate deployment on purpose: the worker claims durable
+# integration jobs, and running a job consumer inside every web replica
+# multiplies consumers by the replica count. No port is published.
+[[run]]
+name = "worker"
+command = "bash scripts/start_replit_worker.sh"
+workdir = "."
+
+# One-off maintenance commands. `migrate` MUST be run by hand exactly once per
+# schema change. It is deliberately not a start command: a restart must never
+# mutate the schema, and a migration that runs on every restart races itself.
+[[run]]
+name = "migrate"
+command = "bash scripts/run_migrations.sh"
+workdir = "."
+
+[[run]]
+name = "validate"
+command = ".venv/bin/python scripts/validate_production_config.py --environment production"
+workdir = "."
+
+[[run]]
+name = "preflight"
+command = ".venv/bin/python scripts/preflight_production_env.py"
+workdir = "."
+
+# `dev` is the workspace Run button: the API only, with reload. It is
+# deliberately not a production-shaped start -- there is no preflight, no
+# frontend build, and no supervisor, because none of those are wanted while
+# iterating. The frontend runs separately with `npm run dev` in frontend/; see
+# README.md, which documents the two-terminal workflow.
+[[run]]
+name = "dev"
+command = ".venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --reload"
+workdir = "."
+
+[env]
+# Unbuffered stdout/stderr, so a crash message appears in the deployment log
+# before the process dies instead of being lost in a 8KB stdio buffer.
+PYTHONUNBUFFERED = "1"
+# Telemetry is noise in a deploy log and is not something to opt into from a
+# machine that holds production database credentials.
+NEXT_TELEMETRY_DISABLED = "1"
+NODE_ENV = "production"
+
+[deployment]
+run = ["web", "worker"]
+deploymentTarget = "reservedvm"
+# No build command, deliberately.
+#
+# The obvious choice is build = ["validate"], and it is wrong: `validate` needs
+# production secrets (https public URLs, AUTH_JWKS_URL, ENCRYPTION_KEYS) and a
+# live database connection. A build step has neither -- deployment secrets are
+# injected into the running deployment, not into its build, and a private
+# database is reachable from the deployment rather than from a build. So that
+# build would fail for a completely correct configuration, and the failure would
+# read like a configuration fault rather than a misplaced check.
+#
+# There is also nothing to build here. The frontend build depends on
+# CXOPS_PUBLIC_SITE_URL, which is a deployment environment variable, so it
+# cannot run before the deployment exists. scripts/start_replit_web.sh does it
+# at start time for exactly that reason, and the environment gate runs there
+# too, before either server starts.
+build = []

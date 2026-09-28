@@ -1,8 +1,15 @@
 #!/bin/sh
-# DEPRECATED: single-process start for Render. Use the split services instead.
+# DEPRECATED: single-process start for Render. Use the split deployments.
 #
-#   web    -> scripts/start_render_api.sh
-#   worker -> scripts/start_render_worker.sh
+# SUPERSEDED ENTIRELY as of Phase 1P-Replit. Do not wire this to anything new.
+# The production topology is:
+#
+#   web    -> scripts/start_replit_web.sh      (Next.js + loopback FastAPI)
+#   worker -> scripts/start_replit_worker.sh   (separate deployment, no port)
+#
+# This wrapper hardcodes /app, the previous platform's image layout, so it does
+# not even work on the current target. It is retained only so that the two
+# failures it was built to prevent cannot be reintroduced silently.
 #
 # Why this script is no longer the entry point:
 #
@@ -13,9 +20,6 @@
 # 2. It started the background worker in the same process as the API. Every
 #    replica therefore ran its own job consumer, multiplying consumers by the
 #    replica count. The worker is now its own service.
-#
-# This wrapper keeps the old command working for a single-instance deployment
-# while making both problems impossible to reintroduce silently.
 set -eu
 
 echo "warning: scripts/start_render.sh is deprecated." >&2

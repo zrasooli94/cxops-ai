@@ -1,4 +1,17 @@
 #!/bin/sh
+# DEPRECATED - superseded by scripts/start_replit_web.sh (Phase 1P-Replit).
+#
+# Kept working and behaviourally unchanged so nothing that still references it
+# breaks, but it is no longer the production entry point. It is kept for one
+# reason beyond continuity: the comments below record why migrations must never
+# live in a start command, which is the single most expensive mistake the
+# previous topology carried.
+#
+# If you are deploying CXOps, use scripts/start_replit_web.sh. See
+# config/replit/deployment-env.yaml for the environment contract and
+# docs/runbooks/replit-production-deployment.md for the procedure.
+#
+# ---------------------------------------------------------------------------
 # Start the CXOps API web service.
 #
 # This script deliberately does NOT run migrations. On a multi-instance

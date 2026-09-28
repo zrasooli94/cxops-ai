@@ -16,10 +16,11 @@ the script cannot.
 
 ## Rules that apply to every value
 
-1. **Never commit a production secret.** `render.yaml` marks every one
-   `sync: false`; the operator sets it in the Render dashboard or in CI. A
-   placeholder that reaches production is a silent outage or, worse, a working
-   default key.
+1. **Never commit a production secret.** `config/replit/deployment-env.yaml`
+   marks every one `secret: true`; the operator sets it as a Replit Secret on
+   each deployment. A placeholder that reaches production is a silent outage
+   or, worse, a working default key. (The previous Render blueprint is archived
+   at `docs/archive/render.yaml` and is not authoritative.)
 2. **Secret values are never printed.** The validator reports presence, count,
    and validity. Never `echo`, `print`, or log a secret, not even in a
    debugging attempt.
@@ -33,13 +34,13 @@ the script cannot.
    loop, not a degraded feature. This is why the worker repeats the API's auth
    and encryption variables even though it serves no HTTP traffic.
 
-## Backend (Render web service `cxops-api`)
+## Backend + frontend (Replit web deployment `cxops-web`)
 
 | Variable | Requirement | Why |
 | --- | --- | --- |
 | `ENVIRONMENT` | `production` | Selects production validation rules. Anything else is a `WARN` — the rules still apply, but you are not running the configuration you think you are. |
 | `DEBUG` | `false` | `FAIL` if on. Disables debug responses and tracebacks. |
-| `DATABASE_URL` | Managed PostgreSQL 16, **not** localhost, TLS requested, credentials present | `FAIL` on localhost. Render injects the internal connection string from the `cxops-db` service; prefer the internal URL so traffic stays on the private network. |
+| `DATABASE_URL` | Managed PostgreSQL 12+, **not** localhost, TLS requested, credentials present | `FAIL` on localhost. Prefer the internal URL Replit injects from the managed database so traffic stays on the private network. |
 | `AUTH_MODE` | `jwks` | `FAIL` on `hs256`. Production must validate tokens against a real issuer. |
 | `AUTH_JWKS_URL` | `https://…` | Required when `AUTH_MODE=jwks`. `FAIL` if `http`. This is the URL the API fetches keys from; it must be the issuer's, not a copy. |
 | `AUTH_JWT_AUDIENCE` | The intended client identifier | The API's `aud` check. A mismatch rejects every staff token. |
@@ -49,13 +50,14 @@ the script cannot.
 | `OPENAI_API_KEY` | Present | `FAIL` if unset. The agent workflow constructs `ChatOpenAI` at module import, so a missing key is a boot failure, not a degraded feature. |
 | `BACKEND_PUBLIC_URL` | `https://…` | `FAIL` on `http`. Used for links in staff-visible messages and for CORS. The app refuses to boot without `https` in production. |
 | `FRONTEND_BASE_URL` | `https://…` | `FAIL` on `http`. Used to build embed snippets and pilot links. |
-| `FORWARDED_ALLOW_IPS` | `*` on Render | Render terminates TLS and forwards; without this the app builds `http://` URLs behind TLS and issues cookies the browser drops. Only correct behind a trusted proxy — do not set it for a directly exposed origin. |
-| `PYTHONPATH` | `/app` | The container layout. |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` (the default) | **Not `*`.** On this topology the API is bound to loopback and is reached only by the frontend on the same machine, so the only source whose forwarded headers are trusted is the local one. A wildcard here would let anything that can open the socket dictate the scheme the app believes it is served over. |
+| `INTERNAL_API_PORT` | `8000` (the default) | Loopback port for FastAPI. Not published: only Next.js binds the platform `PORT`. |
+| `PYTHONPATH` | `.` | Repository root, so `app` and `scripts` import. Not `/app` — that was a previous platform's image layout. |
 | `ZENDESK_WEBHOOK_SECRET` | If Zendesk enabled | `WARN` if absent. Not a pilot blocker. |
 | `TICKET_EVENT_WEBHOOK_SECRET` | If ticket webhooks enabled | `WARN` if absent. Not a pilot blocker. |
 | `ZENDESK_SUBDOMAIN` / `ZENDESK_CLIENT_ID` / `ZENDESK_CLIENT_SECRET` / `ZENDESK_REDIRECT_URI` | If Zendesk OAuth enabled | Not used by the A1 pilot. |
 
-## Worker (Render worker `cxops-worker`)
+## Worker (Replit worker deployment `cxops-worker`)
 
 The worker has no HTTP surface, so it has no health check and no public URL. It
 still imports `app.core.config`, whose production validation is **process-wide**:
@@ -67,23 +69,31 @@ therefore required here too.
 | --- | --- | --- |
 | `ENVIRONMENT` | `production` | Same process-wide validation. |
 | `DEBUG` | `false` | Same. |
-| `PYTHONPATH` | `/app` | Same container layout. |
-| `DATABASE_URL` | Same database as the API, internal connection | The worker consumes integration jobs and writes `BusinessAction` rows. A different database means jobs are consumed against a schema the API never reads. |
+| `PYTHONPATH` | `.` | Same repository root. |
+| `DATABASE_URL` | Same database as the web deployment, internal connection | The worker consumes integration jobs and writes `BusinessAction` rows. A different database means jobs are consumed against a schema the API never reads. |
 | `AUTH_MODE`, `AUTH_JWKS_URL`, `AUTH_JWT_AUDIENCE`, `AUTH_JWT_ISSUER`, `AUTH_DEV_MODE` | Same as the API | Required to construct `Settings`; a missing value is a crash loop. The worker authenticates no inbound request, but it must still load the same validated configuration object. |
 | `ENCRYPTION_KEYS` | Same value as the API | The worker reads stored provider credentials to execute integration jobs. A different key set means it cannot decrypt what the API wrote. |
 | `OPENAI_API_KEY` | Present | Integration jobs can reach the agent workflow, which constructs `ChatOpenAI` at import. |
 | `BACKEND_PUBLIC_URL`, `FRONTEND_BASE_URL` | Same as the API | Required to construct `Settings` in production. |
 | `ZENDESK_WEBHOOK_SECRET`, `TICKET_EVENT_WEBHOOK_SECRET` | If those integrations enabled | The worker sends the webhooks. |
 
-The worker must **not** require a public port. Render workers serve no traffic,
-and configuring a health check for one is a sign the service type is wrong.
+The worker must **not** require a public port. It serves no traffic, and
+configuring a health check for one is a sign the deployment type is wrong. Its
+Prometheus listener on `WORKER_METRICS_PORT` (default `9101`) is reachable only
+from inside the deployment; set it to `0` only if the platform forbids extra
+listeners, at the cost of losing the metrics that distinguish "idle" from
+"dead".
 
-## Frontend (Vercel)
+## Frontend build
+
+The frontend is not a separate deployment. It is built and served by `cxops-web`
+on the same origin as the API, which is what keeps the browser on a single
+origin and removes the need for CORS.
 
 | Variable | Requirement | Why |
 | --- | --- | --- |
-| Backend / BFF origin | `https://` production API origin | Must be the production API. A development or localhost origin in a production build sends staff credentials to a developer's machine or a dead port. |
-| Public frontend domain | `https://` production domain | Used for the embed snippet origin and canonical URLs. |
+| `CXOPS_PUBLIC_SITE_URL` | `https://` public origin, present **before** `npm run build` | Inlined into the build by `robots.ts`, `sitemap.ts`, and static metadata. A runtime-only value produces a site that advertises `http://localhost:3000` to every crawler, and it fails silently: the site works, the metadata does not. Falls back to `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL`, then to localhost — which is why the start script refuses to run without it. |
+| `BACKEND_API_URL` | Loopback API origin, read at request time | The server-side BFF and Control Center modules. `http://127.0.0.1:$INTERNAL_API_PORT` is correct and is never sent to a browser, which is why this one URL is legitimately not https. |
 | Public staff auth (`NEXT_PUBLIC_*`) | Subdomain and region only | The only `NEXT_PUBLIC_*` values in this codebase are `NEXT_PUBLIC_NHOST_SUBDOMAIN` and `NEXT_PUBLIC_NHOST_REGION`, both of which are non-secret by construction. **No server secret may ever take a `NEXT_PUBLIC_` prefix** — those values are inlined into the client bundle at build time and are readable by anyone who loads the page. |
 | Server-only secrets | Never `NEXT_PUBLIC_` | The BFF reads server secrets from non-public env names. See "Env boundary" below. |
 
@@ -103,5 +113,5 @@ and configuring a health check for one is a sign the service type is wrong.
 | Value | Why not |
 | --- | --- |
 | A real business-provider credential | The A1 integration is `provider_mode: local_demo`. No A1 API exists in this build, so there is nothing to authenticate against. This is the single most important line in this document: **the pilot cannot perform a real valuation, quote, or pickup**, and no environment variable can change that. |
-| A real public IP allowlist for the database | An empty `ipAllowList` means internal-only: only services on the same Render account can open a socket. A public database is not required and would be a regression. |
+| A real public IP allowlist for the database | The managed database is internal-only: only deployments on the same Replit account can open a socket. A public database is not required and would be a regression. |
 | `MIGRATION_LOCK_WAIT_SECONDS` | Only read by `scripts/run_migrations.sh`. Default 300s. It is a migration-step variable, not a service variable. |

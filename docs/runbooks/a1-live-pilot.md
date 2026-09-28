@@ -122,34 +122,49 @@ sending a real vehicle description and reading a truthful reply.
 
 ---
 
-## 3. Deployment topology (Render)
+## 3. Deployment topology (Replit)
 
-`render.yaml` defines three things: `cxops-db` (PostgreSQL 16 + pgvector),
-`cxops-api` (web, `healthCheckPath: /ready`), and `cxops-worker` (job consumer).
+One Replit project, two deployments from the same source:
 
-Four properties are load-bearing, and `tests/test_render_env_parity.py` fails
-the build if any is removed:
+- **`cxops-web`** — Next.js on the published `PORT`, FastAPI on
+  `127.0.0.1:$INTERNAL_API_PORT` behind a same-origin BFF. Health probes
+  (`/health`, `/ready`, `/version`) are re-exported through Next.js so the
+  public origin is the only reachable entry point.
+- **`cxops-worker`** — durable job consumer, no published port.
+- **Managed PostgreSQL** — 12 or newer, with the `vector` extension enabled by
+  the database owner (see `config/replit/deployment-env.yaml`).
 
-- **Migrations never run at a start command.** Both start scripts say so in a
-  comment; the test strips comments before checking, so the warning cannot
-  register as the defect it prevents.
-- **`autoDeploy: false`.** Otherwise new code deploys before the migration it
-  needs. Deploy in order: migrate, then deploy.
-- **No secret has a literal default.** Every credential is `sync: false`,
-  meaning the operator sets it in the dashboard. A shipped placeholder is a
-  silent outage, and a shipped *working* default is worse.
-- **The worker is never weaker than the web service.** It imports
+The environment contract is `config/replit/deployment-env.yaml`, and
+`tests/test_deployment_env_parity.py` fails the build if it drifts from what
+the application requires. (The previous Render blueprint is archived at
+`docs/archive/render.yaml` and is not authoritative.)
+
+Four properties are load-bearing:
+
+- **Migrations never run at a start command.** Every restart re-runs the start
+  command, so a migration there races itself. Migrate explicitly, then deploy.
+  The test strips comments before checking, so a warning naming the migration
+  step cannot register as the defect it prevents.
+- **No secret has a literal default.** Every credential is `secret: true` with
+  no `value`, meaning the operator sets it as a Replit Secret. A shipped
+  placeholder is a silent outage, and a shipped *working* default is worse.
+- **The worker is never weaker than the web deployment.** It imports
   `app.core.config`, whose production validation refuses to import without
   https public URLs, `AUTH_MODE=jwks` with a real JWKS URL,
   `AUTH_DEV_MODE=false`, and `ENCRYPTION_KEYS`. A missing one is a crash loop,
   not a degraded feature.
+- **`FORWARDED_ALLOW_IPS` defaults to `127.0.0.1`, never `*`.** The API is
+  bound to loopback and reached only by the local frontend, so a wildcard would
+  let anything able to open that socket dictate the scheme the app believes it
+  is served over.
 
-`FORWARDED_ALLOW_IPS` and `healthCheckPath` are web-only; the Zendesk OAuth
+`FORWARDED_ALLOW_IPS` and `INTERNAL_API_PORT` are web-only; the Zendesk OAuth
 variables are deliberately absent from the worker, which consumes jobs rather
 than running an OAuth client.
 
-`ipAllowList: []` keeps PostgreSQL internal-only, so a leaked `DATABASE_URL` is
-not reachable from the public internet. Keep it empty.
+The managed database is internal-only: only deployments on the same Replit
+account can open a socket, so a leaked `DATABASE_URL` is not reachable from the
+public internet. Do not open it up.
 
 ---
 
@@ -214,7 +229,9 @@ build, not from the runtime.
 
 Resolution order: `CXOPS_PUBLIC_SITE_URL` → `VERCEL_PROJECT_PRODUCTION_URL` →
 `VERCEL_URL` → `http://localhost:3000`. Trailing slashes are stripped so paths
-do not double up.
+do not double up. The `VERCEL_*` fallbacks are legacy: on Replit the value is a
+plain deployment environment variable, and `scripts/start_replit_web.sh` refuses
+to start without it precisely so this failure cannot reach production.
 
 ---
 
@@ -449,12 +466,13 @@ Stated plainly, because a runbook that hides these is worse than none.
   requires A1's sign-off; nothing enforces it.
 - **Deploy failures are silent if you only look at the live URL.** A service
   can keep serving an old build while every new commit fails to deploy, and
-  `/health` stays green either way. Check the deploy list, not the endpoint:
-  `render deploys list <service-id>`. A pilot must also confirm `/version`
+  `/health` stays green either way. Check the deployment history, not the
+  endpoint: on Replit, the deployment's version list. A pilot must also confirm
+  `/version`
   reports the commit it expects -- `/ready` and `/version` do not exist on
   pre-Phase-1P.3 builds, so a `404` there means the service is running stale
   code, not that the route is broken.
-- **Log retention is finite and short on the Render starter plan** (days, not
+- **Log retention is finite and short on a small Replit Reserved VM** (days, not
   months). A1's escalation trail has no durable home; export anything the pilot
   needs to keep before it ages out.
 

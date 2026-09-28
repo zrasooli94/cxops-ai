@@ -1,0 +1,284 @@
+# CXOps deployment environment contract (Phase 1P-Replit).
+#
+# The machine-readable statement of what each long-lived process needs. It is
+# vendor-neutral on purpose: nothing here names a hosting provider, because the
+# thing worth protecting is the *capability* - this process can serve https, it
+# has a reachable database, it can decrypt stored credentials - and that is
+# identical whichever platform supplies it.
+#
+# Replit delivers these as Replit Secrets on each deployment, or as a deployment
+# environment variable for a non-secret value. They are never committed, and
+# tests/test_deployment_env_parity.py fails the build if this file drifts from
+# what the application actually requires.
+#
+# Two processes, one contract each. The worker imports app.core.config, whose
+# production validation is process-wide: it refuses to import at all without
+# https public URLs, AUTH_MODE=jwks with a real JWKS URL, AUTH_DEV_MODE=false,
+# and ENCRYPTION_KEYS. A variable missing here is a crash loop, not a degraded
+# feature, so the worker's set is stated explicitly rather than inherited.
+
+contract_version: 1
+
+processes:
+
+  # ---------------------------------------------------------------------------
+  # Public web/API deployment (scripts/start_replit_web.sh)
+  # ---------------------------------------------------------------------------
+  cxops-web:
+    description: >-
+      Next.js frontend, public widget, and staff Control Center on the single
+      published port; FastAPI bound to loopback on an internal port.
+    required:
+      # --- Runtime posture ---
+      - name: ENVIRONMENT
+        value: production
+        reason: >-
+          Selects the production validators. Anything else serves development
+          defaults, which is how a misconfigured deploy used to look healthy
+          until a customer hit it.
+      - name: DEBUG
+        value: "false"
+        reason: >-
+          DEBUG=true returns stack traces and SQL in HTTP responses and writes
+          them to the deployment log. The pilot customer is a third party.
+      - name: PYTHONPATH
+        value: "."
+        reason: Makes `app` and `scripts` importable from the repository root.
+
+      # --- Database ---
+      - name: DATABASE_URL
+        secret: true
+        reason: >-
+          Managed PostgreSQL. Must not point at loopback or a private address in
+          production, and must request TLS when the database is off-platform.
+
+      # --- Public URLs: https is mandatory, the app refuses to boot otherwise ---
+      - name: FRONTEND_BASE_URL
+        secret: true
+        reason: >-
+          The public origin of the CXOps deployment. Tenant onboarding embeds
+          this origin in the widget snippet, so a wrong value ships a widget that
+          cannot load. Same value as CXOPS_PUBLIC_SITE_URL.
+      - name: BACKEND_PUBLIC_URL
+        secret: true
+        reason: >-
+          Public origin used to build absolute links in staff-visible messages.
+          On this topology it is the same origin as FRONTEND_BASE_URL, because
+          the browser only ever talks to the frontend's same-origin BFF.
+
+      # --- Frontend build-time ---
+      - name: CXOPS_PUBLIC_SITE_URL
+        secret: true
+        build_time: true
+        reason: >-
+          Inlined into the Next.js build by robots.ts, sitemap.ts, and static
+          metadata. Must be present *before* `npm run build`; a runtime-only value
+          produces a site that advertises http://localhost:3000 to every crawler.
+          Falls back to VERCEL_PROJECT_PRODUCTION_URL / VERCEL_URL when unset,
+          then to localhost, which is why the start script refuses to run without
+          it.
+      - name: BACKEND_API_URL
+        runtime_only: true
+        reason: >-
+          Read by the server-side BFF and Control Center modules. On this
+          topology it points at http://127.0.0.1:<INTERNAL_API_PORT> and never
+          leaves the machine, which is why it is not required to be https.
+
+      # --- Authentication: production requires JWKS, never dev/hs256 ---
+      - name: AUTH_MODE
+        value: jwks
+        reason: >-
+          Signing a production staff session with a shared HS256 secret means one
+          leaked secret forges any account, including an admin. JWKS keeps
+          verification separable from issuance.
+      - name: AUTH_JWKS_URL
+        secret: true
+        reason: >-
+          Where staff tokens are verified against. Unreachable or non-https,
+          and the app refuses to start rather than falling back to something
+          weaker.
+      - name: AUTH_JWT_AUDIENCE
+        secret: true
+        optional: true
+        reason: >-
+          Enables audience verification. Empty disables the check, so it is
+          reported rather than required.
+      - name: AUTH_JWT_ISSUER
+        secret: true
+        reason: >-
+          Pins which identity provider may issue a staff token. Without it a
+          token from any issuer that signs for the same key is accepted.
+      - name: AUTH_DEV_MODE
+        value: "false"
+        reason: Development auth must never be reachable in production.
+
+      # --- Credential protection and model access ---
+      - name: ENCRYPTION_KEYS
+        secret: true
+        reason: >-
+          Required in production. Without it every stored Zendesk/OAuth secret is
+          unprotected, and a database dump is a credential dump.
+      - name: OPENAI_API_KEY
+        secret: true
+        reason: The public widget cannot answer a message without it.
+
+      # --- Optional integrations: required only when the integration is enabled ---
+      - name: ZENDESK_WEBHOOK_SECRET
+        secret: true
+        optional: true
+        reason: >-
+          Verifies inbound Zendesk webhooks. Absent, the endpoint answers 503
+          rather than accepting unsigned calls -- complete while the integration
+          is off.
+      - name: ZENDESK_CLIENT_SECRET
+        secret: true
+        optional: true
+        reason: >-
+          The half of the Zendesk OAuth pair that must never be in a repo. Only
+          meaningful on the web deployment, which is the only one with an HTTP
+          client.
+      - name: ZENDESK_SUBDOMAIN
+        secret: true
+        optional: true
+        reason: Identifies the Zendesk account the integration writes to.
+      - name: ZENDESK_CLIENT_ID
+        secret: true
+        optional: true
+        reason: >-
+          Public half of the Zendesk OAuth pair. Still operator-supplied, because
+          the allowed redirect URI is derived from FRONTEND_BASE_URL and must be
+          registered against a real deployment.
+      - name: ZENDESK_REDIRECT_URI
+        secret: true
+        optional: true
+        reason: >-
+          Must match an exact redirect URI registered in Zendesk, or the OAuth
+          exchange is rejected by the provider.
+      - name: TICKET_EVENT_WEBHOOK_SECRET
+        secret: true
+        optional: true
+        reason: >-
+          Absent makes the ticket webhook endpoint answer 503 by design rather
+          than accepting unsigned calls. That is a complete configuration while
+          the integration is disabled.
+
+    optional_tuning:
+      - name: INTERNAL_API_PORT
+        default: "8000"
+      - name: FORWARDED_ALLOW_IPS
+        default: "127.0.0.1"
+        reason: >-
+          The API is bound to loopback and reached only by the frontend on the
+          same machine, so it must NOT be "*". A wildcard here would let any
+          source that can reach the socket forge X-Forwarded-Proto.
+      - name: KEEP_ALIVE_SECONDS
+        default: "30"
+      - name: PYTHON
+        default: python3
+      - name: FRONTEND_DIR
+        default: frontend
+
+  # ---------------------------------------------------------------------------
+  # Worker deployment (scripts/start_replit_worker.sh)
+  # ---------------------------------------------------------------------------
+  cxops-worker:
+    description: >-
+      Durable integration-job consumer. No published port; the Prometheus
+      listener on 9101 is reachable only from inside the deployment.
+    required:
+      - name: ENVIRONMENT
+        value: production
+        reason: >-
+          Selects the production validators. Anything else serves development
+          defaults, and a worker left there still claims jobs and still writes to
+          the database -- so it fails quietly instead of refusing to start.
+      - name: DEBUG
+        value: "false"
+        reason: >-
+          DEBUG=true returns stack traces and SQL in HTTP responses and writes
+          them to the deployment log. The pilot customer is a third party.
+      - name: PYTHONPATH
+        value: "."
+        reason: Makes `app` and `scripts` importable from the repository root.
+      - name: DATABASE_URL
+        secret: true
+        reason: >-
+          Managed PostgreSQL. Must not point at loopback or a private address in
+          production, and must request TLS when the database is off-platform.
+      - name: FRONTEND_BASE_URL
+        secret: true
+        reason: >-
+          Required even though the worker builds no links: Settings validates it
+          process-wide, so omitting it is a crash loop rather than a warning.
+      - name: BACKEND_PUBLIC_URL
+        secret: true
+        reason: Same reason as FRONTEND_BASE_URL.
+      - name: AUTH_MODE
+        value: jwks
+        reason: >-
+          The worker resolves live credentials for outbound Zendesk calls. A
+          misconfigured auth mode there surfaces as a failed job, not a rejected
+          login.
+      - name: AUTH_JWKS_URL
+        secret: true
+        reason: Same reason as on the web deployment; validated at import.
+      - name: AUTH_DEV_MODE
+        value: "false"
+        reason: Development auth must never be reachable in production.
+      - name: ENCRYPTION_KEYS
+        secret: true
+        reason: >-
+          The worker decrypts stored OAuth and webhook credentials. Without a
+          key it cannot read its own work, and with a default key the stored
+          secrets are not protected.
+      - name: OPENAI_API_KEY
+        secret: true
+        reason: >-
+          Summarisation and RAG answer generation run in the worker, not in the
+          request path, so a missing key shows up as stalled jobs.
+      - name: ZENDESK_WEBHOOK_SECRET
+        secret: true
+        optional: true
+        reason: >-
+          Verifies inbound Zendesk webhooks. Absent, the endpoint answers 503
+          rather than accepting unsigned calls.
+      - name: TICKET_EVENT_WEBHOOK_SECRET
+        secret: true
+        optional: true
+        reason: >-
+          Absent makes the ticket webhook endpoint answer 503 by design rather
+          than accepting unsigned calls.
+
+    optional_tuning:
+      - name: WORKER_METRICS_PORT
+        default: "9101"
+        reason: >-
+          Set to 0 to run without the Prometheus listener, for a platform that
+          forbids extra listeners. Default is on: a worker that claims no jobs is
+          otherwise indistinguishable from a dead one.
+      - name: PYTHON
+        default: python3
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+database:
+  engine: postgresql
+  minimum_major_version: 12
+  required_extensions:
+    - name: vector
+      required_by: >-
+        The knowledge_chunks.embedding column is VECTOR(1536) (app/models/
+        knowledge_chunk.py). The extension is created by the first RAG migration
+        (ceec6d2a6a89) with CREATE EXTENSION IF NOT EXISTS, which only succeeds
+        for a role with rights over the database. On a managed database the
+        application's own user frequently cannot create extensions, so the
+        database owner enables it once out of band.
+      manual_step: "CREATE EXTENSION IF NOT EXISTS vector;"
+  migrations:
+    # Never a start command. Every restart re-runs the start command, so a
+    # migration there races itself; see scripts/run_migrations.sh.
+    command: scripts/run_migrations.sh
+    frequency: once per schema change
+    verify: scripts/validate_production_config.py
+    expected_head: 1p4a0001
