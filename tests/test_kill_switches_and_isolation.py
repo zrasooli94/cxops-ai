@@ -24,10 +24,12 @@ from __future__ import annotations
 import hashlib
 import uuid
 
+import pytest
+from sqlalchemy import delete
+
 # Import the tool registry before the A1 service; see the note in
 # tests/test_a1_local_demo_wording.py for why that order is required.
 import app.tools.registry  # noqa: F401
-import pytest
 from app.integrations.a1_cash_for_cars.service import LOCAL_DEMO_TAG
 from app.models.organization import Organization
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
@@ -36,7 +38,6 @@ from app.services.public_chat_service import (
     PublicChatService,
     PublicChatWidgetDisabledError,
 )
-from sqlalchemy import delete
 
 
 async def _purge_orgs(db, org_ids):
@@ -470,8 +471,9 @@ def _a1_simulation_violation(action) -> str | None:
 @pytest.mark.asyncio
 async def test_every_succeeded_a1_action_is_tagged_local_demo(db):
     """No recorded A1 action may be mistakable for a real provider call."""
-    from app.models.business_action import BusinessAction
     from sqlalchemy import select
+
+    from app.models.business_action import BusinessAction
 
     rows = await db.execute(
         select(BusinessAction).where(BusinessAction.request_type.like("a1%")).limit(200)

@@ -130,18 +130,22 @@ def _customer_visible_strings() -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             for keyword in node.keywords:
-                if keyword.arg in ("customer_message", "summary") and isinstance(
-                    keyword.value, ast.Constant
+                if (
+                    keyword.arg in ("customer_message", "summary")
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
                 ):
-                    if isinstance(keyword.value.value, str):
-                        found.append(keyword.value.value)
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "messages" for t in node.targets
+                    found.append(keyword.value.value)
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "messages" for t in node.targets
+            )
+            and isinstance(node.value, ast.Dict)
         ):
-            if isinstance(node.value, ast.Dict):
-                for value in node.value.values:
-                    if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                        found.append(value.value)
+            for value in node.value.values:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    found.append(value.value)
     return found
 
 

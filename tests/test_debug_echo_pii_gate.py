@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import subprocess
 import types
 
 import pytest
 
 DATABASE_MODULE = pathlib.Path("app/core/database.py")
 VALIDATOR = pathlib.Path("scripts/validate_production_config.py")
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _database_source() -> str:
@@ -175,12 +177,15 @@ def test_generated_logs_are_gitignored() -> None:
     Checked against git itself rather than by parsing .gitignore, because
     parsing cannot resolve re-inclusion rules such as `!.gitkeep`.
     """
-    import subprocess
-
     probe = subprocess.run(
         ["git", "check-ignore", "-q", "some-generated.log"],
         capture_output=True,
-        cwd=pathlib.Path(__file__).resolve().parents[1],
+        cwd=REPO_ROOT,
+        # check=False is required, not sloppiness: `git check-ignore` exits 1 to
+        # mean "not ignored", which is precisely the failure this test reports.
+        # check=True would raise CalledProcessError and abort before the
+        # assertion below could explain what is wrong.
+        check=False,
     )
     assert probe.returncode == 0, (
         "*.log is not gitignored; a locally generated log can capture customer "
@@ -190,14 +195,14 @@ def test_generated_logs_are_gitignored() -> None:
 
 def test_gitignore_keeps_a_path_for_placeholder_logs() -> None:
     """The blanket *.log rule must not block a tracked placeholder."""
-    import subprocess
-
-    root = pathlib.Path(__file__).resolve().parents[1]
     untracked = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard"],
         capture_output=True,
         text=True,
-        cwd=root,
+        cwd=REPO_ROOT,
+        # check=True: a failed git call must not read as "no untracked logs",
+        # which would turn a broken invocation into a passing test.
+        check=True,
     ).stdout.split()
 
     assert not any(name.endswith(".log") for name in untracked), (
@@ -208,13 +213,12 @@ def test_gitignore_keeps_a_path_for_placeholder_logs() -> None:
 
 def test_no_log_file_is_currently_tracked() -> None:
     """A log committed before the ignore rule existed is still on disk."""
-    import subprocess
-
     tracked = subprocess.run(
         ["git", "ls-files", "*.log"],
         capture_output=True,
         text=True,
-        cwd=pathlib.Path(__file__).resolve().parents[1],
+        cwd=REPO_ROOT,
+        check=True,
     ).stdout.split()
 
     assert not tracked, (

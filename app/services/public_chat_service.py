@@ -22,7 +22,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -39,6 +39,7 @@ from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.public_chat_repository import PublicChatRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.services.agent_workflow_service import agent_workflow_service
+from app.services.business_integration_service import BusinessIntegrationService
 from app.services.conversation_ingestion_service import ConversationIngestionService
 from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
 from app.services.ticket_routing_service import TicketRoutingService
@@ -153,14 +154,16 @@ class PublicChatService:
         local-demo business provider.
         """
         try:
-            from app.services.business_integration_service import (
-                BusinessIntegrationService,
-            )
-
             rows = await BusinessIntegrationService.list_configs(
                 db, organization_id
             )
-        except Exception:  # pragma: no cover - defensive
+        except SQLAlchemyError:  # pragma: no cover - defensive
+            # A database failure must not surface as a customer-facing error, so
+            # fall back to the generic text. Logged because the fallback is
+            # silent to the operator otherwise: without this, a DB blip silently
+            # promises human review to a local-demo tenant, which is the exact
+            # false promise this method exists to avoid.
+            log.exception("public_chat_handoff_provider_lookup_failed")
             return HANDOFF_REPLY
 
         for row in rows:

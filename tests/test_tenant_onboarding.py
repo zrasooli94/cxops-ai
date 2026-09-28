@@ -22,7 +22,6 @@ other tenant working.
 import asyncio
 import copy
 import os
-import secrets
 import uuid
 from pathlib import Path
 
@@ -59,8 +58,8 @@ from app.tenant_onboarding import (
     build_plan,
     load_manifest_file,
     parse_manifest,
+    planner,
 )
-from app.tenant_onboarding import planner
 from app.tenant_onboarding.manifest import SecretMaterialError
 from app.tenant_onboarding.planner import (
     ACTION_CREATE,
@@ -947,7 +946,9 @@ async def test_multiple_widget_rows_are_reported_as_error(db, monkeypatch):
     """
     slug = _unique_slug()
     manifest = parse_manifest(_manifest_document(tenant=_tenant_block(slug)))
-    result, _ = await _onboard(db, manifest)
+    # Onboard for the side effect only; this test asserts on the plan built
+    # after the duplicate detector is patched in, so neither return value is read.
+    _, _ = await _onboard(db, manifest)
 
     async def _legacy_two_rows(_db, organization_id):
         return (None, 2)

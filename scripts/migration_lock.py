@@ -20,8 +20,9 @@ import sys
 import time
 
 import asyncpg
-from alembic import command
 from alembic.config import Config
+
+from alembic import command
 
 # Arbitrary fixed key shared by every migrator of this application. Changing it
 # would let a new process bypass the lock held by an in-flight old one.

@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-import migration_lock  # noqa: E402
+import migration_lock
 
 
 def _dsn() -> str:

@@ -156,7 +156,6 @@ def test_secret_values_are_never_echoed(name: str) -> None:
 
 def test_no_config_line_contains_an_opaque_value() -> None:
     """Broad sweep: every config line is a presence note, nothing more."""
-    import os
 
     results: list[str] = []
     readiness.check_config(results)
@@ -180,7 +179,6 @@ def test_production_escalates_a_missing_required_secret(monkeypatch) -> None:
     that is exactly the mistake this gate exists to catch, and reporting it as
     an informational note lets the operator walk straight past it.
     """
-    import pydantic
 
     class _Settings:
         environment = "production"

@@ -359,7 +359,7 @@ def test_duplicate_precheck_reports_every_offending_tenant():
         engine.dispose()
 
 
-def _constraint_is_present(engine) -> bool:  # noqa: ANN001
+def _constraint_is_present(engine) -> bool:
     with engine.connect() as conn:
         return (
             conn.execute(
@@ -388,7 +388,6 @@ def test_precheck_rolls_back_cleanly_and_the_constraint_survives():
             _make_duplicate_configs(conn, count=2)
             raise _Rollback
     except _Rollback:
-        pass
 
         with engine.connect() as conn:
             duplicates = migration._find_duplicate_organizations(conn)
@@ -420,21 +419,21 @@ class _RecordingOps:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple]] = []
 
-    def get_bind(self):  # noqa: ANN201
+    def get_bind(self):
         # The precheck is monkeypatched in these tests, so the connection it
         # would receive is never touched.
         return None
 
-    def create_unique_constraint(self, name, table, columns, **kwargs):  # noqa: ANN001
+    def create_unique_constraint(self, name, table, columns, **kwargs):
         self.calls.append(("create_unique_constraint", (name, table, tuple(columns))))
 
-    def drop_index(self, name, table_name=None, **kwargs):  # noqa: ANN001
+    def drop_index(self, name, table_name=None, **kwargs):
         self.calls.append(("drop_index", (name, table_name)))
 
-    def create_index(self, name, table_name, columns, **kwargs):  # noqa: ANN001
+    def create_index(self, name, table_name, columns, **kwargs):
         self.calls.append(("create_index", (name, table_name, tuple(columns))))
 
-    def drop_constraint(self, name, table_name, **kwargs):  # noqa: ANN001
+    def drop_constraint(self, name, table_name, **kwargs):
         self.calls.append(("drop_constraint", (name, table_name)))
 
 
@@ -540,8 +539,10 @@ def test_foreign_origins_are_rejected_by_exact_match(origin):
     the standard way an attacker gets a third-party site to serve somebody
     else's widget.
     """
-    from app.services.public_chat_service import PublicChatOriginNotAllowedError
-    from app.services.public_chat_service import PublicChatService
+    from app.services.public_chat_service import (
+        PublicChatOriginNotAllowedError,
+        PublicChatService,
+    )
 
     allowed = [A1_APEX, A1_WWW]
     configuration = type(
@@ -764,7 +765,7 @@ def _fake_alembic(
     """
     import subprocess
 
-    def fake_run(cmd, *args, **kwargs):  # noqa: ANN001
+    def fake_run(cmd, *args, **kwargs):
         target = "current" if "current" in cmd else "heads"
         text_out = current if target == "current" else heads
         return subprocess.CompletedProcess(cmd, code, stdout=text_out, stderr="")
