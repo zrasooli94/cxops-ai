@@ -4,12 +4,14 @@ Planning is read-only and re-runnable. Applying re-validates every precondition
 inside its own transaction, so a plan built minutes ago against a changed
 database fails loudly instead of writing something the operator never reviewed.
 
-One schema quirk is handled explicitly rather than papered over:
-``public_chat_configurations.organization_id`` carries a *non-unique* index (the
-row is a widget record, and the uniqueness the model does enforce is on the
-key hash). A manifest declares exactly one widget per tenant, so a tenant that
-somehow has several widget rows is reported as ``ERROR`` instead of the tool
-silently picking one and leaving the others enabled.
+Legacy databases are still handled explicitly rather than papered over. Until
+Phase 1P.4, ``public_chat_configurations.organization_id`` carried a *non-unique*
+index, so a tenant could end up with several widget rows; migration ``1p4a0001``
+now enforces one widget row per tenant with a unique constraint and refuses to
+upgrade a database that already has duplicates. A manifest declares exactly one
+widget per tenant, so the multi-row detector below is retained for any database
+that has not yet been migrated: such a tenant is reported as ``ERROR`` instead of
+the tool silently picking one and leaving the others enabled.
 """
 
 from __future__ import annotations
@@ -250,6 +252,13 @@ def _integration_diff(
         existing_mode = (existing.config_json or {}).get("provider_mode")
         if existing_mode != desired.provider_mode:
             changed.append("provider_mode")
+    # Compare the same shape the apply path writes. ``_apply_business_integration``
+    # folds provider_mode into config_json, so diffing the raw manifest config
+    # against the stored column would always differ by that one key and report a
+    # config UPDATE on every run -- making a no-op re-onboard look like a change
+    # and hiding real edits behind permanent noise.
+    if desired.provider_mode:
+        desired_config["provider_mode"] = desired.provider_mode
     if desired_config and (existing.config_json or {}) != desired_config:
         changed.append("config")
     if not changed:

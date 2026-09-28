@@ -660,14 +660,25 @@ async def test_integration_toggle_is_tenant_scoped(db, client):
     )
 
     assert response.status_code in (403, 404), response.text
+
+    # Scoped to the two tenants this test created. Asserting over every
+    # a1_cash_for_cars row in the table also passed vacuously on an empty
+    # namespace and failed for an unrelated tenant that had legitimately
+    # disabled the provider, so it tested the shared database rather than the
+    # cross-tenant guarantee. The invariant under test is that the caller's
+    # tenant mismatch leaves both tenants untouched.
     rows = (
         await db.execute(
             select(BusinessIntegrationConfiguration).where(
-                BusinessIntegrationConfiguration.provider == "a1_cash_for_cars"
+                BusinessIntegrationConfiguration.provider == "a1_cash_for_cars",
+                BusinessIntegrationConfiguration.organization_id.in_(
+                    [org_a.id, org_b.id]
+                ),
             )
         )
     ).scalars().all()
-    assert all(row.enabled for row in rows)
+    assert len(rows) == 2, [r.organization_id for r in rows]
+    assert all(row.enabled for row in rows), [(r.organization_id, r.enabled) for r in rows]
 
 
 # ----------------------------------------------------------------------

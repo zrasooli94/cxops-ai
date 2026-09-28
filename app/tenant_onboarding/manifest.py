@@ -117,8 +117,36 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 _PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _PROVIDER_MODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _SOURCE_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_PILOT_STATES = frozenset({"disabled", "local_demo", "staging", "production"})
+# Pilot posture markers. Their meaning to a reviewer, from inert to live:
+#
+#   disabled    no widget, no providers - a template or an off tenant
+#   staging     internal only, not customer-reachable
+#   local_demo  customer-reachable, but every business action is simulated
+#   pilot       customer-reachable live pilot whose business actions are still
+#               simulated. Distinct from local_demo in intent only: local_demo
+#               reads as "this is a demo", pilot reads as "this is a real
+#               customer trial". Neither permits a real provider.
+#   production  a real provider is wired and performs real actions
+#
+# "pilot" exists because a live trial with simulated business actions is neither
+# a demo nor production, and calling it either misleads an operator. The
+# distinction matters for review, not for runtime: _NON_PRODUCTION_STATES below
+# is what the enforcement actually keys off, so both labels get the same
+# protection.
+_PILOT_STATES = frozenset({"disabled", "local_demo", "staging", "pilot", "production"})
+
+# States that may NOT carry a non-local_demo provider_mode.
+_NON_PRODUCTION_STATES = frozenset({"local_demo", "pilot", "staging", "disabled"})
+
 _KNOWN_PROVIDER_MODES = frozenset({"local_demo"})
+
+# "production" asserts that a real provider performs real actions. The reverse
+# pairing -- claiming production while every business action is still simulated
+# -- is the exact failure this build must make impossible, so it is rejected
+# rather than left to reviewer vigilance. Today no live provider mode exists, so
+# "production" is not declarable at all: that is the honest state of the system,
+# and the loader says so instead of accepting a label it cannot honour.
+_PRODUCTION_STATE = "production"
 
 
 class ManifestError(ValueError):
@@ -805,14 +833,34 @@ def parse_manifest(
     knowledge = _parse_knowledge(document.get("knowledge"), "manifest.knowledge", validator)
     pilot = _parse_pilot(document.get("pilot"), "manifest.pilot", validator)
 
-    if pilot is not None and pilot.state == "local_demo":
+    if pilot is not None and pilot.state in _NON_PRODUCTION_STATES:
         for integration in business_integrations:
             if integration.provider_mode != "local_demo":
                 validator.add(
                     "manifest.pilot.state",
-                    f"declares local_demo but business_integrations[{integration.provider}]"
-                    f".provider_mode is {integration.provider_mode!r}",
+                    f"declares {pilot.state!r} (a non-production posture) but "
+                    f"business_integrations[{integration.provider}]"
+                    f".provider_mode is {integration.provider_mode!r}; "
+                    "simulated business actions cannot be declared alongside a "
+                    "posture that implies real ones",
                 )
+
+    if pilot is not None and pilot.state == _PRODUCTION_STATE:
+        simulated = [
+            integration.provider
+            for integration in business_integrations
+            if integration.provider_mode == "local_demo"
+        ]
+        if simulated:
+            validator.add(
+                "manifest.pilot.state",
+                f"declares {_PRODUCTION_STATE!r}, which asserts a real provider "
+                f"performing real actions, but "
+                + ", ".join(f"business_integrations[{p}]" for p in sorted(simulated))
+                + ".provider_mode is 'local_demo'; labelling simulated operations "
+                "as production is the one mistake this loader must not permit. "
+                "Use pilot.state: pilot until a real provider mode ships.",
+            )
 
     validator.error()
 

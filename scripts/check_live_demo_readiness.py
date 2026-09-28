@@ -55,6 +55,18 @@ SENSITIVE_CONFIG_KEYS = {
     "openai_api_key",
 }
 
+# In production these must be present. Settings already rejects several of them
+# at construction time, but the ones it permits as optional (a webhook secret for
+# an integration that is switched off, for example) would otherwise be reported
+# as an innocuous "note" by a script whose whole job is to block a launch. A
+# "note" that cannot block anything is not a check.
+REQUIRED_IN_PRODUCTION = {
+    "database_url",
+    "auth_jwks_url",
+    "encryption_keys",
+    "openai_api_key",
+}
+
 
 def _http_json(url: str, timeout: float) -> tuple[int, dict]:
     request = urllib.request.Request(url, method="GET")
@@ -182,11 +194,20 @@ def check_config(results: list[str]) -> bool:
     environment = cfg.environment
     results.append(f"ok    backend settings valid (environment={environment})")
 
+    production = environment == "production"
+    missing_required = False
     for key in sorted(SENSITIVE_CONFIG_KEYS):
         value = getattr(cfg, key, "")
-        results.append(f"note  {key}: {'present' if value else 'absent'}")
+        if not value and production and key in REQUIRED_IN_PRODUCTION:
+            results.append(f"FAIL  {key}: required in production but absent")
+            missing_required = True
+        else:
+            results.append(f"note  {key}: {'present' if value else 'absent'}")
 
-    return True
+    # A recorded FAIL has to fail the check. Returning True here let the script
+    # print FAIL lines and still report a clean run, so a missing production
+    # secret was easy to miss when scanning the output.
+    return not missing_required
 
 
 def check_alembic(results: list[str]) -> bool:
@@ -222,26 +243,56 @@ def check_alembic(results: list[str]) -> bool:
     # Parse the revision ids out of the (single-line or multi-line) current
     # output. "alembic current" prints one revision per line; "(head)" marks the
     # latest applied migration. Only compare creation, never run an upgrade.
-    # Alembic INFO/context log lines are ignored: revision ids here are hex.
-    current_ids = {
-        line.split()[0]
-        for line in current.splitlines()
-        if line.strip() and line.split()[0].strip("()").isalnum()
-        and all(c in "0123456789abcdefABCDEF" for c in line.split()[0].strip("()"))
-    }
-    head_ids = {
-        line.split()[0]
-        for line in heads.splitlines()
-        if line.strip() and line.split()[0].strip("()").isalnum()
-        and all(c in "0123456789abcdefABCDEF" for c in line.split()[0].strip("()"))
-    }
+    # Alembic INFO/context log lines are ignored.
+    #
+    # Revision ids are NOT hex. This repository's alembic file_template
+    # produces ids like "1p4a0001", which contain a letter outside [0-9a-f], so
+    # a hex-only filter discards every real revision and reports "(none)". That
+    # failure was silent: the checks below compare two empty sets, find no gap,
+    # and return success. An unparseable migration state must fail, not pass.
+    def revision_ids(output: str) -> set[str]:
+        ids: set[str] = set()
+        for line in output.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.split()
+            token = parts[0].strip("()")
+            if not token:
+                continue
+            if not all(c.isalnum() or c == "_" for c in token) or token.isdigit():
+                continue
+            # "alembic current"/"heads" print a bare revision id, optionally
+            # followed by "(head)". Nothing else. Requiring that exact shape is
+            # what keeps the INFO handler's own log lines -- which begin with a
+            # bare "INFO" token and pass an alphanumeric test -- out of the set.
+            remainder = " ".join(parts[1:])
+            if remainder and not remainder.startswith("(head"):
+                continue
+            ids.add(token)
+        return ids
+
+    current_ids = revision_ids(current)
+    head_ids = revision_ids(heads)
+
+    if not head_ids:
+        results.append(
+            "FAIL  could not parse any repository head from 'alembic heads' "
+            f"output: {(heads or '(empty)')[:200]}"
+        )
+        return False
+    if not current_ids:
+        results.append(
+            "FAIL  could not parse any applied revision from 'alembic current' "
+            f"output: {(current or '(empty)')[:200]}"
+        )
+        return False
 
     results.append(
         f"ok    alembic current: {', '.join(sorted(current_ids)) or '(none)'}"
     )
     results.append(f"ok    alembic heads:  {', '.join(sorted(head_ids)) or '(none)'}")
 
-    applied = current_ids & head_ids
     missing = head_ids - current_ids
     if missing:
         results.append(
@@ -249,8 +300,7 @@ def check_alembic(results: list[str]) -> bool:
             "(run 'alembic upgrade head' outside this check)"
         )
         return False
-    if applied == head_ids and head_ids:
-        results.append("ok    migrations at head")
+    results.append("ok    migrations at head")
     return True
 
 

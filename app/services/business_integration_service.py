@@ -47,6 +47,24 @@ class BusinessIntegrationService:
         return core | provider_tools
 
     @staticmethod
+    async def list_configs(
+        db: AsyncSession,
+        organization_id: int,
+    ) -> list[BusinessIntegrationConfiguration]:
+        """Every provider configuration row for an organization.
+
+        Callers that need to know how a provider is wired (rather than merely
+        whether its tools are offered) read ``config_json`` from here instead of
+        querying this table themselves, so provider scoping stays in one place.
+        """
+        result = await db.execute(
+            select(BusinessIntegrationConfiguration).where(
+                BusinessIntegrationConfiguration.organization_id == organization_id,
+            )
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def get_config(
         db: AsyncSession,
         organization_id: int,

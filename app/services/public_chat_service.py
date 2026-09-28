@@ -59,6 +59,17 @@ TICKET_PLACEHOLDER_SUBJECT = "Web chat started"
 HANDOFF_REPLY = "A support team member needs to review this request."
 FALLBACK_REPLY = "Your request has been received by the CXOps team."
 
+# Handoff text for a tenant whose business provider runs in local-demo mode.
+# A local-demo tenant has no humans reviewing anything: nothing is dispatched to
+# A1, so promising a person will look at the request is as false as promising a
+# quote. The A1 adapter's wording contract states plainly that no human reviews
+# these requests during the pilot, and the widget must not contradict it. This
+# copy describes only the one real effect -- the system recorded the request.
+LOCAL_DEMO_HANDOFF_REPLY = (
+    "This request has been recorded by the CXOps pilot. No one has been "
+    "contacted, and no booking, quote, offer, or valuation has been made."
+)
+
 # Decisions that never touch a customer-facing tool. When one of these
 # completes there is nothing to escalate to staff, so the widget shows the
 # fixed fallback instead of a handoff. Every other action is handoff-only.
@@ -127,6 +138,36 @@ class PublicChatService:
     @staticmethod
     def generate_session_token() -> str:
         return secrets.token_urlsafe(settings.public_chat_session_token_entropy_bytes)
+
+    @classmethod
+    async def handoff_reply_for(
+        cls,
+        db: AsyncSession,
+        organization_id: int,
+    ) -> str:
+        """Return the handoff text this tenant's configuration permits.
+
+        A local-demo provider dispatches nothing, so telling the customer a
+        person will review the request would be a false promise. Default to the
+        generic text and only narrow it when the tenant actually declares a
+        local-demo business provider.
+        """
+        try:
+            from app.services.business_integration_service import (
+                BusinessIntegrationService,
+            )
+
+            rows = await BusinessIntegrationService.list_configs(
+                db, organization_id
+            )
+        except Exception:  # pragma: no cover - defensive
+            return HANDOFF_REPLY
+
+        for row in rows:
+            mode = (row.config_json or {}).get("provider_mode")
+            if mode == "local_demo":
+                return LOCAL_DEMO_HANDOFF_REPLY
+        return HANDOFF_REPLY
 
     @staticmethod
     async def resolve_config(
@@ -469,11 +510,14 @@ class PublicChatService:
                 dedupe_key=f"{DEDUPE_REPLY_PREFIX}{client_message_id}",
             )
             if reply is not None:
+                handoff_text = await cls.handoff_reply_for(
+                    db, session.organization_id
+                )
                 return {
                     "message_id": inbound.id,
                     "reply": reply.body,
                     "status": session.status,
-                    "handoff": reply.body == HANDOFF_REPLY,
+                    "handoff": reply.body == handoff_text,
                 }
             raise PublicChatMessageInFlightError(
                 "This message is still being processed."
@@ -534,7 +578,7 @@ class PublicChatService:
         )
         if run is None or run.action not in SAFE_AUTOREPLY_ACTIONS:
             handoff = True
-            reply_text = HANDOFF_REPLY
+            reply_text = await cls.handoff_reply_for(db, organization_id)
 
         if handoff and session.status == "ai_active":
             session = await PublicChatRepository.update_session_for_tenant(
@@ -612,7 +656,10 @@ class PublicChatService:
                 changes={"status": "human_requested"},
                 organization_id=session.organization_id,
             )
-        return {"status": session.status, "reply": HANDOFF_REPLY}
+        return {
+            "status": session.status,
+            "reply": await cls.handoff_reply_for(db, session.organization_id),
+        }
 
     @staticmethod
     async def close_session(

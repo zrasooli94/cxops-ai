@@ -5,6 +5,27 @@ deterministic LOCAL DEMO provider. Every result is tagged
 ``"provider": LOCAL_DEMO_TAG`` and availability follows a fixed local schedule,
 so simulated business data can never be mistaken for a live provider call. The
 adapter never computes pricing — quote status only reports a bounded stage.
+
+Customer-visible wording contract
+---------------------------------
+Because nothing is sent to A1, no customer-visible message may assert an
+external state that no system established. A tagged ``metadata.provider`` is a
+developer affordance; a customer never sees it, so the message itself is the
+only thing standing between a local demo and a false promise to a real person.
+
+Every ``customer_message`` here therefore describes only the one thing that
+genuinely happened — this system recorded a request locally — and never states
+that a person was contacted or that a booking, quote, offer, valuation, or hold
+exists. No human reviews these requests during the pilot.
+Concretely, the pilot must not say "your pickup is scheduled", "we'll hold that
+slot", "an offer is ready", "your vehicle is valued", or "payment completed".
+The same rule applies to ``summary``, which is staff-facing but is read during a
+live pilot and copied into tickets.
+
+``tests/test_a1_local_demo_wording.py`` pins this: it exercises every tool and
+fails on any completion-style phrasing. A real provider integration landing later
+is the one legitimate reason to relax it, and it must relax these strings
+deliberately rather than by drift.
 """
 
 from __future__ import annotations
@@ -122,8 +143,9 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
             ),
             customer_visible=True,
             customer_message=(
-                "Your vehicle listing request has been received. A team member "
-                "will reach out to arrange photos and your quote."
+                "Your vehicle listing request has been recorded for this "
+                "pilot. No one has been contacted and no quote has been "
+                "prepared yet."
             ),
             reference_id=reference_id,
             metadata={
@@ -160,8 +182,8 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
             summary=f"Vehicle details updated for lead {args.reference_id}.",
             customer_visible=True,
             customer_message=(
-                "Your vehicle details have been updated and will be used for "
-                "the next quote."
+                "Your vehicle details have been updated and saved for this "
+                "pilot. No one has reviewed them yet."
             ),
             reference_id=lead.reference_id,
             metadata={"provider": LOCAL_DEMO_TAG},
@@ -191,12 +213,13 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
         return ToolExecutionResult(
             status=ACTION_STATUS_COMPLETED,
             summary=(
-                f"Photo request submitted for lead {args.reference_id}."
+                f"Photo request recorded for lead {args.reference_id}; "
+                f"nothing was sent to A1."
             ),
             customer_visible=True,
             customer_message=(
-                "A request for vehicle photos has been submitted on your behalf. "
-                "You can add photos anytime in the chat."
+                "Your request for vehicle photos has been recorded for this "
+                "pilot. No photos were requested from anyone."
             ),
             reference_id=lead.reference_id,
             metadata={"provider": LOCAL_DEMO_TAG},
@@ -220,23 +243,34 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
             raise BusinessToolExecutionError(_lead_error_message(args.reference_id))
 
         stage = _stage_for_lead(lead)
+        # local_demo wording contract: these describe only what this system
+        # actually did - it recorded a request and looked up a row. They never
+        # assert that a quote exists, that anyone is preparing one, or that an
+        # offer has been made, because no A1 backend and no human is on the other
+        # end during the pilot. See the module docstring and
+        # tests/test_a1_local_demo_wording.py.
         messages = {
             "quote_pending": (
-                "Your quote is being prepared by our team and will be shared "
-                "shortly."
+                "Your request has been recorded for this pilot. No one has "
+                "been contacted, and no quote has been prepared."
             ),
             "quote_in_preparation": (
-                "We're updating your quote with the latest vehicle details."
+                "Your request has been recorded for this pilot. No one has "
+                "been contacted, and no quote has been prepared."
             ),
             "offer_available": (
-                "An offer is ready for your vehicle. A team member will share "
-                "the next steps."
+                "Your request has been recorded for this pilot. No one has "
+                "been contacted, and no offer has been made."
             ),
         }
 
         return ToolExecutionResult(
             status=ACTION_STATUS_COMPLETED,
-            summary=f"Quote status for lead {args.reference_id}: {stage}.",
+            summary=(
+                f"Quote lookup for lead {args.reference_id}: internal stage "
+                f"{stage!r}, from the local_demo schedule. No quote or offer "
+                f"exists."
+            ),
             customer_visible=True,
             customer_message=messages[stage],
             reference_id=lead.reference_id,
@@ -283,13 +317,14 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
         return ToolExecutionResult(
             status=ACTION_STATUS_COMPLETED,
             summary=(
-                f"Pickup available on {found.isoformat()} "
-                f"({windows[0]} slot)."
+                f"Typical pickup window {found.isoformat()} "
+                f"({windows[0]}) from the local_demo schedule; nothing held."
             ),
             customer_visible=True,
             customer_message=(
-                f"Pickup is available on {found.isoformat()} in the "
-                f"{windows[0]} slot. We'll hold that slot for you."
+                f"Based on our standard pickup pattern, {found.isoformat()} "
+                f"({windows[0]}) is a typical window. Nothing has been held and "
+                f"no one has been contacted."
             ),
             metadata={
                 "provider": LOCAL_DEMO_TAG,
@@ -330,14 +365,20 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
         return ToolExecutionResult(
             status=ACTION_STATUS_COMPLETED,
             summary=(
-                f"Pickup scheduled for {args.preferred_date.isoformat()} "
-                f"({args.preferred_window})."
+                f"Pickup REQUESTED for {args.preferred_date.isoformat()} "
+                f"({args.preferred_window}) - not booked, pending human review."
             ),
             customer_visible=True,
+            # The critical wording rule for local_demo: this records a request,
+            # it does not book anything. No A1 backend receives this request, so
+            # saying "your pickup is scheduled" would tell a customer a vehicle
+            # is coming when nothing was ever arranged. "scheduled" is also
+            # self-contradicting here, since the same sentence defers to a human.
             customer_message=(
-                f"Your pickup is scheduled for {args.preferred_date.isoformat()} "
-                f"in the {args.preferred_window} slot at {args.pickup_address}. "
-                f"A team member will confirm shortly."
+                f"Your pickup request for {args.preferred_date.isoformat()} "
+                f"({args.preferred_window}) has been recorded for this pilot. "
+                f"Nothing was submitted to A1 and no one has been contacted, so "
+                f"this is not a confirmed booking."
             ),
             reference_id=reference_id,
             metadata={

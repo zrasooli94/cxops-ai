@@ -20,6 +20,7 @@ other tenant working.
 """
 
 import asyncio
+import copy
 import os
 import secrets
 import uuid
@@ -59,6 +60,7 @@ from app.tenant_onboarding import (
     load_manifest_file,
     parse_manifest,
 )
+from app.tenant_onboarding import planner
 from app.tenant_onboarding.manifest import SecretMaterialError
 from app.tenant_onboarding.planner import (
     ACTION_CREATE,
@@ -166,12 +168,17 @@ def test_shipped_a1_manifest_is_valid():
     assert manifest.slug == "a1-cash-for-cars"
     assert manifest.public_chat is not None
     assert manifest.public_chat.enabled is True
-    assert manifest.public_chat.allowed_origins == ("https://www.a1cashforcars.example",)
+    # A1's real production origins. Ordered apex-first, matched byte-for-byte
+    # by the origin validator; the retired *.example placeholder must not return.
+    assert manifest.public_chat.allowed_origins == (
+        "https://a1cashforcars.com.au",
+        "https://www.a1cashforcars.com.au",
+    )
     # A branding token is not a credential and must survive the secret scan.
     assert manifest.public_chat.theme_token == "a1-dark"
     assert [i.provider for i in manifest.business_integrations] == [PROVIDER_A1]
     assert manifest.business_integrations[0].provider_mode == "local_demo"
-    assert manifest.pilot is not None and manifest.pilot.state == "local_demo"
+    assert manifest.pilot is not None and manifest.pilot.state == "pilot"
     assert [d.source_id for d in manifest.knowledge] == [
         "a1-pilot-overview",
         "a1-pilot-required-documents",
@@ -434,18 +441,16 @@ async def test_build_plan_does_not_write(db):
 async def test_dry_run_mints_no_key(db):
     slug = _unique_slug()
     manifest = parse_manifest(_manifest_document(tenant=_tenant_block(slug)))
+    rows_before = await db.execute(select(PublicChatConfiguration))
+    before = len(rows_before.all())
     plan = await build_plan(db, manifest)
 
     # The plan knows a key *will* be created, but has not produced one.
     assert plan.mints_widget_key is True
     assert not hasattr(plan, "public_widget_key")
 
-    count = await db.execute(
-        select(PublicChatConfiguration).where(
-            PublicChatConfiguration.organization_id.is_not(None)
-        )
-    )
-    assert len(count.all()) == 0, "a dry run must not create a widget row"
+    rows = await db.execute(select(PublicChatConfiguration))
+    assert len(rows.all()) == before, "a dry run must not create a widget row"
 
 
 # ----------------------------------------------------------------------
@@ -930,23 +935,26 @@ async def test_onboarding_does_not_touch_unrelated_tenants_knowledge(db):
 
 
 @pytest.mark.asyncio
-async def test_multiple_widget_rows_are_reported_as_error(db):
+async def test_multiple_widget_rows_are_reported_as_error(db, monkeypatch):
+    """A legacy multi-row tenant is reported, never silently resolved.
+
+    Phase 1P.4 migration ``1p4a0001`` makes this state unrepresentable in a
+    migrated database: the unique constraint rejects the second row and the
+    migration's own precheck refuses to upgrade a database that already holds
+    duplicates. The detector therefore survives only for a database that has
+    not been migrated yet, and is simulated here rather than by writing an
+    illegal row.
+    """
     slug = _unique_slug()
     manifest = parse_manifest(_manifest_document(tenant=_tenant_block(slug)))
     result, _ = await _onboard(db, manifest)
 
-    # The schema permits several widget rows per tenant; a manifest declares one.
-    db.add(
-        PublicChatConfiguration(
-            organization_id=result.organization_id,
-            public_widget_key_hash=hash_digest(f"{WIDGET_KEY_PREFIX}{secrets.token_hex(20)}"),
-            display_name="Duplicate",
-            welcome_message="Hi",
-            allowed_origins=[],
-            enabled=True,
-        )
+    async def _legacy_two_rows(_db, organization_id):
+        return (None, 2)
+
+    monkeypatch.setattr(
+        planner, "resolve_canonical_public_chat_config", _legacy_two_rows
     )
-    await db.commit()
 
     plan = await build_plan(db, manifest)
     action = next(a for a in plan.actions if a.target == "public_chat")
@@ -994,3 +1002,48 @@ async def test_business_integration_row_is_created_with_the_tenant(db):
     ).scalars().all()
     assert [row.provider for row in rows] == [PROVIDER_A1]
     assert rows[0].enabled is True
+
+
+@pytest.mark.asyncio
+async def test_reapplying_an_unchanged_manifest_is_a_pure_no_op(db):
+    """A second apply must report UNCHANGED for every action, including config.
+
+    Regression: the apply path folds ``provider_mode`` into ``config_json`` but
+    the diff path compared the raw manifest config against the stored column.
+    The stored value therefore always carried one extra key, so every re-run
+    reported ``UPDATE ... fields=config`` and rewrote the row. An operator could
+    not tell a real config edit from this permanent noise, which defeats the
+    purpose of a re-runnable plan.
+    """
+    slug = _unique_slug()
+    manifest = parse_manifest(_manifest_document(tenant=_tenant_block(slug)))
+
+    first = await build_plan(db, manifest)
+    await apply_plan(db, manifest, first)
+
+    second = await build_plan(db, manifest)
+
+    assert second.is_noop, [
+        (a.target, a.action, a.fields) for a in second.actions if a.action != ACTION_UNCHANGED
+    ]
+    assert not second.has_errors
+    assert all(a.action == ACTION_UNCHANGED for a in second.actions), [
+        (a.target, a.action, a.fields) for a in second.actions
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_real_config_edit_is_still_reported_as_an_update(db):
+    """The no-op fix must not blind the planner to genuine drift."""
+    slug = _unique_slug()
+    manifest = parse_manifest(_manifest_document(tenant=_tenant_block(slug)))
+    await apply_plan(db, manifest, await build_plan(db, manifest))
+
+    changed = copy.deepcopy(manifest)
+    changed.business_integrations[0].config["demo_region"] = "nz"
+
+    plan = await build_plan(db, changed)
+    action = next(a for a in plan.actions if a.target == "business_integration:a1_cash_for_cars")
+
+    assert action.action == ACTION_UPDATE
+    assert "config" in action.fields

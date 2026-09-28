@@ -262,9 +262,23 @@ class AgentWorkflowService:
             temperature=0,
         )
 
+        # ``method="function_calling"`` is required, not stylistic. The default
+        # for this call was the strict ``json_schema`` response format, and
+        # OpenAI's strict mode rejects any object schema that does not declare
+        # ``additionalProperties: false``. ``AgentDecision.business_arguments``
+        # is deliberately an open map -- its keys are per-tool, so it cannot be
+        # closed without hardcoding every tool's argument shape into the decision
+        # model. Under the default method the API answered 400
+        # ("additionalProperties is required to be supplied and to be false"),
+        # which surfaced to customers as a 500 on the first message of a session.
+        #
+        # The same open map is exactly what function calling accepts, so this
+        # changes the wire format only, not the decision contract. The schema
+        # itself is unchanged and still validated by Pydantic on the way back in.
         self.decision_llm = llm.with_structured_output(
             AgentDecision,
             include_raw=True,
+            method="function_calling",
         )
 
     @staticmethod

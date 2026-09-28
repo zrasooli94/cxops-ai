@@ -49,16 +49,21 @@ class PublicChatConfiguration(Base):
             "public_widget_key_hash",
             name="ux_public_chat_configurations_public_widget_key_hash",
         ),
+        # One widget configuration per tenant. Enforced here as well as in
+        # migration 1p4a0001 so every write path - not only onboarding - is
+        # covered: a second row for the same tenant would give the widget-key
+        # lookup two valid answers. This replaces the former plain index on the
+        # same column, whose lookups the unique constraint's own index serves.
+        UniqueConstraint(
+            "organization_id",
+            name="ux_public_chat_configurations_organization_id",
+        ),
         # Composite unique that exists solely as the target for the tenant-safe
         # public_chat_session FK (configuration_id, organization_id).
         UniqueConstraint(
             "id",
             "organization_id",
             name="ux_public_chat_configurations_id_organization_id",
-        ),
-        Index(
-            "ix_public_chat_configurations_organization_id",
-            "organization_id",
         ),
         CheckConstraint(
             "max_message_length BETWEEN 1 AND 10000",

@@ -35,8 +35,19 @@ public_chat:
   # Exact origins only. No wildcards, no paths, no trailing slashes. The
   # embedding origin is matched server-side against the request referrer; an
   # origin that is not listed here is rejected before a session is created.
+  #
+  # PRODUCTION origins for A1 Cash for Cars. Both the apex and the www host are
+  # listed because they are distinct origins to a browser, and a site that
+  # redirects between them would otherwise be rejected on whichever host the
+  # referrer reports. Order is not significant; matching is exact string
+  # membership, so "https://a1cashforcars.com.au.evil.example" and
+  # "https://evil-a1cashforcars.com.au" are both rejected.
+  #
+  # Do NOT add a bare host, a wildcard, or a subdomain here. Adding a subdomain
+  # embeds the widget on every site under that host.
   allowed_origins:
-    - https://www.a1cashforcars.example
+    - https://a1cashforcars.com.au
+    - https://www.a1cashforcars.com.au
   # Opaque token rendered from a closed set of known mappings. Free-form CSS or
   # arbitrary markup is deliberately not supported.
   theme_token: a1-dark
@@ -50,10 +61,18 @@ business_integrations:
     # Explicitly a local demo. This is the only provider_mode this build ships;
     # there is no real A1 backend wired up, and every tool result is tagged
     # local_demo so simulated data can never be read as a live quote.
+    #
+    # enabled: true means "the agent may OFFER these tools to this tenant", NOT
+    # "these tools reach A1's systems". They do not. Each one records a
+    # BusinessAction row in our database and returns wording that promises only
+    # "recorded and pending human review". See
+    # app/integrations/a1_cash_for_cars/service.py and pilot.notes below.
     provider_mode: local_demo
     config:
-      demo_currency: USD
-      demo_region: us-east
+      # Australian dollars and A1's home state. These are presentation defaults
+      # for simulated results only; no figure is ever computed or displayed.
+      demo_currency: AUD
+      demo_region: au
 
 knowledge:
   - source_id: a1-pilot-overview
@@ -98,8 +117,20 @@ knowledge:
 pilot:
   # Documentation-only marker. It records the intended posture for operators
   # and reviewers; it has no runtime effect on the app.
-  state: local_demo
+  #
+  # Deliberately "pilot", not "production". Business actions are still
+  # local_demo, so a "production" label would be a false claim: no valuation,
+  # quote, or pickup reaches A1. When a real A1 integration lands, this becomes
+  # "production" in the same commit that wires provider_mode to a live backend.
+  state: pilot
   notes: >-
     Pilot scope: public widget, AI conversation, human handoff, and the
     A1 local-demo tools. Not in scope: real valuations, firm quotes, booking a
     pickup, payments, and any customer-identifying export.
+
+    The A1 tools are local_demo. A tool result is a BusinessAction row in our
+    own database and customer-visible text that promises only that a request was
+    recorded for a human to review. No request reaches A1, so no customer is ever
+    told a pickup is booked, a quote exists, or an offer has been made. Treat any
+    future change to that wording as a customer-facing change requiring A1's
+    sign-off.

@@ -45,6 +45,19 @@ import pydantic
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_DIR = REPO_ROOT / "config" / "tenants"
 
+# The revision this build expects an operator's database to be at. Compared
+# against both the repository's single head and the live ``alembic current``, so
+# three distinct failures are separable:
+#
+#   * repository has no single head, or a different one than this
+#   * database is behind the repository head
+#   * database is at a revision this build does not know how to validate
+#
+# A drifted expectation is itself a deploy blocker: it means the deploy is not
+# the code that was reviewed, so the rest of this report describes something
+# other than what would run.
+EXPECTED_ALEMBIC_HEAD = "1p4a0001"
+
 PASS = "PASS"
 WARN = "WARN"
 FAIL = "FAIL"
@@ -135,6 +148,48 @@ def _safe_url_shape(url: str) -> str:
     return f"{scheme}://{host}{port} ({tls}, {creds})"
 
 
+# Hosts that resolve only on the machine or network that serves them. A pilot
+# embed pointed at one of these is unreachable from a real customer's browser.
+_UNREACHABLE_HOSTS = frozenset(
+    {
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "[::1]",
+        "host.docker.internal",
+    }
+)
+
+
+def _is_unreachable_host(url: str) -> bool:
+    """True when the URL host is loopback or RFC1918/ULA private.
+
+    Accepts a bare host, an IPv4 literal, or a bracketed IPv6 literal. Anything
+    that cannot be parsed is left to the surrounding https check rather than
+    being guessed at here.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url if "//" in url else f"https://{url}")
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+
+    if not host:
+        return False
+    if host.lower() in _UNREACHABLE_HOSTS:
+        return True
+    try:
+        import ipaddress
+
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
 def check_public_urls(cfg, reporter: Reporter) -> None:
     for label in ("frontend_base_url", "backend_public_url"):
         value = getattr(cfg, label, "")
@@ -151,6 +206,19 @@ def check_public_urls(cfg, reporter: Reporter) -> None:
             reporter.warn(
                 f"{label}",
                 "still points at a reserved example domain; the pilot will not be reachable",
+            )
+            continue
+        # An https:// loopback or private-range URL is syntactically valid and
+        # passes every check above, but no customer can reach 127.0.0.1 from
+        # their own browser. An embed pointed here looks configured on every
+        # dashboard and fails only when a real user loads it, which is exactly
+        # the failure this gate exists to catch before launch.
+        if _is_unreachable_host(value):
+            reporter.fail(
+                f"{label}",
+                "points at a loopback or private address "
+                f"({_safe_url_shape(value)}); it is unreachable from a customer's "
+                "browser even though it is https",
             )
             continue
         reporter.ok(f"{label}", _safe_url_shape(value))
@@ -204,12 +272,42 @@ def check_secrets(cfg, reporter: Reporter) -> None:
             "is not set; the public widget cannot answer a message without it",
         )
 
-    for label in ("zendesk_webhook_secret", "ticket_event_webhook_secret", "zendesk_client_secret"):
+    # Optional integration secrets.
+    #
+    # An absent secret is only a problem when the integration is actually in
+    # use. For the A1 pilot none of these integrations are enabled, and an
+    # empty ``ticket_event_webhook_secret`` makes the webhook endpoint answer
+    # 503 by design (app/api/deps.py) rather than accepting unsigned calls.
+    # Warning about that would be noise, and because these were unconditional
+    # WARNs they also made ``--strict`` unachievable for a tenant that does not
+    # use Zendesk - which the runbook tells operators to run in CI.
+    #
+    # So: absent + integration not configured is a PASS (a complete
+    # configuration, stated plainly); configured + secret missing is a WARN,
+    # because that combination is a real misconfiguration.
+    zendesk_configured = bool(getattr(cfg, "zendesk_subdomain", ""))
+
+    for label in ("zendesk_webhook_secret", "zendesk_client_secret"):
         value = getattr(cfg, label, "")
         if value:
             reporter.ok(label, "present")
+        elif zendesk_configured:
+            reporter.warn(
+                label,
+                "absent while ZENDESK_SUBDOMAIN is set; Zendesk is configured "
+                "but cannot authenticate",
+            )
         else:
-            reporter.warn(label, "absent (only needed if that integration is enabled)")
+            reporter.ok(label, "not configured (integration disabled)")
+
+    ticket_secret = getattr(cfg, "ticket_event_webhook_secret", "")
+    if ticket_secret:
+        reporter.ok("ticket_event_webhook_secret", "present")
+    else:
+        reporter.ok(
+            "ticket_event_webhook_secret",
+            "not configured (webhook disabled; the endpoint answers 503)",
+        )
 
 
 def check_database(cfg, reporter: Reporter) -> None:
@@ -295,8 +393,8 @@ def check_migrations(reporter: Reporter) -> None:
         return proc.returncode, proc.stdout.strip()
 
     # A revision id is whatever the migration author chose, conventionally hex but
-    # not required to be: this repository's head is "1p2a0001", which contains a
-    # non-hex letter. Accept the `alembic heads`/`current` line shape and nothing
+    # not required to be: this repository's head is "1p4a0001", which contains
+    # non-hex letters. Accept the `alembic heads`/`current` line shape and nothing
     # else, so a database one revision behind is a FAIL rather than a warning.
     _REVISION_LINE = re.compile(r"^(?P<rev>[0-9A-Za-z][0-9A-Za-z_]*)(?:\s+\(head\))?$")
 
@@ -308,28 +406,95 @@ def check_migrations(reporter: Reporter) -> None:
                 found.add(match.group("rev"))
         return found
 
-    code, current = run("current")
-    if code != 0:
-        reporter.fail("ALEMBIC current", "could not resolve; is the database reachable?")
-        return
+    # --- Step 1: this build's own expectation must match the repository. ---
+    # Checked before touching the database so a stale constant is reported as
+    # the build problem it is, not as a database problem.
     code_heads, heads = run("heads")
     if code_heads != 0:
         reporter.fail("ALEMBIC heads", "could not resolve migration history")
         return
-
-    current_ids = revision_ids(current)
     head_ids = revision_ids(heads)
+    if not head_ids:
+        reporter.fail("ALEMBIC heads", "no revisions reported; migration history is unreadable")
+        return
+    if len(head_ids) > 1:
+        reporter.fail(
+            "ALEMBIC heads",
+            f"multiple heads ({', '.join(sorted(head_ids))}); merge the branches "
+            "before deploying",
+        )
+        return
+    repo_head = next(iter(head_ids))
+    if repo_head != EXPECTED_ALEMBIC_HEAD:
+        reporter.fail(
+            "ALEMBIC heads",
+            f"repository head is {repo_head!r} but this validator expects "
+            f"{EXPECTED_ALEMBIC_HEAD!r}; update EXPECTED_ALEMBIC_HEAD in the same "
+            "commit that adds the migration",
+        )
+        return
+
+    # --- Step 2: the database must be at the head. ---
+    code, current = run("current")
+    if code != 0:
+        reporter.fail("ALEMBIC current", "could not resolve; is the database reachable?")
+        return
+    current_ids = revision_ids(current)
+
+    if not current_ids:
+        reporter.fail(
+            "ALEMBIC current",
+            "reports no applied revision on an initialised schema table; run "
+            "'scripts/run_migrations.sh'",
+        )
+        return
+
+    # Classify against the full revision history, not just the head. Comparing
+    # current to head alone cannot tell "one revision behind" (expected, fixable
+    # by running the migration) from "at a revision this build has never heard
+    # of" (a schema mismatch no migration run can fix), and reporting the second
+    # as the first would send an operator to re-run a migration pointlessly.
+    #
+    # The history is read in-process from the repository's own migration scripts
+    # rather than by parsing `alembic history` output. That output is
+    # human-formatted ("1p4a0001 -> 1p2a0001 (head)") and its exact shape varies
+    # across Alembic versions; parsing it would be a fragile way to learn
+    # something the ScriptDirectory already knows exactly.
+    known_ids: set[str] | None = None
+    if alembic_ini.exists():
+        try:
+            from alembic.config import Config as _AlembicConfig
+            from alembic.script import ScriptDirectory
+
+            _script = ScriptDirectory.from_config(_AlembicConfig(str(alembic_ini)))
+            known_ids = set(_script.get_revisions("heads"))
+            for _rev in _script.walk_revisions():
+                known_ids.add(_rev.revision)
+        except Exception:  # noqa: BLE001 - fall back to a weaker check
+            known_ids = None
+
+    if known_ids:
+        unknown = current_ids - known_ids
+        if unknown:
+            reporter.fail(
+                "ALEMBIC",
+                f"database is at {', '.join(sorted(unknown))}, which is not in this "
+                f"build's migration history (head {repo_head}); the deploy does not "
+                "match the schema",
+            )
+            return
+
     missing = head_ids - current_ids
     if missing:
         reporter.fail(
             "ALEMBIC",
             f"migration gap: {', '.join(sorted(missing))} not applied "
-            "(run 'alembic upgrade head' from a single deploy step)",
+            "(run 'alembic upgrade head' from a single deploy step, then "
+            "re-run scripts/run_migrations.sh)",
         )
-    elif head_ids:
-        reporter.ok("ALEMBIC", f"at head ({', '.join(sorted(head_ids))})")
-    else:
-        reporter.warn("ALEMBIC", "no revisions reported")
+        return
+
+    reporter.ok("ALEMBIC", f"at expected head ({repo_head})")
 
 
 def check_manifests(reporter: Reporter) -> None:

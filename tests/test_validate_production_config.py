@@ -483,16 +483,54 @@ def test_jwks_production_requires_a_jwks_url():
 # ----------------------------------------------------------------------
 
 
-def test_shipped_manifests_validate_without_failures():
+def test_shipped_manifests_validate_without_failures_or_warnings():
+    """The shipped A1 manifest is production-ready, so it is now warning-free.
+
+    Phase 1P.3 shipped A1 against a reserved ``.example`` origin and asserted a
+    warning. Phase 1P.4 replaced it with A1's real production origins, so that
+    expectation is deliberately inverted: a warning here means a real origin has
+    regressed to a placeholder.
+    """
     reporter = _reporter()
     validator.check_manifests(reporter)
 
-    # The shipped A1 manifest uses a reserved example domain on purpose, so a
-    # warning is expected; a hard failure would mean the manifest or the
-    # validator regressed.
     assert reporter.failures == 0, reporter.lines
-    assert reporter.warnings >= 1, "the reserved example origin should be flagged"
+    assert reporter.warnings == 0, reporter.lines
     assert any("a1-cash-for-cars" in line for line in reporter.lines)
+
+
+def test_reserved_example_origin_is_still_flagged(tmp_path, monkeypatch):
+    """The rule survives, aimed at a manifest that has not been finished.
+
+    Kept pointed at a synthetic tenant so the shipped, real A1 manifest is not
+    held hostage to a placeholder it no longer contains.
+    """
+    (tmp_path / "placeholder.yaml").write_text(
+        "schema_version: 1\n"
+        "tenant:\n"
+        "  slug: placeholder\n"
+        "  name: Placeholder\n"
+        "public_chat:\n"
+        "  enabled: true\n"
+        "  display_name: Placeholder\n"
+        "  welcome_message: Hi\n"
+        "  allowed_origins:\n"
+        "    - https://www.placeholder.example\n"
+        "  theme_token: default\n"
+        "  max_message_length: 2000\n"
+        "  max_messages_per_minute: 12\n"
+        "  session_ttl_hours: 24\n"
+        "pilot:\n"
+        "  state: staging\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validator, "MANIFEST_DIR", tmp_path)
+
+    reporter = _reporter()
+    validator.check_manifests(reporter)
+
+    assert reporter.warnings >= 1, reporter.lines
+    assert any("reserved example domain" in line for line in reporter.lines)
 
 
 def test_broken_manifest_is_reported_as_a_failure(tmp_path, monkeypatch):
@@ -564,41 +602,80 @@ def _fake_alembic(monkeypatch, *, current: str, heads: str, code: int = 0) -> No
 def test_migration_check_parses_revision_ids_containing_non_hex_letters(
     monkeypatch,
 ) -> None:
-    """The repository head is '1p2a0001', which is not valid hex.
+    """The repository head is '1p4a0001', which is not valid hex.
 
     A parser that only accepts hex silently reports "no revisions" and downgrades
     a database one migration behind to a warning.
     """
-    _fake_alembic(monkeypatch, current="1p2a0001 (head)\n", heads="1p2a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="1p4a0001 (head)\n", heads="1p4a0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
 
     assert reporter.failures == 0, reporter.lines
-    assert any("at head" in line for line in reporter.lines), reporter.lines
+    assert any("at expected head" in line for line in reporter.lines), reporter.lines
 
 
 def test_migration_gap_is_a_failure_not_a_warning(monkeypatch) -> None:
     """An unapplied head must be a hard FAIL with the revision named."""
-    _fake_alembic(monkeypatch, current="1a1b2c3d (head)\n", heads="1p2a0001 (head)\n")
+    # A real ancestor of the head, so this is a gap rather than a mismatch.
+    _fake_alembic(monkeypatch, current="1p2a0001 (head)\n", heads="1p4a0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
 
     assert reporter.failures >= 1, reporter.lines
     joined = "\n".join(reporter.lines)
-    assert "1p2a0001" in joined
+    assert "migration gap" in joined
+    assert "1p4a0001" in joined
     assert "alembic upgrade head" in joined
 
 
+def test_database_at_an_unknown_revision_is_reported_as_a_mismatch(monkeypatch) -> None:
+    """Not every "current != head" is a fixable gap.
+
+    A database at a revision this build has never heard of is a schema mismatch;
+    telling the operator to run the migration would be wrong advice.
+    """
+    _fake_alembic(monkeypatch, current="ffff9999 (head)\n", heads="1p4a0001 (head)\n")
+    reporter = _reporter()
+
+    validator.check_migrations(reporter)
+
+    assert reporter.failures >= 1, reporter.lines
+    joined = "\n".join(reporter.lines)
+    assert "not in this" in joined
+    assert "alembic upgrade head" not in joined
+
+
 def test_unreachable_database_fails_loudly(monkeypatch) -> None:
-    _fake_alembic(monkeypatch, current="", heads="", code=1)
+    """``alembic current`` failing means the database could not be reached."""
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        subcommand = cmd[cmd.index("alembic") + 1 :]
+        if "current" in subcommand:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="1p4a0001 (head)\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     reporter = _reporter()
 
     validator.check_migrations(reporter)
 
     assert reporter.failures >= 1, reporter.lines
     assert "database reachable" in "\n".join(reporter.lines)
+
+
+def test_unreadable_migration_history_fails_loudly(monkeypatch) -> None:
+    """A failure resolving ``heads`` is its own distinct, named failure."""
+    _fake_alembic(monkeypatch, current="", heads="", code=1)
+    reporter = _reporter()
+
+    validator.check_migrations(reporter)
+
+    assert reporter.failures >= 1, reporter.lines
+    assert "migration history" in "\n".join(reporter.lines)
 
 
 def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
@@ -610,7 +687,7 @@ def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         subcommand = cmd[cmd.index("alembic") + 1 :]
         target = "current" if "current" in subcommand else "heads"
-        stdout = "1a1b2c3d (head)\n" if target == "current" else "1p2a0001 (head)\n"
+        stdout = "1p2a0001 (head)\n" if target == "current" else "1p4a0001 (head)\n"
         stderr = "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n"
         return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -619,7 +696,7 @@ def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
     validator.check_migrations(reporter)
 
     assert reporter.failures >= 1, reporter.lines
-    assert "1p2a0001" in "\n".join(reporter.lines)
+    assert "1p4a0001" in "\n".join(reporter.lines)
 
 
 def test_migrations_can_be_skipped_for_air_gapped_runs(monkeypatch):

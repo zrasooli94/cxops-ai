@@ -1,0 +1,42 @@
+# Gitleaks configuration
+#
+# `gitleaks detect` currently reports five findings, every one of them a
+# synthetic test fixture rather than a credential. They are listed here so the
+# scan is a usable gate: a red scan that is always red teaches people to ignore
+# it, which is how a real secret ships.
+#
+# Each entry states what was triaged and why. If a fixture's value is ever
+# changed to something realistic, delete the corresponding entry and let the
+# scan fail.
+#
+# Re-verify with:
+#   gitleaks detect --source . --redact --no-banner
+
+title = "cxops-ai gitleaks config"
+
+[extend]
+# Use the upstream default rules as the base.
+useDefault = true
+
+[[allowlists]]
+description = """
+Test fixtures using obviously non-secret deterministic values. Verified by
+reading each site: tests/test_auth.py uses "x" * 32 and "y" * 32,
+tests/test_phase1p2_business_tools.py uses "z" * 32, and the frontend session
+tests use the literal strings "test-access-token" / "refresh-token-uuid". None
+of these authenticate anywhere.
+"""
+paths = [
+  '''tests/test_auth\.py''',
+  '''tests/test_phase1p2_business_tools\.py''',
+  '''frontend/src/lib/session/helpers\.test\.ts''',
+  '''frontend/src/lib/session/logout\.test\.ts''',
+]
+
+[[allowlists]]
+description = """
+.env.example documents AUTH_JWT_SECRET as an empty assignment. The committed
+value is blank; the rule fires on the key name plus the surrounding assignment
+shape, not on a credential.
+"""
+paths = ['''^\.env\.example$''']
