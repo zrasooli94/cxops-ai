@@ -30,8 +30,8 @@ public_chat:
   enabled: true
   display_name: A1 Cash for Cars
   welcome_message: >-
-    Hi! Ask us about buying or selling your vehicle. For a real appraisal our
-    team reviews your details during business hours.
+    Tell us about your vehicle and what you need. Your request will be recorded
+    for the A1 Cash for Cars team to review.
   # Exact origins only. No wildcards, no paths, no trailing slashes. The
   # embedding origin is matched server-side against the request referrer; an
   # origin that is not listed here is rejected before a session is created.

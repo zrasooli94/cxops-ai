@@ -29,12 +29,25 @@ If a pilot needs a real appraisal, stop and start the next phase rather than
 extending this one. Changing that requires a live provider backend **and** A1's
 sign-off on the customer-facing wording, in the same change.
 
-**One known wording inconsistency, tracked as open:** the manifest's
-`welcome_message` says "our team reviews your details during business hours",
-while the handoff copy says "No one has been contacted". A handoff *does* create
-a real CXOps ticket that a team can see, so the first is defensible, but
-"during business hours" reads as a service commitment the pilot does not make.
-Resolve with A1 before inviting real customers; do not resolve it unilaterally.
+**Wording consistency: resolved conservatively.** The manifest's
+`welcome_message` previously said "our team reviews your details during
+business hours" while the handoff copy said "No one has been contacted". A
+handoff *does* create a real CXOps ticket that a team can see, so the first was
+arguable, but "during business hours" is a service commitment the pilot does
+not make. The welcome now says only what the system guarantees -- the request
+is recorded for the A1 Cash for Cars team to review -- with no response-time
+promise.
+
+The handoff copy was deliberately **not** made warmer. The A1 wording contract
+(`tests/test_a1_local_demo_wording.py`) forbids "a team member" in
+customer-visible copy, and no A1 sign-off exists for stronger language, so the
+conservative handoff stands. It also no longer names "the CXOps pilot": internal
+deployment vocabulary is not the customer's, and it invites the reading that no
+service exists behind the request.
+
+Promising a response time, a valuation, a quote, an offer, a booked pickup, or
+contact that has already happened still requires A1's explicit sign-off, in the
+same change that introduces a live provider.
 
 ---
 
@@ -424,7 +437,8 @@ Stated plainly, because a runbook that hides these is worse than none.
   Acceptable for a single-tenant pilot; it is a deliberate decision, not an
   oversight, and it does not survive log retention.
 - **The A1 provider is a local demo.** See section 0.
-- **The welcome-message inconsistency** in section 0 is unresolved.
+- **The welcome-message inconsistency** in section 0 is resolved; the handoff
+  and fallback copy no longer name the internal deployment to a customer.
 - **The widget key travels in a URL.** Browser history and `Referer` headers can
   leak it. Mitigated by rotation and the origin allowlist, not eliminated.
 - **The pilot key was exposed during validation** and must be rotated.
@@ -433,6 +447,16 @@ Stated plainly, because a runbook that hides these is worse than none.
   suite.
 - **No human review of customer-facing wording is automated.** The manifest
   requires A1's sign-off; nothing enforces it.
+- **Deploy failures are silent if you only look at the live URL.** A service
+  can keep serving an old build while every new commit fails to deploy, and
+  `/health` stays green either way. Check the deploy list, not the endpoint:
+  `render deploys list <service-id>`. A pilot must also confirm `/version`
+  reports the commit it expects -- `/ready` and `/version` do not exist on
+  pre-Phase-1P.3 builds, so a `404` there means the service is running stale
+  code, not that the route is broken.
+- **Log retention is finite and short on the Render starter plan** (days, not
+  months). A1's escalation trail has no durable home; export anything the pilot
+  needs to keep before it ages out.
 
 ---
 

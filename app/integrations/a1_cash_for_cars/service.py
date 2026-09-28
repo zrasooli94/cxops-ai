@@ -143,9 +143,9 @@ class A1CashForCarsExecutor(BusinessToolExecutor):
             ),
             customer_visible=True,
             customer_message=(
-                "Your vehicle listing request has been recorded for this "
-                "pilot. No one has been contacted and no quote has been "
-                "prepared yet."
+                "Your vehicle listing request has been recorded for the A1 "
+                "Cash for Cars team. No one has been contacted and no quote "
+                "has been prepared yet."
             ),
             reference_id=reference_id,
             metadata={

@@ -58,17 +58,23 @@ TICKET_PLACEHOLDER_SUBJECT = "Web chat started"
 
 # Fixed, bounded handoff text. No response-time promises; no internal state.
 HANDOFF_REPLY = "A support team member needs to review this request."
-FALLBACK_REPLY = "Your request has been received by the CXOps team."
+# Tenant-neutral on purpose. This widget is embedded on the customer's own
+# site, so naming the internal product ("the CXOps team") tells an A1 visitor
+# they are talking to a third-party tool rather than to A1.
+FALLBACK_REPLY = "Your request has been received."
 
 # Handoff text for a tenant whose business provider runs in local-demo mode.
 # A local-demo tenant has no humans reviewing anything: nothing is dispatched to
 # A1, so promising a person will look at the request is as false as promising a
 # quote. The A1 adapter's wording contract states plainly that no human reviews
 # these requests during the pilot, and the widget must not contradict it. This
-# copy describes only the one real effect -- the system recorded the request.
+# This copy describes only the one real effect -- the system recorded the
+# request. It names the customer's own business, never the internal deployment
+# ("the CXOps pilot"), which is not the customer's vocabulary and invites the
+# reading that a trial is running with no service behind it.
 LOCAL_DEMO_HANDOFF_REPLY = (
-    "This request has been recorded by the CXOps pilot. No one has been "
-    "contacted, and no booking, quote, offer, or valuation has been made."
+    "This request has been recorded for the A1 Cash for Cars team. No one has "
+    "been contacted, and no booking, quote, offer, or valuation has been made."
 )
 
 # Decisions that never touch a customer-facing tool. When one of these
