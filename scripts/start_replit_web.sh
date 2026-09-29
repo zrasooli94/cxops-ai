@@ -69,15 +69,72 @@ fail() { log "ERROR: $*" >&2; exit 1; }
 # app.core.encryption, so it needs the project's own dependencies -- on a fresh
 # VM, running it against the system interpreter fails with ModuleNotFoundError
 # and reports a broken environment rather than an invalid one.
+#
+# EVERY pip invocation in this file goes through venv_pip below. There is no
+# other pip call, no system-Python fallback, and no sudo, so an install either
+# lands in .venv or the deployment fails.
+#
+# WHY venv_pip EXISTS -- user-install inheritance
+#
+# The first version of this section ran a bare `python -m pip install`, and on a
+# Reserved VM that crash-looped on the first install:
+#
+#     creating virtualenv
+#     ERROR: Can not perform a '--user' install. User site-packages are not
+#     visible in this virtualenv.
+#
+# The venv is correct and the command is correct; what was wrong is that pip
+# inherits user-install behavior from the environment, and a user install inside
+# a venv is a contradiction pip refuses to perform. Four separate mechanisms can
+# turn that behavior on, none of them visible in this repository:
+#
+#   1. PIP_USER=true in the process environment (the most likely one, and how
+#      the platform most often injects it)
+#   2. `user = true` under [install] in the user-level pip.conf, at either
+#      ~/.config/pip/pip.conf or the legacy ~/.pip/pip.conf
+#   3. `user = true` in a site-level pip.conf at <venv>/pip.conf
+#   4. the same setting in a global /etc/pip.conf
+#
+# All four are verified reproductions, not theories, and all four were checked
+# against this fix.
+#
+# pip's configuration precedence is: command line, then ENVIRONMENT VARIABLES,
+# then site, then user, then global config files. So an environment variable is
+# the one lever that beats every config file at once -- which is why the fix is
+# an environment variable and not a deleted or rewritten pip.conf. Rewriting a
+# file we do not own is also the fragile option: it is per-user, per-machine, and
+# would have to be redone on every deploy anyway.
+#
+# Note PIP_NO_USER=1 does NOT work. pip has no general "no" prefix for boolean
+# options, and it still attempts the user install. PIP_USER=false is the form
+# that works, and it is boolean-parsed, so false/0/no/off/"" are all equivalent.
+#
+# Scoped with `env` rather than `export`: this overrides the value for these
+# commands only, and the running uvicorn and Node children do not inherit a
+# mutated pip environment. Every pip call in the script uses this function, so
+# there is one place to audit and no way to add an un-guarded install later.
+venv_pip() {
+  env \
+    PIP_USER=false \
+    PIP_REQUIRE_VIRTUALENV=1 \
+    "$REPO_ROOT/.venv/bin/python" -m pip "$@"
+}
+
 if [ ! -x .venv/bin/python ]; then
   log "creating virtualenv"
   "$PYTHON_BIN" -m venv .venv
-  .venv/bin/python -m pip install --quiet --upgrade pip
+  # The message names the cause, not just the failure. A bare `set -e` exit here
+  # surfaces only pip's last line and the platform's "exit status 1", which
+  # names no component at all. Nothing is echoed about the environment, so no
+  # deployment secret can reach the log through this path.
+  venv_pip install --quiet --upgrade pip \
+    || fail "could not upgrade pip inside .venv; the Reserved VM image or its pip configuration is unusable"
 fi
 
 if [ ! -x .venv/bin/uvicorn ]; then
   log "installing Python dependencies"
-  .venv/bin/python -m pip install --quiet -r requirements.txt
+  venv_pip install --quiet -r requirements.txt \
+    || fail "could not install requirements.txt into .venv; the pip output above names the cause"
 fi
 
 cd "$FRONTEND_DIR"

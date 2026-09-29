@@ -34,15 +34,36 @@ fail() { log "ERROR: $*" >&2; exit 1; }
 # app.core.encryption, so it needs the project's own dependencies; on a fresh VM,
 # running it against the system interpreter reports a missing module rather than
 # the actual configuration problem.
+#
+# Every pip invocation goes through venv_pip, identical to start_replit_web.sh and
+# for the same reason: the Reserved VM environment can inject user-install
+# behavior, and a user install inside a venv is an error pip refuses to perform
+# ("Can not perform a '--user' install"). Fixing only the web launcher would have
+# left the worker crash-looping on the very next deploy, since both deployments
+# create their own venv on a fresh VM from the same repository.
+#
+# Scoped with `env` so the override applies to these commands only, and the
+# exec'd worker does not inherit a mutated pip environment. See the long version
+# of this note in start_replit_web.sh for the four injection vectors and why an
+# environment variable is the one lever that beats every pip config file.
+venv_pip() {
+  env \
+    PIP_USER=false \
+    PIP_REQUIRE_VIRTUALENV=1 \
+    "$REPO_ROOT/.venv/bin/python" -m pip "$@"
+}
+
 if [ ! -x .venv/bin/python ]; then
   log "creating virtualenv"
   "$PYTHON_BIN" -m venv .venv
-  .venv/bin/python -m pip install --quiet --upgrade pip
+  venv_pip install --quiet --upgrade pip \
+    || fail "could not upgrade pip inside .venv; the Reserved VM image or its pip configuration is unusable"
 fi
 
 if ! .venv/bin/python -c "import app" 2>/dev/null; then
   log "installing Python dependencies"
-  .venv/bin/python -m pip install --quiet -r requirements.txt
+  venv_pip install --quiet -r requirements.txt \
+    || fail "could not install requirements.txt into .venv; the pip output above names the cause"
 fi
 
 if ! .venv/bin/python scripts/preflight_production_env.py; then

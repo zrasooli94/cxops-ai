@@ -804,3 +804,452 @@ def test_no_stale_next_16_3_1_reference_remains() -> None:
         assert stale not in (REPO_ROOT / rel).read_text(encoding="utf-8"), (
             f"{rel} still references next {stale}"
         )
+
+
+# ---------------------------------------------------------------------------
+# E. Reserved VM pip installs are not user installs
+#
+# Background, because this section exists rather than being obvious:
+#
+# A Reserved VM deployment crash-looped immediately after creating its venv:
+#
+#     replit-web creating virtualenv
+#     ERROR: Can not perform a '--user' install. User site-packages are not
+#     visible in this virtualenv.
+#
+# The venv was correct and the pip command was correct. What was wrong is that
+# pip inherits user-install behavior from outside the repository -- from
+# PIP_USER, or from `user = true` in a pip.conf at user, site, or global scope --
+# and a user install inside a venv is a contradiction pip refuses to perform.
+# Nothing in this repository could have shown the cause, which is why the fix
+# has to be asserted rather than assumed.
+#
+# The invariant is that every pip invocation in the deployment launchers goes
+# through one function that pins PIP_USER=false. `pip` reads environment
+# variables ahead of every config file, so one env var beats all four
+# inheritance vectors at once, and the launcher becomes independent of pip
+# configuration the repository does not own.
+# ---------------------------------------------------------------------------
+
+#: The two deployment launchers. Each creates its own .venv on a fresh Reserved
+#: VM from this same repository, so both need the same guarantee -- fixing only
+#: the web one just moves the crash-loop to the worker.
+DEPLOYMENT_LAUNCHERS = ("start_replit_web.sh", "start_replit_worker.sh")
+
+#: The error pip produces for a user install inside a venv. Matched as a
+#: substring so the assertion survives pip's own line wrapping and any
+#: punctuation it changes between releases.
+USER_INSTALL_ERROR = "Can not perform a '--user' install"
+
+
+def _launcher(name: str) -> str:
+    return (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+
+
+def _effective(name: str) -> str:
+    """A launcher with comments and trailing comments stripped.
+
+    Both launchers document this failure in prose, and the prose necessarily
+    contains the string `--user` and the pip error text. Scanning raw source
+    would match the explanation instead of the code, so every assertion below
+    runs against executable lines only -- the same discipline the `.replit`
+    tests use for the same reason.
+    """
+    return "\n".join(_executable_lines(_launcher(name)))
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_venv_pip_pins_user_installs_off(launcher: str) -> None:
+    """The guarded pip wrapper must exist and must set PIP_USER=false.
+
+    `env PIP_USER=false` rather than `export`, because it applies to that one
+    command: the uvicorn and Node children started later do not inherit a
+    mutated pip environment, so the override cannot leak into application
+    behavior. Scoping it also means the value cannot be clobbered by anything
+    that runs between the definition and the call.
+    """
+    text = _effective(launcher)
+    assert re.search(r"^venv_pip\(\)", text, flags=re.MULTILINE), (
+        f"{launcher} must route every pip install through a single venv_pip "
+        "function, so there is one place to audit"
+    )
+    assert re.search(r"^\s*PIP_USER=false\b", text, flags=re.MULTILINE), (
+        f"{launcher} must pin PIP_USER=false for its venv pip commands. Replit "
+        "can inject PIP_USER=true, and a user install inside a venv fails with "
+        f"{USER_INSTALL_ERROR!r}."
+    )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_venv_pip_requires_the_virtualenv(launcher: str) -> None:
+    """`PIP_REQUIRE_VIRTUALENV=1` makes "installs go in the venv" enforced.
+
+    Without it, "ensure pip uses the venv" is a property of the code we happen
+    to be reading today. With it, a future refactor that reaches for a system
+    interpreter fails loudly instead of quietly installing into global Python.
+    Verified to have teeth: against a non-venv interpreter pip refuses with
+    "Could not find an activated virtualenv (required)".
+    """
+    text = _effective(launcher)
+    assert re.search(r"^\s*PIP_REQUIRE_VIRTUALENV=1\b", text, flags=re.MULTILINE), (
+        f"{launcher} must set PIP_REQUIRE_VIRTUALENV=1 so an install that has "
+        "drifted out of the venv fails instead of reaching system Python"
+    )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_venv_pip_targets_the_venv_interpreter(launcher: str) -> None:
+    """The wrapper must invoke the venv's own interpreter.
+
+    `venv_pip` pins the config environment, but it still needs a *venv* pip to
+    pin it for. Using the ambient `python3` here would be exactly the global
+    install this whole change exists to prevent -- and the pinned PIP_USER=false
+    would not save it, because the problem would be the destination, not the
+    mode.
+    """
+    text = _effective(launcher)
+    wrapper = re.search(r"venv_pip\(\)\s*\{(.*?)\n\}", text, flags=re.DOTALL)
+    assert wrapper, f"{launcher} has no venv_pip body to inspect"
+    body = wrapper.group(1)
+    assert ".venv/bin/python" in body, (
+        f"{launcher}: venv_pip must invoke .venv/bin/python, got {body.strip()!r}"
+    )
+    assert re.search(r"-m\s+pip", body), (
+        f"{launcher}: venv_pip must call pip as a module of the venv interpreter, "
+        "not a `pip` found on PATH"
+    )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_no_pip_call_bypasses_the_wrapper(launcher: str) -> None:
+    """Every pip invocation must go through `venv_pip`.
+
+    This is the assertion that makes the others sufficient. A guarded install
+    plus one unguarded one is a crash-loop waiting for the next fresh VM, and
+    the unguarded line is the kind of line that reads as perfectly ordinary.
+    So: the wrapper's own definition is the only place a bare `-m pip` may
+    appear, and both real installs must call the wrapper.
+    """
+    text = _effective(launcher)
+    lines = text.splitlines()
+    wrapper_body: set[int] = set()
+    inside = False
+    for i, line in enumerate(lines):
+        if re.match(r"^venv_pip\(\)", line):
+            inside = True
+        if inside:
+            wrapper_body.add(i)
+            if line == "}":
+                inside = False
+        # Any -m pip outside the wrapper body is an unguarded install.
+        elif re.search(r"-m\s+pip", line):
+            raise AssertionError(
+                f"{launcher}:{i + 1} calls pip directly, bypassing venv_pip: "
+                f"{line.strip()!r}. Every install must be guarded."
+            )
+    assert wrapper_body, f"{launcher} has no venv_pip definition"
+
+    installs = [ln.strip() for ln in lines if re.match(r"^\s*venv_pip\s+install", ln)]
+    assert len(installs) == 2, (
+        f"{launcher} should perform exactly two guarded installs (pip upgrade and "
+        f"requirements.txt), found {len(installs)}: {installs}"
+    )
+    assert any("--upgrade" in ln for ln in installs), (
+        f"{launcher} must still upgrade pip inside the venv, found: {installs}"
+    )
+    assert any("requirements.txt" in ln for ln in installs), (
+        f"{launcher} must still install requirements.txt, found: {installs}"
+    )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_install_failures_are_reported_clearly(launcher: str) -> None:
+    """An install failure must name the cause, not just exit 1.
+
+    The original failure surfaced only pip's last line plus the platform's
+    "exit status 1", which names no component. The observed log is what made
+    this a diagnosis exercise instead of a one-line fix, so each install needs
+    a `|| fail` that says which step failed.
+    """
+    text = _effective(launcher)
+    installs = [ln for ln in text.splitlines() if re.match(r"^\s*venv_pip\s+install", ln)]
+    assert installs, f"{launcher} performs no venv install"
+    for line in installs:
+        after = text.split(line, 1)[1].splitlines()[:2]
+        assert any("||" in ln and "fail " in ln for ln in after), (
+            f"{launcher}: install {line.strip()!r} has no `|| fail` on the "
+            "following line, so a failure would surface as a bare exit 1"
+        )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_no_sudo_anywhere_in_the_launcher(launcher: str) -> None:
+    """No launcher may execute sudo.
+
+    Checked against executable lines, not raw source. The scripts are heavily
+    commented and both now discuss why no privilege escalation is used, and this
+    test failed on exactly that prose when first written -- which is the wrong
+    outcome: documenting the absence of a technique is not using it, and a test
+    that rejects its own explanation pushes the next author toward silence.
+    What must not exist is a *call*.
+    """
+    assert "sudo" not in _effective(launcher), f"{launcher} executes sudo"
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_no_user_install_flag_anywhere_in_the_launcher(launcher: str) -> None:
+    """`--user` must not be passed to pip, and PIP_USER must never be set true.
+
+    Asserted on executable lines only, because both launchers quote `--user` and
+    the pip error text in their comments in order to explain this exact rule --
+    a raw-substring test would match the explanation and fail on it.
+
+    The failure mode being guarded against is someone "fixing" a pip install
+    error by adding `--user`, which is the flag that caused it in the first
+    place, and which would move the install out of the venv.
+    """
+    text = _effective(launcher)
+    assert "--user" not in text, f"{launcher} passes --user to pip"
+    assert not re.search(r"PIP_USER\s*=\s*true", text, flags=re.IGNORECASE), (
+        f"{launcher} sets PIP_USER=true, which is the crash-loop being fixed"
+    )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_no_global_python_install_fallback(launcher: str) -> None:
+    """A failed venv install must not fall back to a system-Python install.
+
+    The dangerous shape is a fallback: `... || pip install --user` or
+    `|| sudo ...`, which turns a loud failure into packages quietly installed
+    somewhere the deployment does not control. The test asserts the positive
+    shape instead -- installs are guarded and failures call `fail`, which
+    aborts -- and that no interpreter outside the venv is ever handed to pip.
+    """
+    text = _effective(launcher)
+    assert not re.search(r"\|\|\s*(sudo|.*-m\s+pip)", text), (
+        f"{launcher} falls back to a pip install outside the venv; a failed venv "
+        "install must abort the deployment, not install somewhere else"
+    )
+    # "$PYTHON_BIN" is legitimate for `venv` creation only, never for pip.
+    for line in text.splitlines():
+        if "$PYTHON_BIN" in line:
+            assert "venv" in line, (
+                f"{launcher}: $PYTHON_BIN must only create the venv, never run pip: "
+                f"{line.strip()!r}"
+            )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_no_migrations_at_boot(launcher: str) -> None:
+    """Neither deployment may run migrations at start.
+
+    On a restart-every-deploy platform every replica re-runs the start command,
+    so migrations at boot race each other on DDL. They are one explicit step,
+    scripts/run_migrations.sh, and /ready keeps a process out of rotation until
+    it has succeeded. This is unchanged by the pip fix and asserted so it stays
+    that way.
+    """
+    text = _effective(launcher)
+    for forbidden, label in (
+        ("run_migrations", "the migration step"),
+        ("alembic", "the migration tool"),
+        ("migrate", "a migration command"),
+    ):
+        assert forbidden not in text, f"{launcher} runs {label} at boot"
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_production_preflight_still_runs_and_still_gates(launcher: str) -> None:
+    """The pip fix must not have weakened the production environment gate.
+
+    Two properties, both load-bearing: the preflight still executes, and a
+    failure still aborts. A preflight that ran but no longer blocked would be
+    the same class of bug as the one being fixed -- a startup step that looks
+    like a check but is not one.
+    """
+    text = _effective(launcher)
+    assert "preflight_production_env.py" in text, f"{launcher} no longer runs the preflight"
+
+    lines = text.splitlines()
+    idx = next(i for i, ln in enumerate(lines) if "preflight_production_env.py" in ln)
+    gate = lines[idx]
+    following = lines[idx + 1 : idx + 3]
+    # The negation is the point. `if <cmd>; then` on a preflight *passes* means
+    # the gate now aborts exactly when the environment is valid, and runs on
+    # when it is not -- a check that is still present, still named, and
+    # completely inverted. Asserting only "there is an if" misses that
+    # completely, so the `!` is required.
+    assert re.match(r"\s*if\s+!\s", gate), (
+        f"{launcher}: the preflight must be run under `if !` so a non-zero exit "
+        f"is the failure branch. Got {gate.strip()!r}"
+    )
+    assert any(re.match(r"\s*fail\b", ln) for ln in following), (
+        f"{launcher}: a failing preflight must still abort the start, but no "
+        f"`fail` follows it. Lines after the gate: {following!r}"
+    )
+    # The gate must run after the dependency install, since it imports the app.
+    assert idx > next(i for i, ln in enumerate(lines) if re.match(r"\s*venv_pip\s+install", ln)), (
+        f"{launcher}: the preflight imports project dependencies, so it cannot run before they are installed"
+    )
+
+
+def test_dev_launcher_is_untouched_by_the_pip_fix() -> None:
+    """The development launcher must not acquire a pip install.
+
+    It never had one: it selects an existing .venv or a system interpreter and
+    installs nothing, which is why it works on a workspace that has no
+    credentials and no venv. Adding a guarded install there would be scope
+    creep, and an unguarded one would break the preview.
+    """
+    text = _effective("start_replit_dev.sh")
+    assert not re.search(r"-m\s+pip", text), "the dev launcher must not run pip"
+    assert "venv_pip" not in text, "the dev launcher must not gain the venv_pip wrapper"
+    assert "PIP_USER" not in text, "the dev launcher must not set pip configuration"
+    # And the properties the dev path already guarantees must still hold.
+    assert "--host 127.0.0.1" in text, "the dev API must remain on loopback"
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_launcher_is_syntactically_valid_bash(launcher: str) -> None:
+    """`bash -n` on each deployment launcher.
+
+    Part of the suite rather than a manual step: a syntax error in the command a
+    deployment runs is a deployment that cannot start, and `venv_pip` is a shell
+    function that only fails when the script is parsed or executed.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ["bash", "-n", str(REPO_ROOT / "scripts" / launcher)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"bash -n failed for {launcher}: {result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# F. Behavioural: the guarded install under an injected PIP_USER=true
+#
+# Every test above reads the source. This one runs it.
+#
+# It matters because the static assertions cannot tell a correct guard from a
+# plausible-looking one. `PIP_USER=false` could be spelled wrong, set on the
+# wrong command, or scoped to a variable pip never reads, and every static test
+# above would still pass. So the committed `venv_pip` body is extracted and
+# executed against a disposable venv with PIP_USER=true injected.
+#
+# The test also runs a CONTROL first: the same unguarded command with the same
+# injected variable. If the control does not reproduce the error, the guard is
+# being tested against nothing and the test skips rather than passing silently.
+# A test that cannot fail is worse than no test, and this one is built so that
+# it can.
+#
+# No network: --no-index with an unsatisfiable requirement. pip rejects a user
+# install before it resolves anything, so the control still produces the error
+# while the guarded run fails later and differently -- which is the difference
+# being asserted.
+# ---------------------------------------------------------------------------
+
+
+def _extract_venv_pip(launcher: str) -> str:
+    """The committed `venv_pip` body, verbatim, lifted out of the script.
+
+    Extracted rather than reimplemented on purpose. A copy in this test file
+    would keep passing if the script's version were reverted, which is the
+    failure this whole section exists to catch.
+    """
+    text = _launcher(launcher)
+    match = re.search(r"^venv_pip\(\) \{\n(.*?)^\}", text, flags=re.DOTALL | re.MULTILINE)
+    assert match, f"could not extract a venv_pip body from {launcher}"
+    return match.group(1)
+
+
+def _run_bash(script: str, cwd, env: dict):
+    import subprocess
+
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+def test_guarded_install_survives_an_injected_pip_user(launcher: str, tmp_path) -> None:
+    """Execute the committed guard under PIP_USER=true; it must hold.
+
+    A disposable venv is created under tmp_path and the launcher's own
+    `venv_pip` body is run against it with PIP_USER=true in the environment --
+    the exact condition that crash-looped the deployment. The install must not
+    attempt a user install.
+    """
+    import os
+    import subprocess
+
+    repo = tmp_path / "repo"
+    (repo / ".venv").mkdir(parents=True)
+    # Inside the repo: both bash invocations run with cwd=repo and reference
+    # "$PWD/req.txt", so the file has to live where those commands look.
+    (repo / "req.txt").write_text("cxops-no-such-package==0.0.0\n", encoding="utf-8")
+
+    created = subprocess.run(
+        ["python3", "-m", "venv", str(repo / ".venv")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"cannot create a disposable venv here: {created.stderr.strip()[:120]}")
+
+    base_env = {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
+    base_env["PYTHONUSERBASE"] = str(tmp_path / "nowhere")
+
+    # CONTROL: unguarded pip, with the crash-loop condition injected. This must
+    # reproduce the deployment failure, otherwise there is nothing to guard.
+    control = _run_bash(
+        '"$PWD/.venv/bin/python" -m pip install --quiet --no-index '
+        '--disable-pip-version-check -r "$PWD/req.txt"',
+        cwd=repo,
+        env={**base_env, "PIP_USER": "true"},
+    )
+    control_out = control.stdout + control.stderr
+    if USER_INSTALL_ERROR not in control_out:
+        pytest.skip(
+            "this pip version does not reject user installs inside a venv, so "
+            f"the guard has nothing to defend against. Control output: {control_out.strip()[:200]}"
+        )
+
+    # GUARDED: the launcher's own function, verbatim, same injected condition.
+    body = _extract_venv_pip(launcher)
+    harness = f'REPO_ROOT="$PWD"\nvenv_pip() {{\n{body}}}\nvenv_pip install --quiet --no-index --disable-pip-version-check -r "$PWD/req.txt"\n'
+    guarded = _run_bash(harness, cwd=repo, env={**base_env, "PIP_USER": "true"})
+    guarded_out = guarded.stdout + guarded.stderr
+
+    assert USER_INSTALL_ERROR not in guarded_out, (
+        f"{launcher}: the guarded install still attempted a user install under "
+        f"PIP_USER=true.\n--- output ---\n{guarded_out.strip()[:500]}"
+    )
+    # The guard must not achieve that by making the install a silent no-op: pip
+    # has to have actually got past mode selection and into resolution.
+    assert "No matching distribution" in guarded_out or "Could not find a version" in guarded_out, (
+        f"{launcher}: expected pip to reach package resolution (proving it left "
+        f"user-install mode), got:\n--- output ---\n{guarded_out.strip()[:500]}"
+    )
+
+
+def test_user_install_error_string_is_still_the_one_we_guard_against() -> None:
+    """Pin the error text, so a pip change cannot silently disarm section F.
+
+    Section F skips when the control does not reproduce. That is the right
+    behavior, but it means a future pip that words the error differently would
+    quietly reduce this file's coverage to the static assertions. Asserting the
+    text separately makes that a visible failure to update this file rather than
+    a silent loss of coverage.
+    """
+    assert USER_INSTALL_ERROR in (
+        "Can not perform a '--user' install. User site-packages are not visible in this virtualenv."
+    ), "update USER_INSTALL_ERROR and section F together if pip reworded this"
