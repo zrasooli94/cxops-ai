@@ -128,6 +128,13 @@ fi
 # a deployment environment variable. Replit injects Secrets as process
 # environment, so a build that happens at VM start sees them.
 export NEXT_TELEMETRY_DISABLED=1
+# NODE_ENV used to be set project-wide in .replit [env]. It is set per-process
+# here instead, because a project-wide NODE_ENV=production also applied to the
+# workspace's development run — and `next dev` under NODE_ENV=production fails
+# to start. Fixing that meant taking the variable out of [env], which in turn
+# meant the build could no longer inherit it, so it is set explicitly for both
+# the build and the server below.
+export NODE_ENV=production
 log "building frontend with CXOPS_PUBLIC_SITE_URL already in the environment"
 ( cd "$FRONTEND_DIR" && npm run build )
 [ -f "$FRONTEND_DIR/.next/standalone/server.js" ] \
