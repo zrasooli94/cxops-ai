@@ -137,4 +137,15 @@ run = "scripts/start_replit_web.sh"
 # before the deployment exists. scripts/start_replit_web.sh builds at start time
 # for exactly that reason, and runs the environment gate there too, before
 # either server starts.
-build = []
+#
+# The key is therefore OMITTED, not set to an empty value. It used to read
+# `build = []`, written to mean "no build step" -- and Replit's schema takes
+# `build` to be a command string, so an array is not a way of saying "none" but
+# an invalid value. Publishing rejected the whole deployment config with "The
+# .replit deployment configuration is invalid", which is a far worse failure than
+# the one it was trying to express: it blocked the publish instead of describing
+# an absent optional step.
+#
+# Do not reintroduce it in any form, including `build = ""`. Omit the key; that
+# is how TOML expresses "no value", and it is what the schema expects.
+# tests/test_replit_config.py fails the build if a `build` key reappears here.

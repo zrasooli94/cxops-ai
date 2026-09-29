@@ -180,6 +180,62 @@ def test_deployment_run_targets_web_only() -> None:
     assert "worker" not in run, f"the web deployment must not also start the worker, got {run!r}"
 
 
+def test_deployment_declares_no_build_key() -> None:
+    """`[deployment].build` must be absent, not an empty array.
+
+    It was written `build = []`, intended to mean "no build step". Replit's
+    schema treats `build` as a command *string*, so an array is not how you say
+    "none" — it is simply an invalid value, and Publishing rejected the entire
+    deployment config with:
+
+        The .replit deployment configuration is invalid
+
+    The failure is worse than the thing being expressed: an absent optional
+    build step is the default, whereas an invalid one blocks the publish
+    outright. This project builds the frontend inside
+    scripts/start_replit_web.sh, and it must keep doing so — see the comment
+    above the `[deployment]` table for why a real build step cannot run there
+    (it needs deployment secrets that only exist once the deployment does).
+
+    Deliberately asserted on the PARSED config, never on the file text. The
+    comment block in `.replit` quotes the old `build = []` verbatim in order to
+    warn against restoring it, so a substring test would fail on the warning
+    itself. A comment cannot set a TOML key, so parsing is also the more
+    accurate statement of the rule.
+
+    Absence is asserted rather than "must be a string", because the schema
+    violation is the array. Omitting the key is what TOML uses to mean "no
+    value", and it is the form that validates.
+    """
+    deployment = CONFIG.get("deployment", {})
+    assert "build" not in deployment, (
+        f"[deployment].build is {deployment['build']!r}. Replit's schema takes "
+        "build to be a command string, so an array -- including `build = []` -- "
+        "is an invalid value, and Publishing rejects the whole config with "
+        '"The .replit deployment configuration is invalid". Omit the key '
+        "instead; the frontend build belongs in scripts/start_replit_web.sh."
+    )
+
+
+def test_deployment_build_would_be_a_command_not_a_list() -> None:
+    """If a `build` key is ever added deliberately, it must be a string.
+
+    This is the belt to the previous test's braces. Absent passes; a string is
+    allowed through for a future real build step; an array never is. A future
+    change that adds a genuine build command therefore does not have to delete
+    this test, and one that adds an array is caught here even if the stricter
+    assertion above is refactored away.
+    """
+    deployment = CONFIG.get("deployment", {})
+    if "build" not in deployment:
+        return  # the intended state: no build step at all
+    assert isinstance(deployment["build"], str), (
+        f"[deployment].build must be a command string, got "
+        f"{type(deployment['build']).__name__} {deployment['build']!r}. An "
+        "empty list is not a way to express 'no build step' -- omit the key."
+    )
+
+
 def test_development_run_uses_the_dev_launcher() -> None:
     """The workspace Run button must start the development launcher.
 
