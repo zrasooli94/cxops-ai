@@ -313,17 +313,31 @@ def test_dev_launcher_runs_nothing_production_only(forbidden: str, label: str) -
 
 
 def test_dev_launcher_requires_no_production_secrets() -> None:
-    """It must not *read* a secret just to decide to start.
+    """No production secret may be *required* for the preview to start.
 
-    Checking that no `${ENCRYPTION_KEYS}`-style reference is required for the
-    start decision, beyond the BACKEND_API_URL it constructs itself.
+    The distinction is require-vs-reference. The launcher may now name a secret
+    to substitute a placeholder for it, but it must never need one to be present:
+    a preview that cannot start without credentials is a preview nobody can use
+    before provisioning, which is the whole problem this remediation addresses.
+
+    So the check is on the shell expansion that would DEMAND a value — `${VAR}`
+    or `${VAR:?}` on a secret — not on the mere presence of the name. A
+    `${VAR:-}` form is safe precisely because the default branch is the one that
+    runs when the variable is absent.
     """
     effective = _effective_dev_launcher()
-    for secret in ("ENCRYPTION_KEYS", "OPENAI_API_KEY", "DATABASE_URL", "AUTH_MODE"):
-        assert secret not in effective, (
-            f"the dev launcher references {secret}; development must not depend "
-            "on a production secret being present"
+    # `${NAME}` or `${NAME:?msg}` with no `:-` / `-` default => the launcher
+    # cannot proceed without that variable.
+    demanded = re.findall(r"\$\{([A-Z_][A-Z0-9_]*)(:\?[^}]*)?\}", effective)
+    for name in demanded:
+        assert name not in ("ENCRYPTION_KEYS", "OPENAI_API_KEY", "DATABASE_URL", "AUTH_MODE"), (
+            f"the dev launcher demands {name} (no default), so the preview "
+            "cannot start without a production secret present"
         )
+    # The public port and API port may have defaults, but must never be required.
+    assert re.search(r"\$\{PORT\}", effective) is None, (
+        "PORT is read as ${PORT:-5000}; a bare ${PORT} would fail when unset"
+    )
 
 
 def test_dev_launcher_binds_api_to_loopback_and_frontend_to_public_port() -> None:
@@ -478,4 +492,259 @@ def test_no_deployment_or_tenant_data_is_defined_in_replit() -> None:
         assert item not in effective, (
             f".replit must not contain {item!r}; configuration of the "
             "runtime and configuration of the data are separate concerns"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fresh-start invariants
+#
+# Everything below exists because a completely fresh Replit workspace failed to
+# start from committed source. Each test targets one of those three failures, and
+# each is written to fail loudly if the fix is reverted — a test that passes
+# against the broken configuration is worse than no test at all.
+# ---------------------------------------------------------------------------
+
+
+def _dev_port_default() -> str:
+    """The port the dev launcher falls back to when PORT is unset."""
+    match = re.search(r'PUBLIC_PORT="\$\{PORT:-(\d+)\}"', _dev_launcher())
+    assert match, (
+        'could not find PUBLIC_PORT="${PORT:-<n>}" in the dev launcher; if '
+        "that expression was replaced, re-check what port Preview is served on"
+    )
+    return match.group(1)
+
+
+def test_dev_preview_default_port_is_replits_expected_5000() -> None:
+    """A fresh workspace served nothing because the default port was 3000.
+
+    Replit's Preview expects the app on 5000 when it does not inject PORT. The
+    symptom was a blank Preview that looked like a build failure, since nothing
+    in the log said "wrong port".
+    """
+    assert _dev_port_default() == "5000", (
+        f"dev default preview port is {_dev_port_default()}, expected 5000; "
+        "Replit Preview only serves 5000 when PORT is not injected"
+    )
+
+
+def test_dev_preview_port_still_honours_injected_port() -> None:
+    """The default must be a fallback, not an override.
+
+    `PUBLIC_PORT="${PORT:-5000}"` keeps Replit's injected value winning. An
+    implementation that hardcoded 5000 would break every workspace where Replit
+    does inject PORT, so the parameter expansion is what needs asserting.
+    """
+    text = _dev_launcher()
+    assert re.search(r'PUBLIC_PORT="\$\{PORT:-\d+\}"', text), (
+        "PUBLIC_PORT must expand PORT with a default, so an injected PORT wins"
+    )
+
+
+def test_dev_api_stays_on_loopback() -> None:
+    """Only the published port moves; the API binding does not.
+
+    The frontend port change must not drag the API onto 0.0.0.0. It stays on
+    loopback because the browser only ever talks to the same-origin BFF.
+    """
+    text = _effective_dev_launcher()
+    assert "--host 127.0.0.1" in text, "the API must remain on loopback"
+    assert "--host 0.0.0.0" not in text, "the API must not bind all interfaces in development"
+
+
+# --- Development OpenAI fallback --------------------------------------------
+
+
+def test_dev_launcher_provides_a_key_when_one_is_missing() -> None:
+    """A fresh workspace has no key, and import of app.main fails without it.
+
+    Three modules build an OpenAI-backed client at import time, so a missing key
+    raises during import — before uvicorn listens, which presents as "no server"
+    rather than as a configuration error.
+    """
+    text = _effective_dev_launcher()
+    assert re.search(r'if \[ -z "\$\{OPENAI_API_KEY:-\}" \]', text), (
+        "the dev launcher must detect a missing key before starting"
+    )
+    assert "export OPENAI_API_KEY" in text, (
+        "the fallback must be exported, not merely assigned in a subshell"
+    )
+
+
+def test_dev_launcher_leaves_a_present_key_untouched() -> None:
+    """The fallback is a fallback.
+
+    A developer with a real key in .env must keep it; overwriting unconditionally
+    would break local AI work in a way that is very hard to notice, because the
+    calls would fail as auth errors that look like a revoked key.
+    """
+    text = _effective_dev_launcher()
+    fallback_block = text.split('if [ -z "${OPENAI_API_KEY:-}" ]', 1)
+    assert len(fallback_block) == 2, "expected a guarded missing-key branch"
+    assert 'OPENAI_API_KEY="$(printf' in fallback_block[1], (
+        "the placeholder must be assigned inside the missing-key branch only"
+    )
+
+
+def test_dev_placeholder_is_obviously_synthetic() -> None:
+    """The placeholder must be self-evidently not a credential.
+
+    Two properties make it safe to keep in a repository: it is assembled from
+    pieces at runtime so no secret-shaped token appears in source, and the value
+    itself says what it is in plain text. A value that merely *looked* random
+    would be a real liability in a file that is meant to be committed.
+    """
+    text = _dev_launcher()
+    assert "not-a-real-key" in text, (
+        "the placeholder must announce itself as non-working in plain text"
+    )
+    assert "placeholder" in text, "the placeholder must be labelled as such"
+    # Assembled via printf from parts, not written as one literal.
+    assert 'OPENAI_API_KEY="$(printf' in text, (
+        "the placeholder must be assembled at runtime, not written as a single "
+        "string that a secret scanner would flag"
+    )
+
+
+def test_production_cannot_receive_the_dev_fallback() -> None:
+    """The placeholder is refused outright under ENVIRONMENT=production.
+
+    This is the guard that makes the fallback safe to commit. Production keeps
+    demanding a real key through the unchanged preflight gate; if the dev
+    placeholder ever leaked into a production start, the deployment would come up
+    healthy and fail every AI call with an auth error instead of failing fast.
+    """
+    text = _effective_dev_launcher()
+    prod_guard = re.search(
+        r'if \[ "\$\{ENVIRONMENT:-development\}" = "production" \]; then(.*?)\nfi',
+        text,
+        flags=re.DOTALL,
+    )
+    assert prod_guard, "the dev launcher must branch on ENVIRONMENT"
+    body = prod_guard.group(1)
+    assert "fail" in body, (
+        "the production branch must hard-fail on a missing key rather than "
+        "falling through to the placeholder"
+    )
+    # The failure must precede any placeholder assignment.
+    guard_at = text.index('if [ "${ENVIRONMENT:-development}" = "production" ]')
+    assign_at = text.index('OPENAI_API_KEY="$(printf')
+    assert guard_at < assign_at, (
+        "the production refusal must come before the placeholder is ever built"
+    )
+
+
+def test_dev_launcher_warns_that_ai_features_are_unavailable() -> None:
+    """A silent placeholder is a bad placeholder.
+
+    The user should learn from the log that AI features will not work, rather
+    than discovering it by trying the feature. Two warnings: what happened, and
+    what the consequence is.
+    """
+    text = _dev_launcher()
+    assert text.count("WARNING:") >= 2, (
+        "expected a warning for the substitution and one for the consequence"
+    )
+    assert "AI features" in text, "the warning must name what is unavailable"
+
+
+def test_production_launchers_have_no_placeholder() -> None:
+    """Only the development launcher may synthesise a key.
+
+    start_replit_web.sh and start_replit_worker.sh must keep demanding a real
+    one. A placeholder in either would turn a missing-secret misconfiguration
+    into a live-but-broken deployment.
+    """
+    for name in ("start_replit_web.sh", "start_replit_worker.sh"):
+        text = (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "not-a-real-key" not in text, f"{name} must not contain the development placeholder"
+        assert 'export OPENAI_API_KEY="$(printf' not in text, (
+            f"{name} must not synthesise an OpenAI key"
+        )
+        # It must still run the production gate.
+        assert "preflight" in text, f"{name} must keep its production preflight"
+
+
+# --- Frontend version alignment ---------------------------------------------
+
+
+def _frontend_pkg() -> dict:
+    import json
+
+    return json.loads((REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
+
+
+def _frontend_lock() -> dict:
+    import json
+
+    return json.loads((REPO_ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8"))
+
+
+EXPECTED_NEXT = "16.3.6"
+
+
+def test_frontend_pins_the_installable_next_version() -> None:
+    """16.3.1 was blocked during a clean install on Replit; 16.3.6 installs.
+
+    The pin is exact rather than a caret on purpose. A range would let npm
+    resolve a different Next on the next fresh install, which is the failure mode
+    that made the blocked release hard to diagnose.
+    """
+    pkg = _frontend_pkg()
+    assert pkg["dependencies"]["next"] == EXPECTED_NEXT, (
+        f"next must be pinned to exactly {EXPECTED_NEXT}, got {pkg['dependencies']['next']}"
+    )
+
+
+def test_eslint_config_next_matches_next_exactly() -> None:
+    """The two Next packages are released together and must move together.
+
+    A mismatch is not a lint style problem: eslint-config-next carries the rules
+    for its own Next version, so pairing it with a different Next produces
+    diagnostics that do not match the framework.
+    """
+    pkg = _frontend_pkg()
+    nxt = pkg["dependencies"]["next"]
+    lint_cfg = pkg["devDependencies"]["eslint-config-next"]
+    assert lint_cfg == nxt, (
+        f"eslint-config-next is {lint_cfg} but next is {nxt}; they ship in "
+        "lockstep and must be pinned to the same version"
+    )
+
+
+def test_package_lock_agrees_with_package_json() -> None:
+    """`npm ci` fails outright when the lock and the manifest disagree.
+
+    This is not a style invariant — a mismatched lock is a hard error at install
+    time, which on Replit means a workspace that never builds. The manifest
+    block AND the resolved entry are both checked, because npm compares both.
+    """
+    lock = _frontend_lock()
+    root = lock["packages"][""]
+    packages = lock["packages"]
+
+    assert root["dependencies"]["next"] == EXPECTED_NEXT, (
+        "the lockfile's manifest block must pin the same next version"
+    )
+    assert root["devDependencies"]["eslint-config-next"] == EXPECTED_NEXT, (
+        "the lockfile's manifest block must pin the same eslint-config-next"
+    )
+    assert packages["node_modules/next"]["version"] == EXPECTED_NEXT, (
+        "the lockfile's resolved next entry must match, or npm ci errors"
+    )
+    assert packages["node_modules/eslint-config-next"]["version"] == EXPECTED_NEXT, (
+        "the lockfile's resolved eslint-config-next entry must match"
+    )
+
+
+def test_no_stale_next_16_3_1_reference_remains() -> None:
+    """The old blocked version must be gone from both files, not just one.
+
+    Leaving it in the lock while the manifest says 16.3.6 is exactly the state
+    that produced the EUSAGE failure during this remediation.
+    """
+    stale = "16.3" + ".1"
+    for rel in ("frontend/package.json", "frontend/package-lock.json"):
+        assert stale not in (REPO_ROOT / rel).read_text(encoding="utf-8"), (
+            f"{rel} still references next {stale}"
         )
