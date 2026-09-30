@@ -58,7 +58,7 @@ _UNREACHABLE_HOSTS = frozenset(
 # which is what an ImportError here produces, loudly and before anything boots.
 # That is the correct failure direction for a fail-fast gate.
 sys.path.insert(0, str(REPO_ROOT))
-from scripts.validate_production_config import TLS_ENFORCING_MODES  # noqa: E402
+from scripts.validate_production_config import TLS_ENFORCING_MODES
 
 # Reported (not echoed) for each rejected value, so an operator can tell which of
 # their two plausible settings is the wrong one. `prefer` looks like the safe

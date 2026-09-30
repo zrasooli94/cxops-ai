@@ -32,7 +32,7 @@ PREFLIGHT = REPO_ROOT / "scripts" / "preflight_production_env.py"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT))
 
-from preflight_production_env import (  # noqa: E402
+from preflight_production_env import (
     Report,
     _is_local_database_host,
     _is_unreachable_host,
@@ -42,7 +42,7 @@ from preflight_production_env import (  # noqa: E402
 
 # Imported so the test can assert the two gates share one allowlist rather than
 # two that happen to agree today. See test_database_tls_policy_matches_the_validator.
-from scripts.validate_production_config import TLS_ENFORCING_MODES  # noqa: E402
+from scripts.validate_production_config import TLS_ENFORCING_MODES
 
 # Every valid example carries an enforcing TLS mode, because the preflight now
 # requires one. A URL without it is a rejection fixture, not a valid baseline, so
