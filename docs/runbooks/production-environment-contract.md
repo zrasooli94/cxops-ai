@@ -7,6 +7,9 @@ who needs what and why.
 Validate any environment mechanically with:
 
 ```sh
+# The launchers map this for you at boot. A manual shell has to do it itself,
+# because scripts/validate_production_config.py reads DATABASE_URL.
+export DATABASE_URL="$EXTERNAL_DATABASE_URL"
 .venv/bin/python scripts/validate_production_config.py --environment production
 ```
 
@@ -23,9 +26,11 @@ the script cannot.
    at `docs/archive/render.yaml` and is not authoritative.)
 2. **Secret values are never printed.** The validator reports presence, count,
    and validity. Never `echo`, `print`, or log a secret, not even in a
-   debugging attempt.
-3. **Transport is TLS everywhere.** Public URLs are `https`; the database
-   requests TLS. `http` on a public URL is a `FAIL`, not a warning.
+   debugging attempt. The launchers log the *name* of the database variable
+   they bound and never its value.
+3. **Transport is TLS everywhere.** Public URLs are `https`; the production
+   database connection requires TLS — encryption, not a preference. `http` on
+   a public URL is a `FAIL`, not a warning.
 4. **`DEBUG` is `false` in production.** It is a `FAIL`, not a warning, because
    debug responses leak internals.
 5. **A value that is required for the process to *construct* belongs on every
@@ -40,7 +45,7 @@ the script cannot.
 | --- | --- | --- |
 | `ENVIRONMENT` | `production` | Selects production validation rules. Anything else is a `WARN` — the rules still apply, but you are not running the configuration you think you are. |
 | `DEBUG` | `false` | `FAIL` if on. Disables debug responses and tracebacks. |
-| `DATABASE_URL` | Managed PostgreSQL 12+, **not** localhost, TLS requested, credentials present | `FAIL` on localhost. Prefer the internal URL Replit injects from the managed database so traffic stays on the private network. |
+| `EXTERNAL_DATABASE_URL` | External TLS PostgreSQL URL, currently Neon. **Not** localhost; encryption required, not optional; credentials present | The one database setting an operator supplies. The application reads `DATABASE_URL`, so each launcher runs `export DATABASE_URL="$EXTERNAL_DATABASE_URL"` before the preflight and before startup. Replit's platform-managed `DATABASE_URL` is deliberately ignored. `FAIL` on localhost or with TLS off. See "The production database" below. |
 | `AUTH_MODE` | `jwks` | `FAIL` on `hs256`. Production must validate tokens against a real issuer. |
 | `AUTH_JWKS_URL` | `https://…` | Required when `AUTH_MODE=jwks`. `FAIL` if `http`. This is the URL the API fetches keys from; it must be the issuer's, not a copy. |
 | `AUTH_JWT_AUDIENCE` | The intended client identifier | The API's `aud` check. A mismatch rejects every staff token. |
@@ -70,7 +75,7 @@ therefore required here too.
 | `ENVIRONMENT` | `production` | Same process-wide validation. |
 | `DEBUG` | `false` | Same. |
 | `PYTHONPATH` | `.` | Same repository root. |
-| `DATABASE_URL` | Same database as the web deployment, internal connection | The worker consumes integration jobs and writes `BusinessAction` rows. A different database means jobs are consumed against a schema the API never reads. |
+| `EXTERNAL_DATABASE_URL` | **The same secret, the same database as `cxops-web`**: external TLS PostgreSQL, currently Neon | The worker consumes integration jobs and writes `BusinessAction` rows. A different database means jobs are consumed against a schema the API never reads — and both processes connect successfully, so the split never surfaces as an error. Mapped to `DATABASE_URL` exactly as on `cxops-web`, before the preflight and before the worker starts. |
 | `AUTH_MODE`, `AUTH_JWKS_URL`, `AUTH_JWT_AUDIENCE`, `AUTH_JWT_ISSUER`, `AUTH_DEV_MODE` | Same as the API | Required to construct `Settings`; a missing value is a crash loop. The worker authenticates no inbound request, but it must still load the same validated configuration object. |
 | `ENCRYPTION_KEYS` | Same value as the API | The worker reads stored provider credentials to execute integration jobs. A different key set means it cannot decrypt what the API wrote. |
 | `OPENAI_API_KEY` | Present | Integration jobs can reach the agent workflow, which constructs `ChatOpenAI` at import. |
@@ -83,6 +88,66 @@ Prometheus listener on `WORKER_METRICS_PORT` (default `9101`) is reachable only
 from inside the deployment; set it to `0` only if the platform forbids extra
 listeners, at the cost of losing the metrics that distinguish "idle" from
 "dead".
+
+## The production database
+
+Production PostgreSQL is **external** — currently a Neon database, reached over
+TLS. It is not a Replit-managed database, and no Replit-managed production
+database is created or used.
+
+There are two names for that one database, deliberately. Confusing them is the
+most likely way to break a deployment, so the distinction is stated here rather
+than left to be rediscovered:
+
+| Where | Name | Who supplies it |
+| --- | --- | --- |
+| The running services (`cxops-web`, `cxops-worker`) | `EXTERNAL_DATABASE_URL` | The operator, as a Replit Secret on **both** deployments |
+| `scripts/run_migrations.sh` | `DATABASE_URL` | The operator, inline, per invocation |
+
+**The mapping, and why it is unconditional.** The application reads
+`DATABASE_URL`. Each launcher derives it before anything reads it:
+
+```sh
+export DATABASE_URL="$EXTERNAL_DATABASE_URL"
+```
+
+In both launchers this runs before `scripts/preflight_production_env.py` and
+before the application process starts. The preflight is the first thing that
+reads `DATABASE_URL`, so a mapping placed after it would mean the gate validated
+one database while the process connected to another — both steps reporting
+success, with the only check that could have caught it already run.
+
+Replit also publishes a platform-managed `DATABASE_URL` for this project. That
+value is **deliberately ignored**, and is never used as a fallback. The two
+share a name, so which one wins depends on injection order — and injection order
+is not a property this repository can observe or assert. It differs between a
+workspace, a Reserved VM, and a redeploy of the same commit. Assigning over the
+top removes the question instead of betting on it. A missing
+`EXTERNAL_DATABASE_URL` is then a loud failure at boot, with a message naming
+the variable, rather than a silent connection to a database nobody chose.
+
+**Never set `DATABASE_URL` as a deployment secret.** The launchers overwrite it.
+Setting it is at best redundant and at worst reintroduces exactly the precedence
+ambiguity the mapping exists to remove.
+
+**Migrations take `DATABASE_URL`, not `EXTERNAL_DATABASE_URL`, on purpose.**
+`scripts/run_migrations.sh` is run by an operator from a one-off shell, outside
+both launchers, so it inherits no mapping step — the `export` above lives inside
+those scripts and does not exist anywhere else. The same Neon value is supplied
+under the name this script reads:
+
+```sh
+DATABASE_URL='<Neon direct URL>' scripts/run_migrations.sh
+```
+
+Do not assume the service secret flows into the migration step. It does not, and
+running it against the wrong value either fails loudly or — worse — succeeds
+against one database while the services point at another.
+
+**The current database is already migrated.** Production Neon is at Alembic head
+`1p4a0001` with `pgvector` installed. There is no pending schema work.
+Migrations stay a deliberate, out-of-band, once-per-change step for *future*
+changes, and never run at boot.
 
 ## Frontend build
 
@@ -113,5 +178,5 @@ origin and removes the need for CORS.
 | Value | Why not |
 | --- | --- |
 | A real business-provider credential | The A1 integration is `provider_mode: local_demo`. No A1 API exists in this build, so there is nothing to authenticate against. This is the single most important line in this document: **the pilot cannot perform a real valuation, quote, or pickup**, and no environment variable can change that. |
-| A real public IP allowlist for the database | The managed database is internal-only: only deployments on the same Replit account can open a socket. A public database is not required and would be a regression. |
+| A database IP allowlist | Production PostgreSQL is external (Neon) and reachable over TLS, so there is no internal network boundary to allow from. Access is controlled by the database credential. An allowlist would need a stable egress IP this topology does not have, and is not a current requirement. This is the reverse of the previous topology, where an internal-only database needed no public exposure. |
 | `MIGRATION_LOCK_WAIT_SECONDS` | Only read by `scripts/run_migrations.sh`. Default 300s. It is a migration-step variable, not a service variable. |

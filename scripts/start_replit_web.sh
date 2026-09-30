@@ -90,7 +90,39 @@ fail() { log "ERROR: $*" >&2; exit 1; }
 [ -f "$STANDALONE_SERVER" ] \
   || fail "no prebuilt frontend at $STANDALONE_SERVER; the [deployment] build phase did not complete -- run scripts/build_replit_web.sh and republish, do not expect this script to build it"
 
-# --- 2. The packaged Python dependencies -----------------------------------------
+# --- 2. The production database ---------------------------------------------------
+#
+# CXOps production runs on an external Neon PostgreSQL, migrated to Alembic head
+# 1p4a0001 with pgvector installed. Migrations are not run here (see the note at
+# the top of this script); the database is only connected to.
+#
+# The application reads DATABASE_URL, so that is what gets exported. The value
+# comes from EXTERNAL_DATABASE_URL, an app-owned deployment secret, and the
+# assignment is unconditional. The unconditional part is the point: Replit
+# already publishes a platform-managed DATABASE_URL for this project, and a
+# hand-entered deployment secret is a different variable with the same name.
+# Which of the two wins depends on injection order, and that is not a property
+# this repository can observe, assert, or reason about -- it would differ between
+# the workspace, a Reserved VM, and a redeploy. So neither is relied on: the one
+# this project owns is copied over the top, and the platform's value is
+# discarded whether it is present or not. A `${DATABASE_URL:-...}` form would
+# reintroduce exactly that precedence question, so it is not used.
+#
+# Placed before any interpreter starts, including the preflight, because the
+# preflight is the first thing that reads DATABASE_URL: mapping after it would
+# mean the gate validated one database and the process connected to another.
+#
+# Neither value is logged. A Neon URL carries the password, so a log line that
+# printed it would write a live credential into output that is retained,
+# searchable, and shipped wherever stdout is collected. The name is logged; the
+# value is not, and never will be.
+if [ -z "${EXTERNAL_DATABASE_URL:-}" ]; then
+  fail "EXTERNAL_DATABASE_URL is not set; it is this project's deployment secret for the production PostgreSQL (Neon, Alembic head 1p4a0001) and it is required. The platform-managed DATABASE_URL is deliberately not used."
+fi
+export DATABASE_URL="$EXTERNAL_DATABASE_URL"
+log "database binding: DATABASE_URL set from EXTERNAL_DATABASE_URL (value not logged)"
+
+# --- 3. The packaged Python dependencies -----------------------------------------
 #
 # The build phase installed requirements.txt with the system interpreter and
 # `pip install --target`, so the packages are plain files in a directory rather
@@ -157,7 +189,7 @@ if [ -n "$missing" ]; then
 fi
 log "python dependencies present ($("$PYTHON_BIN" -V 2>&1), from $PY_DEPS_DIRNAME/)"
 
-# --- 3. Fail fast on configuration ----------------------------------------------
+# --- 4. Fail fast on configuration ----------------------------------------------
 #
 # A crash loop is the desired outcome for a misconfigured production process: it
 # is visible and bounded, and it cannot serve a customer. This has bitten before
@@ -195,7 +227,7 @@ if [ -z "${BACKEND_API_URL:-}" ]; then
   log "BACKEND_API_URL unset; defaulting to the loopback API on port ${INTERNAL_API_PORT}"
 fi
 
-# --- 4. Supervise ----------------------------------------------------------------
+# --- 5. Supervise ----------------------------------------------------------------
 #
 # Two children, one supervisor. `wait -n` returns as soon as *either* exits,
 # which is the property that turns a crashed backend into a failed deployment

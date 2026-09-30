@@ -45,12 +45,28 @@ processes:
         value: "."
         reason: Makes `app` and `scripts` importable from the repository root.
 
-      # --- Database ---
-      - name: DATABASE_URL
+      # --- Database: operator-supplied secret, mapped by the launcher ---
+      - name: EXTERNAL_DATABASE_URL
         secret: true
         reason: >-
-          Managed PostgreSQL. Must not point at loopback or a private address in
-          production, and must request TLS when the database is off-platform.
+          The app-owned production PostgreSQL connection string (Neon). The name
+          the application reads is DATABASE_URL; each launcher derives it from
+          this one with `export DATABASE_URL="$EXTERNAL_DATABASE_URL"` before the
+          production preflight runs and before the application process starts, so
+          the preflight validates the same database the process then connects to.
+          Replit also publishes a platform-managed DATABASE_URL for this project,
+          and that value is deliberately ignored rather than used as a fallback:
+          the two share a name, so which one wins depends on injection order, and
+          that order is not a property this repository can observe or assert -- it
+          differs between a workspace, a Reserved VM, and a redeploy of the same
+          commit. Assigning over the top removes the question, and a missing
+          secret then fails loudly at boot instead of silently binding the app to
+          a database nobody chose. Must be a TLS-capable external PostgreSQL URL
+          (encryption required, not merely preferred), must not point at loopback
+          or a private address in production, and must carry working credentials.
+          No literal value: a connection string in this file is a password in the
+          repository, and a default URL is how a deploy ends up writing to the
+          wrong database.
 
       # --- Public URLs: https is mandatory, the app refuses to boot otherwise ---
       - name: FRONTEND_BASE_URL
@@ -200,11 +216,22 @@ processes:
       - name: PYTHONPATH
         value: "."
         reason: Makes `app` and `scripts` importable from the repository root.
-      - name: DATABASE_URL
+      - name: EXTERNAL_DATABASE_URL
         secret: true
         reason: >-
-          Managed PostgreSQL. Must not point at loopback or a private address in
-          production, and must request TLS when the database is off-platform.
+          The app-owned production PostgreSQL connection string (Neon), the same
+          value the web deployment uses, and mapped the same way: each launcher
+          derives DATABASE_URL with `export DATABASE_URL="$EXTERNAL_DATABASE_URL"`
+          before the production preflight runs and before the worker process
+          starts, and Replit's platform-managed DATABASE_URL is deliberately
+          ignored rather than used as a fallback. The worker must reach the same
+          database as the web deployment or it claims jobs against rows the API
+          never reads -- a split that connects successfully on both sides and so
+          never surfaces as an error. Must be a TLS-capable external PostgreSQL
+          URL (encryption required, not merely preferred), must not point at
+          loopback or a private address, and must carry working credentials. No
+          literal value: a connection string in this file is a password in the
+          repository.
       - name: FRONTEND_BASE_URL
         secret: true
         reason: >-

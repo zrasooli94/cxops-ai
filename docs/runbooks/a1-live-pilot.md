@@ -81,6 +81,21 @@ sending a real vehicle description and reading a truthful reply.
    DATABASE_URL='postgresql+asyncpg://…' scripts/run_migrations.sh
    ```
 
+   **This command intentionally uses `DATABASE_URL`, not
+   `EXTERNAL_DATABASE_URL`.** The deployed services (`cxops-web`,
+   `cxops-worker`) receive `EXTERNAL_DATABASE_URL` as a Replit Secret, and each
+   Replit launcher maps it with
+   `export DATABASE_URL="$EXTERNAL_DATABASE_URL"` before starting. That mapping
+   lives inside the launchers, so it does not exist here: this command is run by
+   an operator from a one-off shell, outside any launcher, and therefore takes
+   the same Neon connection string directly under the name
+   `scripts/run_migrations.sh` reads. Do not set `DATABASE_URL` as the Replit
+   *service* deployment secret — Replit injects a platform-managed one, and the
+   launchers deliberately overwrite it, so the services use the external Neon
+   database and never the Replit-managed one. Use the Neon **direct** (unpooled)
+   connection here: a migration holds a session and its advisory lock for as
+   long as it takes, and a pooler may hand the connection away or cut it.
+
    The advisory lock (`728_120_001`) is held for the whole migration by the same
    process that runs Alembic, so a second concurrent migrator waits instead of
    failing mid-DDL. The wait is bounded by `MIGRATION_LOCK_WAIT_SECONDS`

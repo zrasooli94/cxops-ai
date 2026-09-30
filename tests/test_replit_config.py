@@ -1568,6 +1568,225 @@ def test_no_migrations_at_boot(launcher: str) -> None:
         assert forbidden not in text, f"{launcher} runs {label} at boot"
 
 
+# ---------------------------------------------------------------------------
+# E2. The production database is an app-owned secret, not a name collision
+#
+# CXOps production is an external Neon PostgreSQL, migrated to Alembic head
+# 1p4a0001 with pgvector installed. The application reads DATABASE_URL. Replit
+# also publishes a platform-managed DATABASE_URL for this project.
+#
+# That is a name collision between two things the repository does not own, and the
+# only reason it is a hazard rather than a non-issue is that the collision is
+# invisible. Nothing fails; whichever value the platform happens to inject last
+# simply wins, and it can differ between a workspace, a Reserved VM, and a
+# redeploy of the same commit.
+#
+# So both production launchers map EXTERNAL_DATABASE_URL -- a secret this project
+# owns -- over the top of DATABASE_URL, unconditionally. The tests below are
+# about that mapping specifically: that it exists, that it is not conditional on
+# the platform's variable being absent, that it happens before anything reads
+# DATABASE_URL, and that no launcher ever prints either value.
+#
+# The two launchers are parameterised together because the worker must reach the
+# same database as the web deployment. A mapping added to one and not the other
+# produces the worst version of this bug: a system where the two halves disagree
+# about which database is authoritative, and neither is obviously wrong.
+# ---------------------------------------------------------------------------
+
+#: The production launchers that must perform the mapping. Same tuple as
+#: DEPLOYMENT_LAUNCHERS, named separately so a test about the database says what
+#: it is about -- and so a future third deployment has to be added here
+#: deliberately rather than picked up by accident.
+DATABASE_LAUNCHERS = DEPLOYMENT_LAUNCHERS
+
+#: The entry point each launcher starts, per launcher. Used to assert the mapping
+#: precedes application startup and not merely the preflight.
+LAUNCHER_ENTRY_POINT = {
+    "start_replit_web.sh": "-m uvicorn app.main:app",
+    "start_replit_worker.sh": "exec .venv/bin/python -m scripts.worker",
+}
+
+
+@pytest.mark.parametrize("launcher", DATABASE_LAUNCHERS)
+def test_launcher_requires_the_external_database_url(launcher: str) -> None:
+    """EXTERNAL_DATABASE_URL must be required, with no default and no fallback.
+
+    `:-` in the *test* of emptiness is what makes the launcher safe under `set
+    -u`: an unset variable aborts with an unbound-variable error naming the shell
+    rather than the setting. So the check has to be `[ -z "${VAR:-}" ]`, and the
+    message has to name the variable -- this is a crash loop an operator has to
+    fix, and "some variable is not set" sends them to the wrong place.
+
+    No default, and no fallback to DATABASE_URL: a fallback would reintroduce
+    exactly the precedence question this mapping exists to remove, and a default
+    URL is how a deployment ends up writing to the wrong database.
+    """
+    text = _effective(launcher)
+    guard = next(
+        (
+            i
+            for i, ln in enumerate(text.splitlines())
+            if re.match(r'\s*if \[ -z "\$\{EXTERNAL_DATABASE_URL:-\}" \]; then', ln)
+        ),
+        None,
+    )
+    assert guard is not None, (
+        f"{launcher} must require EXTERNAL_DATABASE_URL with "
+        '`if [ -z "${EXTERNAL_DATABASE_URL:-}" ]`'
+    )
+    following = text.splitlines()[guard + 1 : guard + 3]
+    assert any(re.match(r"\s*fail\b", ln) for ln in following), (
+        f"{launcher}: a missing EXTERNAL_DATABASE_URL must abort the start, but no "
+        f"`fail` follows the check. Lines after: {following!r}"
+    )
+    assert any("EXTERNAL_DATABASE_URL" in ln for ln in following), (
+        f"{launcher}: the failure must name EXTERNAL_DATABASE_URL"
+    )
+    # No invented value. A literal URL in a launcher is a credential in source.
+    assert not re.search(r"EXTERNAL_DATABASE_URL:-postgres", text), (
+        f"{launcher} must not carry a default EXTERNAL_DATABASE_URL; a URL in the "
+        "script is a password in the repository"
+    )
+    assert not re.search(r"EXTERNAL_DATABASE_URL:-[^}]*DATABASE_URL", text), (
+        f"{launcher} must not fall back to DATABASE_URL; that is the precedence "
+        "question this mapping removes"
+    )
+
+
+@pytest.mark.parametrize("launcher", DATABASE_LAUNCHERS)
+def test_launcher_exports_database_url_from_the_external_one(launcher: str) -> None:
+    """`export DATABASE_URL="$EXTERNAL_DATABASE_URL"`, unconditionally.
+
+    The export, not a local assignment: DATABASE_URL is read by a child process
+    (the preflight, uvicorn, the exec'd worker), and a shell-local variable is
+    inherited by nothing.
+
+    The absence of a condition is the assertion, and it cannot be checked by
+    looking for a forbidden string, because there are several ways to get this
+    wrong: `${DATABASE_URL:-$EXTERNAL_DATABASE_URL}` (platform value wins when
+    present), `if [ -z "${DATABASE_URL:-}" ]` (skip the mapping when the platform
+    supplied one), or appending to an existing value. Each produces a launcher
+    that reads correctly here and binds to the platform's database there. So the
+    line is matched exactly, and its value is the external secret and nothing
+    else.
+    """
+    text = _effective(launcher)
+    matches = re.findall(r"^export DATABASE_URL=(.*)$", text, flags=re.MULTILINE)
+    assert matches == ['"$EXTERNAL_DATABASE_URL"'], (
+        f"{launcher} must export DATABASE_URL as exactly "
+        f"'$EXTERNAL_DATABASE_URL', got {matches!r}. Any conditional or defaulted "
+        "form makes the mapping depend on whether the platform also set "
+        "DATABASE_URL, which is the thing being removed."
+    )
+    for pattern, why in (
+        (r"\$\{DATABASE_URL", "a fallback that defers to the platform value"),
+        (r":-", "a default, which is a credential or a wrong database"),
+        (r"\$\{\{?", "an indirect expansion nobody can check by reading the line"),
+    ):
+        assert not re.search(pattern, matches[0]), (
+            f"{launcher}: the export must be a plain copy -- {why}"
+        )
+
+
+@pytest.mark.parametrize("launcher", DATABASE_LAUNCHERS)
+def test_database_mapping_precedes_preflight_and_startup(launcher: str) -> None:
+    """Before the preflight, and before the application process starts.
+
+    The preflight is the first thing in either launcher that reads DATABASE_URL, so
+    a mapping placed after it means the gate validated one database and the process
+    connected to another -- with both steps reporting success. That is worse than
+    no mapping at all, because it removes the only check that could have caught it.
+
+    The entry point is asserted as well as the preflight, because "before the
+    preflight" alone is satisfiable by a mapping that sits between the preflight and
+    uvicorn, which is the same bug one step later.
+    """
+    text = _effective(launcher)
+    lines = text.splitlines()
+    assert any(ln.startswith("export DATABASE_URL=") for ln in lines), (
+        f"{launcher} has no `export DATABASE_URL=...`; the mapping this test orders "
+        "is missing, not merely misplaced"
+    )
+    export_at = next(i for i, ln in enumerate(lines) if ln.startswith("export DATABASE_URL="))
+    preflight_at = next(i for i, ln in enumerate(lines) if "preflight_production_env.py" in ln)
+    entry = LAUNCHER_ENTRY_POINT[launcher]
+    entry_at = text.index(entry)
+    assert export_at < preflight_at, (
+        f"{launcher}: DATABASE_URL must be exported before the preflight; the "
+        "preflight reads it, so a later mapping means the gate validated one "
+        "database and the process connects to another"
+    )
+    assert export_at < entry_at, f"{launcher}: DATABASE_URL must be exported before {entry!r}"
+    # And the check that produces it has to precede the export, or the export is
+    # a bare `export` of an unset value under `set -u` -- which aborts with a
+    # message about the shell rather than about the setting.
+    assert any(
+        re.match(r'\s*if \[ -z "\$\{EXTERNAL_DATABASE_URL:-\}" \]; then', ln) for ln in lines
+    ), f"{launcher} has no EXTERNAL_DATABASE_URL check to order against the export"
+    guard_at = next(
+        i
+        for i, ln in enumerate(lines)
+        if re.match(r'\s*if \[ -z "\$\{EXTERNAL_DATABASE_URL:-\}" \]; then', ln)
+    )
+    assert guard_at < export_at, f"{launcher}: the check must precede the export"
+
+
+@pytest.mark.parametrize("launcher", DATABASE_LAUNCHERS)
+def test_no_launcher_prints_a_database_url(launcher: str) -> None:
+    """No log, echo or printf may expand a database URL.
+
+    A Neon connection string carries the password, and deployment logs are
+    retained, searchable, and shipped wherever stdout is collected. So the
+    invariant is about *expansion*, not about the substring: naming the variable
+    in a log line is how an operator confirms the mapping took effect, and that is
+    worth having. Printing its value writes a live credential, and
+    `log "bound to $DATABASE_URL"` is exactly the line someone adds while
+    debugging a connection error and forgets to remove.
+
+    Asserted against executable lines only, because both launchers document this
+    rule in prose that necessarily contains the very strings being forbidden.
+    """
+    text = _effective(launcher)
+    printers = re.compile(r"^\s*(log|echo|printf)\b")
+    for line in text.splitlines():
+        if not printers.match(line):
+            continue
+        for value in (r"\$\{?EXTERNAL_DATABASE_URL", r"\$\{?DATABASE_URL"):
+            assert not re.search(value, line), (
+                f"{launcher} expands a database URL into a log line: {line.strip()!r}. "
+                "A Neon URL contains the password."
+            )
+    # And nothing prints the value by another route: a `set -x` would put every
+    # expanded assignment into stderr on every command.
+    assert not re.search(r"^\s*set -x", text, flags=re.MULTILINE), (
+        f"{launcher} must not enable shell tracing; `set -x` writes every expanded "
+        "assignment, including the database URL, to the deployment log"
+    )
+
+
+@pytest.mark.parametrize("launcher", DATABASE_LAUNCHERS)
+def test_both_deployments_bind_the_same_database(launcher: str) -> None:
+    """One secret, both deployments, byte-for-byte the same assignment.
+
+    Worth its own test because the failure it prevents is invisible: the web
+    deployment and the worker each connect successfully, to different databases,
+    and the symptom is a job that claims against rows the web deployment never
+    writes. Nothing crashes and nothing logs an error.
+
+    So the mapping is asserted as identical text in both scripts rather than as
+    "both scripts mention EXTERNAL_DATABASE_URL", which would pass if one of them
+    derived the URL differently.
+    """
+    web = re.search(
+        r"^export DATABASE_URL=(.*)$", _effective("start_replit_web.sh"), flags=re.MULTILINE
+    )
+    other = re.search(r"^export DATABASE_URL=(.*)$", _effective(launcher), flags=re.MULTILINE)
+    assert web and other and web.group(1) == other.group(1) == '"$EXTERNAL_DATABASE_URL"', (
+        "the web deployment and the worker must assign DATABASE_URL identically; "
+        f"web={web.group(1) if web else None!r}, {launcher}={other.group(1) if other else None!r}"
+    )
+
+
 @pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
 def test_production_preflight_still_runs_and_still_gates(launcher: str) -> None:
     """Neither the pip fix nor the build/run split weakened the env gate.

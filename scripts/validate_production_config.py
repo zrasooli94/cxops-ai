@@ -67,6 +67,16 @@ _EXAMPLE_TLD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# SSL modes that *enforce* encryption, as opposed to preferring it. Anything
+# outside this set is a production failure; see check_database for why the
+# distinction is `prefer` rather than `verify-ca`.
+#
+# `require` encrypts without validating the server certificate, which is why it
+# sits in the passing set alongside the verifying modes. That is the deployment's
+# call to make with its database provider, and this check refuses plaintext --
+# it does not grade certificate policy.
+TLS_ENFORCING_MODES = frozenset({"require", "verify-ca", "verify-full", "true", "1"})
+
 
 class Reporter:
     def __init__(self, fail_on_warn: bool) -> None:
@@ -329,23 +339,53 @@ def check_database(cfg, reporter: Reporter) -> None:
         reporter.ok("DATABASE_URL", _safe_url_shape(url))
 
     if host in ("localhost", "127.0.0.1", "::1"):
-        reporter.fail("DATABASE_URL", "points at localhost; production must use a managed database")
+        reporter.fail(
+            "DATABASE_URL",
+            "points at localhost; production must use a non-local PostgreSQL database",
+        )
 
     # Settings.normalize_database_url rewrites ``sslmode=`` to ``ssl=``, so both
     # spellings have to be understood here.
+    #
+    # Production PostgreSQL is external, so encryption is a requirement and not a
+    # recommendation, and what is required is *enforced* TLS rather than a TLS
+    # preference. `prefer` is the reason for the distinction: it negotiates TLS
+    # and then continues in plaintext when the server declines, so a connection
+    # that "succeeded" may have carried the password unencrypted, and nothing at
+    # the call site can tell the two apart. An absent parameter is the same
+    # situation by default -- both libpq and asyncpg fall back to no encryption
+    # -- so it fails rather than warns. A warning here was the old behaviour and
+    # it was too weak: `READY WITH WARNINGS` is a verdict a deploy proceeds on.
     query = (parts.query or "").lower()
     tls_params = dict(
         pair.split("=", 1) for pair in query.split("&") if "=" in pair
     )
     tls = tls_params.get("ssl", tls_params.get("sslmode", ""))
-    if tls in ("disable", "false", "0"):
-        reporter.fail("DATABASE_URL", "has TLS disabled; production traffic must be encrypted")
-    elif tls in ("require", "verify-ca", "verify-full", "true", "1", "prefer"):
-        reporter.ok("DATABASE_URL", f"requests TLS (ssl={tls})")
+    if tls in TLS_ENFORCING_MODES:
+        reporter.ok("DATABASE_URL", f"requires TLS (ssl={tls})")
     else:
-        reporter.warn(
+        # Each rejected value is named with its own reason, because "does not
+        # require TLS" alone does not tell an operator which of their two
+        # plausible values is the wrong one -- and `prefer` in particular looks
+        # like the safe one.
+        if tls == "prefer":
+            why = (
+                "sslmode=prefer negotiates TLS but continues in plaintext when "
+                "the server declines, so a connection that succeeded may have "
+                "carried the password unencrypted"
+            )
+        elif tls in ("disable", "false", "0"):
+            why = "TLS is switched off"
+        else:
+            why = (
+                "no sslmode= parameter, which both libpq and asyncpg treat as "
+                "unencrypted"
+            )
+        reporter.fail(
             "DATABASE_URL",
-            "does not request TLS; set sslmode=require if the database is off-platform",
+            f"does not require TLS ({why}); production traffic to the database "
+            "must be encrypted. Set sslmode=require, or a stricter mode "
+            "(verify-ca, verify-full).",
         )
 
 

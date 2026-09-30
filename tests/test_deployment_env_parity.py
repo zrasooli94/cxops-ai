@@ -37,19 +37,42 @@ NEXT_CONFIG = REPO_ROOT / "frontend" / "next.config.ts"
 WEB = "cxops-web"
 WORKER = "cxops-worker"
 
+#: The variable the application reads. The launchers derive it; no operator sets it.
+APP_DB_VAR = "DATABASE_URL"
+
+#: The app-owned secret an operator must supply, and the only database variable
+#: the contract declares. See test_database_url_is_no_longer_an_operator_supplied_secret.
+OPERATOR_DB_SECRET = "EXTERNAL_DATABASE_URL"
+
+#: The shell line both launchers must contain, character for character. Built by
+#: concatenation rather than one f-string because the `$` is part of what is being
+#: asserted -- this is shell source, not a Python value, and the sigil is exactly
+#: what distinguishes a real copy from `${EXTERNAL_DATABASE_URL}` or a bare
+#: assignment.
+DB_MAPPING = f'export {APP_DB_VAR}="$' + OPERATOR_DB_SECRET + '"'
+
+#: Process -> its production launcher, for the checks that compare the contract
+#: against what the scripts actually do.
+LAUNCHER_FOR: dict[str, Path] = {WEB: START_WEB, WORKER: START_WORKER}
+
+#: Process -> the application entry point it starts. Used to assert the database
+#: mapping happens before the process that will read it, not merely before the
+#: preflight. Matched on the exec/invocation itself, not a substring a log line
+#: could also contain.
+LAUNCHER_ENTRY_POINT = {
+    WEB: "-m uvicorn app.main:app",
+    WORKER: "exec .venv/bin/python -m scripts.worker",
+}
+
 DOCUMENT: dict[str, Any] = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
 PROCESSES: dict[str, Any] = DOCUMENT["processes"]
 WEB_KEYS = {entry["name"] for entry in PROCESSES[WEB]["required"]}
 WORKER_KEYS = {entry["name"] for entry in PROCESSES[WORKER]["required"]}
 WEB_REQUIRED = {
-    entry["name"]: entry
-    for entry in PROCESSES[WEB]["required"]
-    if not entry.get("optional")
+    entry["name"]: entry for entry in PROCESSES[WEB]["required"] if not entry.get("optional")
 }
 WORKER_REQUIRED = {
-    entry["name"]: entry
-    for entry in PROCESSES[WORKER]["required"]
-    if not entry.get("optional")
+    entry["name"]: entry for entry in PROCESSES[WORKER]["required"] if not entry.get("optional")
 }
 
 
@@ -75,9 +98,7 @@ def _tuning(process: str) -> dict[str, str]:
     ],
 )
 @pytest.mark.parametrize("process", [WEB, WORKER])
-def test_every_process_declares_the_production_posture(
-    key: str, value: str, process: str
-) -> None:
+def test_every_process_declares_the_production_posture(key: str, value: str, process: str) -> None:
     """Production is only recognisable if every process says so.
 
     A worker left on the development default still claims jobs and still writes
@@ -99,17 +120,164 @@ def test_every_process_can_import_the_app(process: str) -> None:
 
 
 @pytest.mark.parametrize("process", [WEB, WORKER])
-def test_every_process_binds_the_database(process: str) -> None:
-    """A process without DATABASE_URL cannot reach PostgreSQL at all."""
+def test_every_process_requires_the_external_database_url(process: str) -> None:
+    """A process without the production database cannot reach PostgreSQL at all.
+
+    EXTERNAL_DATABASE_URL, not DATABASE_URL. The application reads DATABASE_URL,
+    but the operator does not supply it -- the launchers derive it, before the
+    preflight and before the application process starts. So the contract states
+    the name an operator has to set, and the mapping is asserted separately
+    against the scripts.
+
+    `secret: true` because a connection string carries a password, and no
+    `value:` because a literal default is how a deploy ends up pointing at the
+    wrong database while reporting success.
+    """
     entries = {e["name"]: e for e in PROCESSES[process]["required"]}
-    assert "DATABASE_URL" in entries, f"{process} has no database binding"
-    assert entries["DATABASE_URL"].get("secret") is True, (
-        "DATABASE_URL carries a password; it must be flagged secret so nobody "
-        "is tempted to inline it"
+    assert OPERATOR_DB_SECRET in entries, (
+        f"{process} does not declare {OPERATOR_DB_SECRET}; the launchers require it "
+        "and refuse to start without it, so the contract must state it"
     )
-    assert "value" not in entries["DATABASE_URL"], (
-        "DATABASE_URL must have no default: a fallback URL is how a deploy ends "
-        "up writing to the wrong database"
+    assert entries[OPERATOR_DB_SECRET].get("secret") is True, (
+        f"{OPERATOR_DB_SECRET} carries a password; it must be flagged secret so "
+        "nobody is tempted to inline it"
+    )
+    assert "value" not in entries[OPERATOR_DB_SECRET], (
+        f"{OPERATOR_DB_SECRET} must have no default: a fallback URL is how a "
+        "deploy ends up writing to the wrong database"
+    )
+    assert entries[OPERATOR_DB_SECRET].get("optional") is not True, (
+        f"{OPERATOR_DB_SECRET} is not optional; both launchers fail closed without it"
+    )
+
+
+@pytest.mark.parametrize("process", [WEB, WORKER])
+def test_database_url_is_no_longer_an_operator_supplied_secret(process: str) -> None:
+    """DATABASE_URL is a derived runtime variable, so it is not in the contract.
+
+    Leaving it declared is how the drift started. Declared, an operator reads
+    the contract, sees the name they remember, and sets it -- and then which
+    value the process ends up with depends on injection order, silently, per
+    environment. The contract is the list of what an operator must supply, so a
+    variable the launchers compute has no business in it.
+    """
+    entries = {e["name"]: e for e in PROCESSES[process]["required"]}
+    assert APP_DB_VAR not in entries, (
+        f"{process} still declares {APP_DB_VAR} as an operator-supplied setting; it "
+        f"is now derived by the launcher from {OPERATOR_DB_SECRET}, so declaring it "
+        "reintroduces the precedence question the mapping removes"
+    )
+    assert APP_DB_VAR not in _tuning(process), (
+        f"{process}.optional_tuning still defaults {APP_DB_VAR}; a default "
+        f"{APP_DB_VAR} would silently override the mapped {OPERATOR_DB_SECRET}"
+    )
+
+
+@pytest.mark.parametrize("process", [WEB, WORKER])
+def test_every_launcher_maps_the_external_url_onto_the_app_variable(
+    process: str,
+) -> None:
+    """`export DATABASE_URL="$EXTERNAL_DATABASE_URL"`, exactly, in both launchers.
+
+    Checked against executable lines only, because both launchers document this
+    rule in prose that necessarily contains the same string -- a comment
+    describing the mapping must not be able to satisfy the assertion.
+
+    The value must be the external secret and nothing else. Each of the ways
+    this goes subtly wrong -- `${DATABASE_URL:-$EXTERNAL_DATABASE_URL}`, a guard
+    that skips the mapping when the platform supplied one, appending to an
+    existing value -- produces a launcher that reads correctly in a test and
+    binds to the platform's database in a deployment.
+    """
+    lines = _executable_lines(LAUNCHER_FOR[process].read_text(encoding="utf-8"))
+    exports = [ln for ln in lines if ln.startswith(f"export {APP_DB_VAR}=")]
+    assert exports == [DB_MAPPING], (
+        f"the {process} launcher must export {APP_DB_VAR} as exactly "
+        f"{DB_MAPPING!r}, got {exports!r}"
+    )
+
+
+@pytest.mark.parametrize("process", [WEB, WORKER])
+def test_the_mapping_runs_before_the_preflight_and_the_entry_point(
+    process: str,
+) -> None:
+    """Ordering, because the preflight is the first reader of DATABASE_URL.
+
+    `scripts/preflight_production_env.py` validates DATABASE_URL, and it is the
+    only gate before startup. A mapping placed after it means the gate validates
+    one database and the process connects to another, both reporting success --
+    strictly worse than no mapping, because it removes the check that would have
+    caught it.
+
+    The application entry point is asserted as well, since "before the preflight"
+    alone is satisfied by a mapping that sits between the preflight and the
+    process: the same bug, one step later.
+    """
+    lines = _executable_lines(LAUNCHER_FOR[process].read_text(encoding="utf-8"))
+    assert DB_MAPPING in lines, (
+        f"the {process} launcher has no {DB_MAPPING!r}; the mapping this test "
+        "orders is missing, not merely misplaced"
+    )
+    export_at = lines.index(DB_MAPPING)
+    preflight_at = next(i for i, ln in enumerate(lines) if "preflight_production_env.py" in ln)
+    assert export_at < preflight_at, (
+        f"the {process} launcher must map {OPERATOR_DB_SECRET} onto {APP_DB_VAR} "
+        "before the preflight; the preflight reads it, so a later mapping means the "
+        "gate validated one database and the process connects to another"
+    )
+    entry = LAUNCHER_ENTRY_POINT[process]
+    starts = [ln for ln in lines if entry in ln]
+    assert len(starts) == 1, (
+        f"expected exactly one line in the {process} launcher to be the application "
+        f"entry point {entry!r}, found {starts!r}; a looser match would let a log "
+        "line satisfy the ordering check"
+    )
+    assert export_at < lines.index(starts[0]), (
+        f"the {process} launcher must map the database before {entry!r}"
+    )
+
+
+@pytest.mark.parametrize("process", [WEB, WORKER])
+def test_the_contract_explains_the_database_mapping(process: str) -> None:
+    """The `reason` is the part an operator actually reads, so it must be accurate.
+
+    A contract that lists EXTERNAL_DATABASE_URL without saying it is mapped, and
+    that the platform's own DATABASE_URL is ignored, leaves the two questions a
+    deploy actually raises ("why not DATABASE_URL?", "should I set it too?")
+    unanswered -- and the second one is how a contract like this drifts back.
+    """
+    reason = {e["name"]: e for e in PROCESSES[process]["required"]}[OPERATOR_DB_SECRET][
+        "reason"
+    ].lower()
+    documented = {
+        "the exact mapping": DB_MAPPING.lower(),
+        "the ordering before the preflight": "preflight",
+        "the TLS requirement": "tls",
+        "an external PostgreSQL URL": "external postgresql",
+        "no literal value": "no literal value",
+        "the platform value is ignored": "platform-managed",
+        "it is ignored rather than a fallback": "fallback",
+    }
+    missing = [what for what, needle in documented.items() if needle not in reason]
+    assert not missing, f"{process}.{OPERATOR_DB_SECRET} does not document: {missing}"
+
+
+def test_web_and_worker_bind_the_same_database() -> None:
+    """One secret, both deployments, byte-for-byte the same mapping.
+
+    Worth its own test because the failure is invisible: web and worker each
+    connect successfully, to different databases, and the symptom is a job
+    claiming against rows the API never writes. Nothing crashes and no log line
+    says anything is wrong.
+    """
+    web_entry = {e["name"]: e for e in PROCESSES[WEB]["required"]}[OPERATOR_DB_SECRET]
+    worker_entry = {e["name"]: e for e in PROCESSES[WORKER]["required"]}[OPERATOR_DB_SECRET]
+    assert web_entry["secret"] is worker_entry["secret"] is True
+    web_lines = _executable_lines(START_WEB.read_text(encoding="utf-8"))
+    worker_lines = _executable_lines(START_WORKER.read_text(encoding="utf-8"))
+    assert DB_MAPPING in web_lines and DB_MAPPING in worker_lines, (
+        "both launchers must carry the identical mapping, or the two deployments "
+        "disagree about which database is authoritative"
     )
 
 
@@ -131,11 +299,11 @@ def test_web_and_worker_agree_on_security_critical_settings() -> None:
         "AUTH_MODE",
         "FRONTEND_BASE_URL",
         "BACKEND_PUBLIC_URL",
+        OPERATOR_DB_SECRET,
     }
     missing_from_worker = shared - set(WORKER_REQUIRED)
     assert not missing_from_worker, (
-        f"worker is missing {sorted(missing_from_worker)}; it would crash on "
-        "import in production"
+        f"worker is missing {sorted(missing_from_worker)}; it would crash on import in production"
     )
     assert shared <= set(WEB_REQUIRED), f"web is missing {sorted(shared - WEB_REQUIRED)}"
 
@@ -204,14 +372,9 @@ def test_disabled_integration_is_a_complete_configuration() -> None:
     contract says so, or an operator will eventually add the endpoint without
     its secret and get unsigned writes.
     """
-    entry = {
-        e["name"]: e
-        for e in PROCESSES[WEB]["required"]
-    }["TICKET_EVENT_WEBHOOK_SECRET"]
+    entry = {e["name"]: e for e in PROCESSES[WEB]["required"]}["TICKET_EVENT_WEBHOOK_SECRET"]
     assert entry.get("optional") is True
-    assert "503" in entry["reason"], (
-        "the disabled-webhook behaviour must be stated in the contract"
-    )
+    assert "503" in entry["reason"], "the disabled-webhook behaviour must be stated in the contract"
 
 
 def test_every_required_entry_explains_itself() -> None:
@@ -275,8 +438,7 @@ def test_no_process_runs_migrations_at_boot() -> None:
     for script in (START_WEB, START_WORKER, START_API):
         executed = _executable_lines(script.read_text(encoding="utf-8"))
         assert not any("run_migrations" in line for line in executed), (
-            f"{script.name} invokes the migration step; that belongs in a "
-            "one-off shell, not a boot"
+            f"{script.name} invokes the migration step; that belongs in a one-off shell, not a boot"
         )
 
 
@@ -341,9 +503,7 @@ def test_pgvector_requirement_is_recorded_with_a_recovery_step() -> None:
     deploy that reports success and an app that fails its first RAG query.
     """
     database = DOCUMENT["database"]
-    extension = next(
-        e for e in database["required_extensions"] if e["name"] == "vector"
-    )
+    extension = next(e for e in database["required_extensions"] if e["name"] == "vector")
     assert "CREATE EXTENSION" in extension["manual_step"]
     assert "VECTOR(1536)" in extension["required_by"]
     assert database["minimum_major_version"] >= 12
@@ -377,9 +537,7 @@ def test_render_blueprint_is_not_at_the_repository_root() -> None:
 
 
 def test_archived_blueprint_is_marked_deprecated() -> None:
-    archived = (REPO_ROOT / "docs" / "archive" / "render.yaml").read_text(
-        encoding="utf-8"
-    )
+    archived = (REPO_ROOT / "docs" / "archive" / "render.yaml").read_text(encoding="utf-8")
     head = archived.splitlines()[:5]
     assert any("DEPRECATED" in line for line in head), (
         "the archived blueprint must announce itself in its first lines"
@@ -454,9 +612,7 @@ def test_tenant_manifests_stay_the_source_of_truth_for_origins() -> None:
     """
     code = _strip_js_comments(NEXT_CONFIG.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(
-        (REPO_ROOT / "config" / "tenants" / "a1-cash-for-cars.yaml").read_text(
-            encoding="utf-8"
-        )
+        (REPO_ROOT / "config" / "tenants" / "a1-cash-for-cars.yaml").read_text(encoding="utf-8")
     )
     origins = manifest["public_chat"]["allowed_origins"]
     assert origins, "A1 declares no origins, so this test proves nothing"

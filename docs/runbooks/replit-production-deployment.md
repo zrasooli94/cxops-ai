@@ -6,22 +6,39 @@ Render/Vercel topology. Read
 *what* each value must be; this file is *how* to apply it.
 
 > **Resource approval.** Nothing in this runbook has been executed. CXOps
-> requires a paid Replit Reserved VM and a managed PostgreSQL database. Before
-> creating either, stop and present
+> requires two paid Replit Reserved VM deployments and an external PostgreSQL
+> database. Before creating any of them, stop and present
 > `REPLIT_RESOURCE_CREATION_APPROVAL_REQUIRED` with the resource type, the
 > configuration, and the reason. Approval for one resource is not approval for
-> the other, and approval to create is not approval to enable a payment method.
+> the others, and approval to create is not approval to enable a payment method.
 
 ## 1. Topology
 
-One Replit project, two deployments from one source tree.
+One Replit project, two deployments from one source tree. Both are **Reserved
+VMs**, chosen as the deployment type in the Replit Publishing UI when the
+deployment is created. `.replit` deliberately carries no `deploymentTarget`
+key: Replit's own schema validator rejected the only value that was ever there,
+so it was never taking effect — it was a claim in a comment, not configuration.
 
-| Deployment | Serves | Published port |
-| --- | --- | --- |
-| `cxops-web` | Next.js frontend, public widget, staff Control Center; FastAPI on loopback behind a same-origin BFF | yes, `PORT` |
-| `cxops-worker` | Durable integration-job consumer | none |
+| Deployment | Serves | Deployment type | Published port |
+| --- | --- | --- | --- |
+| `cxops-web` | Next.js frontend, public widget, staff Control Center; FastAPI on loopback behind a same-origin BFF | Reserved VM | yes, `PORT` |
+| `cxops-worker` | Durable integration-job consumer | Reserved VM | none |
 
-Plus one managed PostgreSQL database, 12 or newer, with `pgvector`.
+Plus **one external PostgreSQL database** (currently Neon), 12 or newer, with
+`pgvector`, already migrated to Alembic head `1p4a0001`.
+
+**There is no Replit-managed production database.** In the Publishing UI, for
+both deployments:
+
+- **Create production database = OFF**
+- **Set up production database with current development data = OFF**
+
+Both must be off. Replit's managed PostgreSQL would be a *second* database,
+seeded from development data, and nothing in this architecture points the
+services at it — so it would be a decoy holding a copy of customer-shaped data
+that nothing is protecting. Leaving either toggle on is the failure this
+runbook most needs to prevent.
 
 **Why one published port.** The browser talks to exactly one origin. The widget,
 the Control Center, and every staff API call are same-origin, which is why the
@@ -42,11 +59,16 @@ one.
 
 ## 2. One-time project setup
 
-1. Create the Replit project from this repository. The `.replit` file pins the
-   run and deployment commands; `replit.nix` pins the system packages
-   (Python 3.12, Node 22, PostgreSQL client, build tooling).
-2. Create the managed PostgreSQL database. Enable the vector extension as the
-   database owner:
+1. Create the Replit project from this repository. `.replit` pins the deployment
+   build and run commands, the language modules (Python 3.12, Node 22), and the
+   system packages. There is **no `replit.nix`**, and there must not be one: the
+   system dependency list lives in `.replit` under `[nix]`, and two files
+   declaring the same dependencies would be a second source of truth for the
+   same thing — which is how the invalid nix attributes ended up committed in
+   the first place.
+
+2. Provision the external PostgreSQL database (Neon) and enable the vector
+   extension as the database owner:
 
    ```sql
    CREATE EXTENSION IF NOT EXISTS vector;
@@ -59,15 +81,32 @@ one.
    `scripts/validate_production_config.py` checks for the extension precisely
    because a missing one is otherwise discovered by the first RAG query.
 
+   Then migrate it once, out of band, exactly as in section 3. Production is
+   already at head `1p4a0001` with `pgvector`; there is no pending schema work.
+
 3. Set every value in `config/replit/deployment-env.yaml` marked `secret: true`
    as a Replit Secret on the relevant deployment. Set the non-secret values
    (`ENVIRONMENT`, `DEBUG`, `PYTHONPATH`, `AUTH_MODE`, `AUTH_DEV_MODE`) as
    environment variables.
 
-   Secrets are set **per deployment**, not project-wide. The worker needs
-   `ENCRYPTION_KEYS` and `DATABASE_URL`; `cxops-web` additionally needs the
-   Zendesk OAuth values. Giving both deployments every value would put an OAuth
-   client secret on a process that never runs an OAuth client.
+   Secrets are set **per deployment**, not project-wide. Both deployments need
+   `EXTERNAL_DATABASE_URL` and `ENCRYPTION_KEYS`; `cxops-web` additionally
+   needs the Zendesk OAuth values. Giving both deployments every value would
+   put an OAuth client secret on a process that never runs an OAuth client.
+
+   **`EXTERNAL_DATABASE_URL`** is the one database setting an operator supplies.
+   Set the **same** Neon value on **both** deployments. Each launcher then runs
+
+   ```sh
+   export DATABASE_URL="$EXTERNAL_DATABASE_URL"
+   ```
+
+   before the production preflight and before the application process starts.
+   Do **not** set `DATABASE_URL` as a deployment secret: Replit injects a
+   platform-managed one, and the launchers overwrite it deliberately so the
+   services cannot land on that database by accident. See
+   [production-environment-contract.md](production-environment-contract.md) for
+   why the assignment is unconditional rather than a fallback.
 
 4. Record the public domain of `cxops-web` and set, on `cxops-web`:
    - `FRONTEND_BASE_URL=https://<public-domain>`
@@ -84,15 +123,30 @@ one.
 ## 3. Migrations: explicit, before the deploy, never at boot
 
 ```sh
-DATABASE_URL='postgresql+asyncpg://…' scripts/run_migrations.sh
+DATABASE_URL='<Neon direct URL>' scripts/run_migrations.sh
 ```
+
+**The name here is intentionally `DATABASE_URL`, not `EXTERNAL_DATABASE_URL`.**
+`scripts/run_migrations.sh` is run by an operator from a one-off shell, outside
+both launchers, so it inherits no mapping — the launchers'
+`export DATABASE_URL="$EXTERNAL_DATABASE_URL"` is a step inside those scripts
+and exists nowhere else. The same Neon value is supplied under the name this
+script reads. Do not assume the service secret flows into the migration step; it
+does not.
+
+Prefer the Neon **direct** (unpooled) URL here rather than the pooled one the
+services use. A migration holds a session and an advisory lock for as long as
+it takes, and a pooler is free to hand that connection away or cut it. A direct
+URL costs nothing extra, because the only client is a human running a one-off
+command.
 
 Run this once per schema change, from a one-off shell, **before** deploying the
 code that needs it. Never from a start command: every restart re-runs the start
 command, so a migration there races itself and produces DDL errors that read
-like application bugs. The worker is likewise a single consumer per deployment
-rather than one per web replica, so a migration on the worker would be
-unnecessary and would race its own restart.
+like application bugs. Neither launcher runs a migration, and
+`tests/test_deployment_env_parity.py` fails the build if one appears. The worker
+is likewise a single consumer per deployment rather than one per web replica, so
+a migration on the worker would be unnecessary and would race its own restart.
 
 The script takes an advisory lock, so two concurrent runs serialise instead of
 colliding. That is a safety net, not permission to automate it into a boot.
@@ -100,30 +154,92 @@ colliding. That is a safety net, not permission to automate it into a boot.
 Order matters: migrate, then deploy. The reverse deploys code that expects a
 column that does not exist yet.
 
+Production is already at head `1p4a0001` with `pgvector`, so there is nothing
+to run before the first deploy of this topology. The step exists for the next
+schema change.
+
 ## 4. Deploy
 
-Deploy `cxops-web` and `cxops-worker` from the same commit. `cxops-web` runs
-`scripts/start_replit_web.sh`, which:
+Deploy `cxops-web` and `cxops-worker` from the same commit.
 
-1. creates the virtualenv and installs `requirements-lock.txt` when the venv is
-   missing,
-2. runs `scripts/preflight_production_env.py` — production posture, https
+### `cxops-web`: build once, start cheap
+
+The web deployment has two commands, and the split is load-bearing rather than
+cosmetic:
+
+| Phase | `.replit` key | Script |
+| --- | --- | --- |
+| Build | `[deployment] build` | `scripts/build_replit_web.sh` |
+| Run | `[deployment] run` | `scripts/start_replit_web.sh` |
+
+**`scripts/build_replit_web.sh`** runs once, before the deployment starts, and
+owns everything that must not repeat:
+
+1. checks the build-time variables `next build` inlines into the bundle
+   (`CXOPS_PUBLIC_SITE_URL`, `NEXT_PUBLIC_NHOST_SUBDOMAIN`,
+   `NEXT_PUBLIC_NHOST_REGION`),
+2. `pip install --target .replit-python/ -r requirements.txt` with the system
+   interpreter — no venv, no PATH change, no mutation of the image's
+   site-packages — then verifies the packages actually import from that
+   directory,
+3. `npm ci`,
+4. `npm run build` (the Next.js production bundle),
+5. stages `.next/static` and `public/` into the standalone output and verifies
+   `frontend/.next/standalone/server.js` exists.
+
+**`scripts/start_replit_web.sh`** runs on every container start and installs
+**nothing** — no venv, no `pip install`, no `npm ci`, no `next build`. It:
+
+1. fails immediately if the prebuilt standalone server is absent, naming the
+   build phase as the remedy rather than suggesting a restart,
+2. maps `EXTERNAL_DATABASE_URL` onto `DATABASE_URL`,
+3. prepends `.replit-python/` to `PYTHONPATH` and checks the packaged packages
+   import from it,
+4. runs `scripts/preflight_production_env.py` — production posture, https
    public URLs, JWKS auth, encryption keys, non-localhost database — and
    **exits non-zero on any violation**,
-3. builds the frontend with `CXOPS_PUBLIC_SITE_URL` present,
-4. starts FastAPI on loopback and Next.js on `PORT` under a supervisor that
+5. starts FastAPI on loopback and Next.js on `PORT` under a supervisor that
    forwards `SIGTERM` and exits non-zero if either child dies.
 
-`cxops-worker` runs `scripts/start_replit_worker.sh`, which does the same
-preflight then `exec`s the worker. It runs no migration.
+Why the split. The frontend build takes minutes, and it used to run inside the
+start command — on every restart, before anything bound the published port. A
+healthy deployment was therefore reported as `hostingpid1: an open port was not
+detected`, because the port opened after the health check's window rather than
+after the build. Replit's Publishing tool does pass deployment configuration to
+the build command, so the split is available. The same reasoning applies to the
+Python half: the platform does not promise to install `requirements.txt` for a
+hosted deployment, so the build phase does it into a project-local `--target`
+directory and the run phase imports from there.
+`tests/test_replit_config.py` fails the build if the runtime launcher grows a
+venv, a `pip install`, or a Next build back.
 
-The preflight is deliberately before the servers, not after: a process that
-starts and then discovers it has no encryption key has already accepted traffic.
+### `cxops-worker`: same database, separate process
+
+`cxops-worker` is a **separate deployment** with its own Run command,
+`scripts/start_replit_worker.sh`, selected when that deployment is created. It
+is not a second process inside the web deployment: one consumer per deployment
+is the intended shape, and a job consumer inside every web replica would
+multiply consumers by the replica count.
+
+It maps the same `EXTERNAL_DATABASE_URL` onto `DATABASE_URL` — before anything
+else runs, so a missing secret is reported immediately rather than after a venv
+build — then creates `.venv` on a fresh VM, installs `requirements.txt` into it
+if `app` does not already import, runs the same preflight, and `exec`s the
+worker. It runs no migration.
+
+The worker still installs into a venv where the web deployment does not: it
+imports `app.core.encryption`, so it needs the project's own dependencies, and
+`.replit-python/` is produced by the web deployment's build phase. Its
+preflight is deliberately before the worker, not after: a process that starts
+and then discovers it has no encryption key has already begun claiming jobs.
 
 ## 5. Verify
 
 ```sh
 # 1. Configuration and database capabilities
+#    From a shell that has the mapped value, exactly as the launchers set it at
+#    boot -- the validator reads DATABASE_URL, not EXTERNAL_DATABASE_URL.
+export DATABASE_URL="$EXTERNAL_DATABASE_URL"
 .venv/bin/python scripts/validate_production_config.py --environment production
 #    Expect: READY. It now also probes PostgreSQL version, pgvector, and the
 #    one-configuration-per-tenant constraint.

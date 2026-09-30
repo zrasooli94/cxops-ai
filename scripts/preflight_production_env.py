@@ -15,8 +15,8 @@ process start unless the configuration is genuinely production-shaped.
 
 Design rules:
 
-* **Vendor-neutral.** It checks *capabilities* (https, reachable, encryption
-  present), never a hosting provider's name. The same script is valid for any
+* **Vendor-neutral.** It checks *capabilities* (https, reachable, TLS actually
+  enforced), never a hosting provider's name. The same script is valid for any
   platform that can supply environment variables.
 * **Read-only.** No network call, no write, no migration.
 * **No secret values, ever.** A setting that can hold credential material is
@@ -33,7 +33,7 @@ import ipaddress
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,6 +46,39 @@ EXPECTED_ENVIRONMENT = "production"
 _UNREACHABLE_HOSTS = frozenset(
     {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
 )
+
+# The database TLS policy lives in validate_production_config.py and is imported
+# rather than restated, because two copies of an allowlist drift: one gets
+# tightened, the other does not, and the check that gates startup is quietly the
+# weaker of the pair. Importing keeps the enforcement point and the advisory
+# report in agreement by construction.
+#
+# The import is module level and unguarded on purpose. If it fails, the preflight
+# cannot prove the database is encrypted, so it must not start the process --
+# which is what an ImportError here produces, loudly and before anything boots.
+# That is the correct failure direction for a fail-fast gate.
+sys.path.insert(0, str(REPO_ROOT))
+from scripts.validate_production_config import TLS_ENFORCING_MODES  # noqa: E402
+
+# Reported (not echoed) for each rejected value, so an operator can tell which of
+# their two plausible settings is the wrong one. `prefer` looks like the safe
+# choice and is not: it negotiates TLS and then continues in plaintext when the
+# server declines, so a connection that "succeeded" may have carried the
+# password unencrypted, and nothing at the call site can tell the two apart.
+_TLS_REJECTION_REASONS = {
+    "prefer": (
+        "sslmode=prefer negotiates TLS but continues in plaintext when the "
+        "server declines, so a connection that succeeded may have carried the "
+        "password unencrypted"
+    ),
+    "disable": "TLS is switched off",
+    "false": "TLS is switched off",
+    "0": "TLS is switched off",
+    "": (
+        "no sslmode= parameter, which both libpq and asyncpg treat as "
+        "unencrypted"
+    ),
+}
 
 
 class Report:
@@ -101,22 +134,21 @@ def _is_unreachable_host(url: str) -> bool:
 
 
 def _is_local_database_host(url: str) -> bool:
-    """True when a PostgreSQL host could not be a managed database.
+    """True when a PostgreSQL host could only be this machine.
 
     Narrower than `_is_unreachable_host` on purpose, and the difference is
     load-bearing: a private address is *correct* for a database.
 
-    A managed database on a deployment platform is internal-only. Its
-    connection string points at a private address on the platform's own
-    network, reachable only from deployments on the same account -- that is
-    deliberate. A leaked `DATABASE_URL` is therefore not reachable from the
-    public internet, and requiring a public endpoint instead would *reduce*
-    security. So private addresses pass.
+    A production database is often internal-only. Its connection string points
+    at a private address reachable only from the network the service runs on --
+    that is deliberate. A leaked `DATABASE_URL` is therefore not reachable from
+    the public internet, and requiring a public endpoint instead would *reduce*
+    security. So private addresses pass, and no public IP is demanded.
 
     What still fails is anything implying the database lives on this machine:
     loopback, the unspecified address, link-local, and the container-host
-    aliases. Those are the "the operator forgot to wire the managed database"
-    cases, where the process would start and then silently use local data.
+    aliases. Those are the "no external database was wired up" cases, where the
+    process would start and then silently use local data.
     """
     try:
         host = urlsplit(url if "//" in url else f"https://{url}").hostname or ""
@@ -169,12 +201,38 @@ def check_database_url(report: Report, value: str) -> None:
         report.fail(
             "DATABASE_URL",
             f"points at a local address ({_safe_url_shape(value)}); a production "
-            "process must use a managed database. A private address on the "
-            "platform's own network is expected and allowed - only loopback, "
-            "the unspecified address, and link-local are rejected.",
+            "process must use a non-local PostgreSQL database. A private address "
+            "is allowed, because private networking may be valid - only loopback, "
+            "the unspecified address, link-local, and container-host aliases are "
+            "rejected.",
         )
         return
-    report.ok("DATABASE_URL", _safe_url_shape(value))
+
+    # TLS is mandatory for production database traffic, and this is the gate that
+    # a deployment actually starts behind, so the absence of an enforcing mode is
+    # a failure here rather than a warning. Checking the address is not a
+    # substitute: an encrypted-looking host can still be reached over a plaintext
+    # socket if the client is told not to require TLS, and the connection string
+    # is exactly where that instruction lives.
+    #
+    # Both spellings are accepted because Settings.normalize_database_url rewrites
+    # `sslmode=` to `ssl=`, and either can be present in the raw variable. When
+    # both appear, `ssl=` wins, matching the validator.
+    #
+    # parse_qs handles percent-encoding, repeated keys, and `&`/empty-value forms
+    # that hand-rolled splitting gets wrong. The query string itself is never
+    # printed: only the mode, which is not sensitive, and never the whole URL.
+    query = parse_qs(parts.query, keep_blank_values=True)
+    tls = (query.get("ssl") or query.get("sslmode") or [""])[0].strip().lower()
+    if tls in TLS_ENFORCING_MODES:
+        report.ok("DATABASE_URL", f"{_safe_url_shape(value)} (requires TLS)")
+        return
+    report.fail(
+        "DATABASE_URL",
+        f"does not require TLS ({_TLS_REJECTION_REASONS.get(tls, 'unsupported mode')}); "
+        "production traffic to the database must be encrypted. Set "
+        "sslmode=require, or a stricter mode (verify-ca, verify-full).",
+    )
 
 
 def check_encryption(report: Report) -> None:

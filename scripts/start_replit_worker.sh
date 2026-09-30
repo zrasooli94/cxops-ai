@@ -30,22 +30,57 @@ readonly PYTHON_BIN="${PYTHON:-python3}"
 log() { printf '%s replit-worker %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 
+# The production database, mapped before anything else runs.
+#
+# CXOps production runs on an external Neon PostgreSQL, migrated to Alembic head
+# 1p4a0001 with pgvector installed, and the worker claims jobs from the same
+# database the web deployment serves. The application reads DATABASE_URL, so that
+# is what gets exported, from EXTERNAL_DATABASE_URL -- an app-owned deployment
+# secret -- unconditionally.
+#
+# Unconditional for the reason given at length in start_replit_web.sh: Replit
+# already publishes a platform-managed DATABASE_URL for this project, and which of
+# the two same-named variables wins depends on injection order. The worker must
+# land on the same database as the web deployment, so it copies over the top of
+# whatever the platform provided rather than deferring to it.
+#
+# Before the venv work on purpose: a missing secret is a configuration error, and
+# the venv build and pip install that follow are minutes. Reporting it after them
+# means every redeploy pays that cost to learn something an operator could have
+# been told immediately.
+#
+# Neither value is logged. A Neon URL carries the password.
+if [ -z "${EXTERNAL_DATABASE_URL:-}" ]; then
+  fail "EXTERNAL_DATABASE_URL is not set; it is this project's deployment secret for the production PostgreSQL (Neon, Alembic head 1p4a0001) and it is required. The platform-managed DATABASE_URL is deliberately not used."
+fi
+export DATABASE_URL="$EXTERNAL_DATABASE_URL"
+log "database binding: DATABASE_URL set from EXTERNAL_DATABASE_URL (value not logged)"
+
 # Dependencies first, preflight second. The preflight imports
 # app.core.encryption, so it needs the project's own dependencies; on a fresh VM,
 # running it against the system interpreter reports a missing module rather than
 # the actual configuration problem.
 #
-# Every pip invocation goes through venv_pip, identical to start_replit_web.sh and
-# for the same reason: the Reserved VM environment can inject user-install
-# behavior, and a user install inside a venv is an error pip refuses to perform
-# ("Can not perform a '--user' install"). Fixing only the web launcher would have
-# left the worker crash-looping on the very next deploy, since both deployments
-# create their own venv on a fresh VM from the same repository.
+# This deployment is the only one that installs anything at run time. The web
+# deployment does not: its build phase (scripts/build_replit_web.sh) pip-installs
+# requirements.txt into .replit-python/, and scripts/start_replit_web.sh imports
+# from there via PYTHONPATH, creating no venv and running no pip. The worker has
+# no build phase of its own -- its [deployment] build is unset, since a
+# deployment build command is not inherited from another deployment in the same
+# project -- and it imports app.core.encryption, which needs the real
+# dependencies, so it creates and populates .venv here. That asymmetry is
+# deliberate, and it is why a change to how one of these two launchers installs
+# cannot be assumed to apply to the other.
+#
+# Every pip invocation goes through venv_pip so the Reserved VM image's own pip
+# configuration cannot defeat the install: that environment can inject
+# user-install behavior, and a user install inside a venv is an error pip
+# refuses to perform ("Can not perform a '--user' install"). An environment
+# variable is the one lever that beats every pip config file, which is why the
+# override is here rather than in a pip.conf.
 #
 # Scoped with `env` so the override applies to these commands only, and the
-# exec'd worker does not inherit a mutated pip environment. See the long version
-# of this note in start_replit_web.sh for the four injection vectors and why an
-# environment variable is the one lever that beats every pip config file.
+# exec'd worker does not inherit a mutated pip environment.
 venv_pip() {
   env \
     PIP_USER=false \
