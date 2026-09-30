@@ -180,59 +180,77 @@ def test_deployment_run_targets_web_only() -> None:
     assert "worker" not in run, f"the web deployment must not also start the worker, got {run!r}"
 
 
-def test_deployment_declares_no_build_key() -> None:
-    """`[deployment].build` must be absent, not an empty array.
+def test_deployment_build_targets_the_build_script() -> None:
+    """`[deployment].build` must name scripts/build_replit_web.sh, as a string.
 
-    It was written `build = []`, intended to mean "no build step". Replit's
-    schema treats `build` as a command *string*, so an array is not how you say
-    "none" — it is simply an invalid value, and Publishing rejected the entire
+    It used to read `build = []`, intended to mean "no build step". Replit's
+    schema takes `build` to be a command *string*, so an array is not how you say
+    "none" — it is simply an invalid value, and Publishing rejected the whole
     deployment config with:
 
         The .replit deployment configuration is invalid
 
-    The failure is worse than the thing being expressed: an absent optional
-    build step is the default, whereas an invalid one blocks the publish
-    outright. This project builds the frontend inside
-    scripts/start_replit_web.sh, and it must keep doing so — see the comment
-    above the `[deployment]` table for why a real build step cannot run there
-    (it needs deployment secrets that only exist once the deployment does).
+    It was then removed, on the (incorrect) reasoning that a build step cannot
+    see deployment configuration. Replit documents the opposite: the Publishing
+    tool's deployment secrets are where you add "environment variables or secrets
+    your build command needs to run securely". The key is back because the
+    frontend build takes minutes and used to run inside the RUN command, on every
+    restart, before the published port opened — which is how a healthy deployment
+    gets reported as `an open port was not detected`.
 
-    Deliberately asserted on the PARSED config, never on the file text. The
-    comment block in `.replit` quotes the old `build = []` verbatim in order to
-    warn against restoring it, so a substring test would fail on the warning
-    itself. A comment cannot set a TOML key, so parsing is also the more
-    accurate statement of the rule.
-
-    Absence is asserted rather than "must be a string", because the schema
-    violation is the array. Omitting the key is what TOML uses to mean "no
-    value", and it is the form that validates.
+    Asserted on the PARSED config, never on the file text. The comment block in
+    `.replit` quotes `build = []` verbatim in order to warn against restoring it,
+    so a substring test would fail on the warning itself. A comment cannot set a
+    TOML key, so parsing is also the more accurate statement of the rule.
     """
     deployment = CONFIG.get("deployment", {})
-    assert "build" not in deployment, (
-        f"[deployment].build is {deployment['build']!r}. Replit's schema takes "
-        "build to be a command string, so an array -- including `build = []` -- "
-        "is an invalid value, and Publishing rejects the whole config with "
-        '"The .replit deployment configuration is invalid". Omit the key '
-        "instead; the frontend build belongs in scripts/start_replit_web.sh."
+    assert "build" in deployment, (
+        "[deployment].build is absent, so `npm ci` and `next build` run inside "
+        "the run command on every restart, before the published port is opened."
+    )
+    build = deployment["build"]
+    assert isinstance(build, str), (
+        f"[deployment].build must be a command string, got "
+        f"{type(build).__name__} {build!r}. An array -- including `build = []` -- "
+        "is an invalid value and Publishing rejects the whole config with "
+        '"The .replit deployment configuration is invalid".'
+    )
+    assert build == "scripts/build_replit_web.sh", (
+        f"the deployment build command must be scripts/build_replit_web.sh, got {build!r}"
     )
 
 
-def test_deployment_build_would_be_a_command_not_a_list() -> None:
-    """If a `build` key is ever added deliberately, it must be a string.
+def test_deployment_build_script_exists_and_is_executable() -> None:
+    """The build command must point at a real, runnable script.
 
-    This is the belt to the previous test's braces. Absent passes; a string is
-    allowed through for a future real build step; an array never is. A future
-    change that adds a genuine build command therefore does not have to delete
-    this test, and one that adds an array is caught here even if the stricter
-    assertion above is refactored away.
+    `.replit` is the source of truth that survives a workspace reset, so a build
+    command naming a file that is not committed reproduces the original failure
+    from the other direction: the publish fails at the build step with a
+    `not found` rather than a diagnosable message.
     """
-    deployment = CONFIG.get("deployment", {})
-    if "build" not in deployment:
-        return  # the intended state: no build step at all
-    assert isinstance(deployment["build"], str), (
-        f"[deployment].build must be a command string, got "
-        f"{type(deployment['build']).__name__} {deployment['build']!r}. An "
-        "empty list is not a way to express 'no build step' -- omit the key."
+    build = CONFIG["deployment"]["build"]
+    script = REPO_ROOT / build
+    assert script.is_file(), f"{build!r} does not exist at {script}"
+    assert script.stat().st_mode & 0o111, (
+        f"{build} must be executable; it is invoked directly as the build command"
+    )
+
+
+def test_deployment_build_and_run_are_different_scripts() -> None:
+    """The two phases must not be the same script.
+
+    This is the invariant the whole split exists to hold. If build and run both
+    named one script, that script would either build on every restart (the
+    original defect) or skip the build and serve nothing (the other failure), and
+    nothing in `.replit` would say which had happened. The runtime script
+    separately asserts it installs and builds nothing, so a merge would be caught
+    there too — this is the assertion that names the cause from the config side.
+    """
+    deployment = CONFIG["deployment"]
+    assert deployment["build"] != deployment["run"], (
+        f"build and run are both {deployment['run']!r}; the build phase has to be "
+        "a separate step from the run phase or the frontend is rebuilt on every "
+        "restart"
     )
 
 
@@ -824,22 +842,75 @@ def test_no_stale_next_16_3_1_reference_remains() -> None:
 # Nothing in this repository could have shown the cause, which is why the fix
 # has to be asserted rather than assumed.
 #
-# The invariant is that every pip invocation in the deployment launchers goes
-# through one function that pins PIP_USER=false. `pip` reads environment
-# variables ahead of every config file, so one env var beats all four
-# inheritance vectors at once, and the launcher becomes independent of pip
-# configuration the repository does not own.
+# The invariant is that every pip invocation goes through one function that pins
+# PIP_USER=false. `pip` reads environment variables ahead of every config file,
+# so one env var beats all four inheritance vectors at once, and the launcher
+# becomes independent of pip configuration the repository does not own.
 # ---------------------------------------------------------------------------
 
-#: The two deployment launchers. Each creates its own .venv on a fresh Reserved
-#: VM from this same repository, so both need the same guarantee -- fixing only
-#: the web one just moves the crash-loop to the worker.
+#: The two deployment launchers. Both are run commands, and both share the rules
+#: that are not about installing: no migrations, no sudo, no user install, a
+#: preflight that still gates, and valid bash.
 DEPLOYMENT_LAUNCHERS = ("start_replit_web.sh", "start_replit_worker.sh")
+
+#: The launchers that still install Python dependencies at start time, and so
+#: still need the guarded venv pip.
+#:
+#: Narrowed from DEPLOYMENT_LAUNCHERS deliberately. The web launcher no longer
+#: installs anything: it runs the frontend that `[deployment] build` already
+#: produced, with the Python packages that same build installed into
+#: `.replit-python/`, because an install in the run command put minutes of pip in
+#: front of the published port. The worker has no prebuilt artifact and no build
+#: phase of its own, so it still creates its .venv and installs -- and the
+#: crash-loop this section exists to prevent is exactly as reachable there.
+#:
+#: The PIP_USER coverage is NOT dropped with the web launcher. It is moved: the
+#: worker crash-loops on the same injected `PIP_USER=true` from the same
+#: repository, so a fix applied only to the web script would have been a fix to
+#: the symptom that was visible at the time. The build phase's own install is
+#: pinned the same way, and is asserted separately in section G, because it is a
+#: different command with a different failure mode (`--target`, not a venv).
+VENV_PIP_LAUNCHERS = ("start_replit_worker.sh",)
+
+#: The build phase. It owns everything too slow to repeat on every restart:
+#: `npm ci`, `next build`, and -- since the image cannot be relied on to have
+#: them -- the `pip install --target .replit-python/` of requirements.txt. The run
+#: phase then only starts things.
+BUILD_SCRIPT = "build_replit_web.sh"
 
 #: The error pip produces for a user install inside a venv. Matched as a
 #: substring so the assertion survives pip's own line wrapping and any
 #: punctuation it changes between releases.
 USER_INSTALL_ERROR = "Can not perform a '--user' install"
+
+#: Secrets that must never be DEMANDED by a build or start step.
+#:
+#: The distinction this constant exists to enforce is require-vs-reference, and it
+#: is not a detail: `scripts/preflight_production_env.py` is the phase that
+#: requires these, and it runs at start time against the runtime environment. A
+#: build step that demanded one would fail a correct deployment for the sake of a
+#: check that has not happened yet, and would fail it in the wrong phase -- so the
+#: operator is told their DATABASE_URL is missing when the actual problem is that
+#: they are being asked for it too early.
+#:
+#: Kept as a named set rather than inlined in the assertion so the list is
+#: reviewable: adding an entry here is a statement that this secret is
+#: start-time-only, and the failure message says which one tripped.
+SENSITIVE_RUNTIME_SECRETS = {
+    "DATABASE_URL",
+    "ENCRYPTION_KEYS",
+    "OPENAI_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GITHUB_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "SENTRY_DSN",
+    "REDIS_URL",
+    "JWT_SECRET",
+    "NHOST_ADMIN_SECRET",
+    "STRIPE_SECRET_KEY",
+    "RESEND_API_KEY",
+}
 
 
 def _launcher(name: str) -> str:
@@ -847,26 +918,26 @@ def _launcher(name: str) -> str:
 
 
 def _effective(name: str) -> str:
-    """A launcher with comments and trailing comments stripped.
+    """A script with comments and trailing comments stripped.
 
-    Both launchers document this failure in prose, and the prose necessarily
-    contains the string `--user` and the pip error text. Scanning raw source
-    would match the explanation instead of the code, so every assertion below
-    runs against executable lines only -- the same discipline the `.replit`
-    tests use for the same reason.
+    The launchers and the build script document this failure in prose, and the
+    prose necessarily contains the string `--user` and the pip error text.
+    Scanning raw source would match the explanation instead of the code, so every
+    assertion below runs against executable lines only -- the same discipline the
+    `.replit` tests use for the same reason.
     """
     return "\n".join(_executable_lines(_launcher(name)))
 
 
-@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
 def test_venv_pip_pins_user_installs_off(launcher: str) -> None:
     """The guarded pip wrapper must exist and must set PIP_USER=false.
 
     `env PIP_USER=false` rather than `export`, because it applies to that one
-    command: the uvicorn and Node children started later do not inherit a
-    mutated pip environment, so the override cannot leak into application
-    behavior. Scoping it also means the value cannot be clobbered by anything
-    that runs between the definition and the call.
+    command: the worker started by `exec` afterwards does not inherit a mutated
+    pip environment, so the override cannot leak into application behavior.
+    Scoping it also means the value cannot be clobbered by anything that runs
+    between the definition and the call.
     """
     text = _effective(launcher)
     assert re.search(r"^venv_pip\(\)", text, flags=re.MULTILINE), (
@@ -880,7 +951,7 @@ def test_venv_pip_pins_user_installs_off(launcher: str) -> None:
     )
 
 
-@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
 def test_venv_pip_requires_the_virtualenv(launcher: str) -> None:
     """`PIP_REQUIRE_VIRTUALENV=1` makes "installs go in the venv" enforced.
 
@@ -897,7 +968,7 @@ def test_venv_pip_requires_the_virtualenv(launcher: str) -> None:
     )
 
 
-@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
 def test_venv_pip_targets_the_venv_interpreter(launcher: str) -> None:
     """The wrapper must invoke the venv's own interpreter.
 
@@ -920,7 +991,7 @@ def test_venv_pip_targets_the_venv_interpreter(launcher: str) -> None:
     )
 
 
-@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
 def test_no_pip_call_bypasses_the_wrapper(launcher: str) -> None:
     """Every pip invocation must go through `venv_pip`.
 
@@ -962,7 +1033,7 @@ def test_no_pip_call_bypasses_the_wrapper(launcher: str) -> None:
     )
 
 
-@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
 def test_install_failures_are_reported_clearly(launcher: str) -> None:
     """An install failure must name the cause, not just exit 1.
 
@@ -1017,7 +1088,7 @@ def test_no_user_install_flag_anywhere_in_the_launcher(launcher: str) -> None:
 
 @pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
 def test_no_global_python_install_fallback(launcher: str) -> None:
-    """A failed venv install must not fall back to a system-Python install.
+    """A failed install must not fall back to a system-Python install.
 
     The dangerous shape is a fallback: `... || pip install --user` or
     `|| sudo ...`, which turns a loud failure into packages quietly installed
@@ -1030,13 +1101,452 @@ def test_no_global_python_install_fallback(launcher: str) -> None:
         f"{launcher} falls back to a pip install outside the venv; a failed venv "
         "install must abort the deployment, not install somewhere else"
     )
-    # "$PYTHON_BIN" is legitimate for `venv` creation only, never for pip.
+
+
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
+def test_venv_launcher_hands_pip_only_the_venv_interpreter(launcher: str) -> None:
+    """A launcher that installs must never hand pip an interpreter it created.
+
+    "$PYTHON_BIN" is legitimate for `venv` creation only, never for pip: the
+    wrapper's whole purpose is to pin the destination, and a system interpreter
+    is the destination this section exists to prevent.
+    """
+    text = _effective(launcher)
     for line in text.splitlines():
         if "$PYTHON_BIN" in line:
             assert "venv" in line, (
                 f"{launcher}: $PYTHON_BIN must only create the venv, never run pip: "
                 f"{line.strip()!r}"
             )
+
+
+def test_web_launcher_does_no_python_install_at_all() -> None:
+    """The web run command must not contain any pip invocation, guarded or not.
+
+    The guarded-wrapper rules above do not apply here, and that is the point: the
+    web launcher used to create a `.venv` and install `requirements.txt` on every
+    restart, which put a network install in front of the published port and made
+    a healthy deployment look like `an open port was not detected`. It now runs
+    the system interpreter over the packages the build phase installed into
+    `.replit-python/`, and the frontend that same phase built.
+
+    So this is stricter than "the install is guarded" -- there is no install. A
+    future change that reintroduces one (to work around a missing package, say)
+    has to delete this test, which is the point: the workaround should be a
+    deliberate, visible decision rather than a line that looks like the code that
+    was there last week.
+    """
+    text = _effective("start_replit_web.sh")
+    assert "venv_pip" not in text, (
+        "the web launcher must not define or call the venv pip wrapper; it installs nothing"
+    )
+    assert not re.search(r"-m\s+pip", text), "the web launcher must not run pip"
+    assert not re.search(r"\bpip\s+install\b", text), (
+        "the web launcher must not run a `pip install`"
+    )
+    assert not re.search(r"\bpython[\d.]*\s+-m\s+venv\b", text), (
+        "the web launcher must not create a venv; the build phase installs plain "
+        "packages that the system interpreter imports directly"
+    )
+    assert ".venv/bin/python" not in text, (
+        "the web launcher must not use a .venv; a venv built at start time is the "
+        "slow path this split removes"
+    )
+    assert not re.search(r"\brequirements\.txt\b", text), (
+        "the web launcher must not reference requirements.txt; the build phase "
+        "installs it into .replit-python/"
+    )
+    assert not re.search(r"--target\b", text), (
+        "the web launcher must not install into a target directory; the build "
+        "phase owns .replit-python/ and the run phase only reads it"
+    )
+
+
+def test_web_deployment_installs_python_exactly_once_and_it_is_the_build() -> None:
+    """For the web deployment, one phase installs and the other does not.
+
+    The two failure modes are asymmetric, which is why the rule is worth stating
+    as "exactly once" rather than as either half alone.
+
+    Neither, and the deployment starts against whatever the image happens to
+    carry -- which is not a promise Replit makes: its
+    `packager.features.enabledForHosting` setting defaults to false, so a hosting
+    install of requirements.txt is not something the platform guarantees to
+    perform. That was the gap this section closed.
+
+    Twice, and the run phase has minutes of network install in front of the
+    published port again, which is the original `an open port was not detected`
+    failure.
+
+    The worker is not in scope here and does not stop installing: it is a separate
+    deployment with no build phase of its own, and its guarded venv install is
+    covered by section D. Asserting the rule for the pair of scripts that make up
+    one deployment is what keeps the two deployments' histories from being confused
+    for each other.
+    """
+    build = _effective(BUILD_SCRIPT)
+    run = _effective("start_replit_web.sh")
+    installs = r"(-m\s+pip|venv_pip\s+install|-m\s+venv)"
+    assert re.search(installs, build), (
+        f"{BUILD_SCRIPT} must install the Python requirements; with "
+        "packager.features.enabledForHosting defaulting to false, nothing else "
+        "guarantees the image has them"
+    )
+    assert not re.search(installs, run), (
+        "the web run command must not install Python; that is the slow path this split removed"
+    )
+
+
+def test_build_installs_into_a_project_local_target_directory() -> None:
+    """`pip install --target` into a directory inside the repository.
+
+    The alternatives were both rejected for a reason that is worth keeping here,
+    because either is a natural "simplification":
+
+    * A venv. It is what the worker does, and it is wrong for this deployment for
+      two reasons. A `.venv`'s `bin/` is a build artifact whose shebangs are baked
+      with a path from build time, so the run phase has to trust it rather than
+      use it; and creating it at run time is the slow path this split removed.
+      Creating it at build time fixes only the first problem while keeping a
+      second layout to reason about.
+    * Installing into the system interpreter's site-packages. That mutates the
+      image's Python, is invisible in the repository, and cannot be reproduced
+      or audited from the diff.
+
+    `--target` is the shape that needs none of that: the result is plain files,
+    imported by putting the directory on PYTHONPATH. The assertion also checks
+    the directory is derived from REPO_ROOT, so it is a project-local path rather
+    than something absolute that would only resolve on the build machine.
+    """
+    text = _effective(BUILD_SCRIPT)
+    assert re.search(r'--target "\$PY_DEPS_DIR"', text), (
+        f'{BUILD_SCRIPT} must install with `--target "$PY_DEPS_DIR"`; a venv or a '
+        "site-packages install cannot be audited from the repository"
+    )
+    assert re.search(
+        r'^readonly PY_DEPS_DIR="\$REPO_ROOT/\$PY_DEPS_DIRNAME"$', text, flags=re.MULTILINE
+    ), (
+        "the target directory must be derived from REPO_ROOT, so it is "
+        "project-local and resolves the same way on the build machine and the "
+        "run machine"
+    )
+    assert re.search(r'^readonly PY_DEPS_DIRNAME="\.replit-python"$', text, flags=re.MULTILINE), (
+        "the target directory name must be a stable, committed constant; both "
+        "phases have to agree on it"
+    )
+    # No other destination: a second `--target` on a command line, or an install
+    # that also writes somewhere outside the target, is two sources of truth for
+    # what the run phase will import. Lines whose text merely names the flag --
+    # the `|| fail "pip install --target ... failed"` message, and the log line --
+    # are excluded, because naming the flag is not a destination.
+    commands = "\n".join(
+        ln
+        for ln in text.splitlines()
+        if "--target" in ln and not re.search(r"\|\|\s*fail\b|^\s*(log|echo)\b", ln)
+    )
+    assert commands.count("--target") == 1, (
+        "there must be exactly one --target destination on a command line in the "
+        f"build script. Found:\n{commands}"
+    )
+    assert not re.search(r"--user\b", text), (
+        f"{BUILD_SCRIPT} must not pass --user; the packages have to land in the "
+        "target directory the run phase reads"
+    )
+
+
+def test_build_pins_pip_configuration_per_command() -> None:
+    """PIP_USER=false is set on the pip command, and so is the venv requirement.
+
+    `PIP_USER` is not hypothetical: Replit injects `PIP_USER=true` into the
+    environment, and a user install would put the packages somewhere neither phase
+    looks -- the deployment would start, find nothing at PYTHONPATH, and fail as
+    a missing package rather than as the pip configuration fault that caused it.
+    That is the same class of bug that crash-looped this deployment once already,
+    which is why it is pinned here explicitly instead of being left to whatever
+    pip.conf the image happens to carry.
+
+    `PIP_REQUIRE_VIRTUALENV=false` is pinned for the same class of reason and
+    because the install is deliberately outside a venv: an ambient `true` would
+    refuse an install that is correct by design, with an error message that
+    describes the wrong problem.
+
+    `env VAR=value` rather than `export`, so the override is scoped to the one
+    command and cannot leak into application behaviour, and so the setting cannot
+    be clobbered by anything between the assignment and the call.
+    """
+    text = _effective(BUILD_SCRIPT)
+    assert re.search(r"env PIP_USER=false", text), (
+        f"{BUILD_SCRIPT} must set PIP_USER=false on the pip command; Replit "
+        "injects PIP_USER=true, and a user install would land the packages "
+        "somewhere the run phase never reads"
+    )
+    assert re.search(r"env PIP_USER=false PIP_REQUIRE_VIRTUALENV=false", text), (
+        "PIP_USER=false and PIP_REQUIRE_VIRTUALENV=false must be set on the same "
+        "`env` invocation as the pip install, so both apply to that command and "
+        "neither can be dropped without the test noticing"
+    )
+    assert not re.search(r"PIP_USER\s*=\s*true", text, flags=re.IGNORECASE), (
+        f"{BUILD_SCRIPT} must never set PIP_USER=true; that is the crash-loop being guarded against"
+    )
+    # And the same invariant the guarded wrapper asserts for the worker, so the
+    # two install sites cannot drift apart on this rule.
+    for line in text.splitlines():
+        if "PIP_USER" in line:
+            assert "false" in line, f"PIP_USER may only ever be set to false: {line.strip()!r}"
+
+
+def test_build_clears_the_target_directory_before_installing() -> None:
+    """`rm -rf` the target, then install into it. In that order.
+
+    A stale package left over from an earlier build is the failure this prevents,
+    and it is the worst kind: a fix that provably works locally, and does nothing
+    on the machine, because the broken version is still sitting in the directory
+    the import resolves to. Nothing in the log mentions it, because the install
+    did exactly what it was told.
+
+    The order matters as much as the two commands. Installing first and removing
+    afterwards would produce a perfectly green build whose target directory does
+    not exist.
+    """
+    text = _effective(BUILD_SCRIPT)
+    rm = next(
+        i for i, ln in enumerate(text.splitlines()) if re.match(r'\s*rm -rf "\$PY_DEPS_DIR"', ln)
+    )
+    mkdir = next(
+        i for i, ln in enumerate(text.splitlines()) if re.match(r'\s*mkdir -p "\$PY_DEPS_DIR"', ln)
+    )
+    install = next(
+        i for i, ln in enumerate(text.splitlines()) if re.search(r"-m\s+pip\s+install", ln)
+    )
+    assert rm < mkdir < install, (
+        "the target directory must be removed and recreated before the install "
+        f"(rm at {rm}, mkdir at {mkdir}, install at {install})"
+    )
+    # `rm -rf` on a variable is only safe because the variable is readonly and
+    # built from a literal directory name. Assert the literal, so a future edit
+    # cannot make it `rm -rf "$SOME_DIR"` and delete the wrong tree.
+    assert re.search(r'^readonly PY_DEPS_DIRNAME="\.replit-python"$', text, flags=re.MULTILINE), (
+        "the rm -rf target must resolve from a literal directory-name constant"
+    )
+
+
+def test_build_verifies_the_installed_packages_import() -> None:
+    """Exit code zero from pip is not proof the packages import.
+
+    `--target` installs flat, into a directory that is not on the interpreter's
+    path, so "the files are on disk" and "the module imports" are different claims
+    and only the second one is the one the run phase depends on. A package that
+    needs a `.pth` file processed at install time, or that resolves a data file
+    relative to its own location, is the kind that installs cleanly and fails to
+    import.
+
+    So the build imports what the deployment starts with, and the import runs with
+    PYTHONPATH set to the target and nothing else. Pinning PYTHONPATH to a single
+    entry is the part that makes the check meaningful: inheriting the ambient
+    PYTHONPATH would let the image's own site-packages satisfy it and report a
+    broken install as working.
+    """
+    text = _effective(BUILD_SCRIPT)
+    assert re.search(r'PYTHONPATH="\$PY_DEPS_DIR" python3 - <<', text), (
+        f'{BUILD_SCRIPT} must verify imports with PYTHONPATH="$PY_DEPS_DIR" and '
+        "nothing else; inheriting an ambient PYTHONPATH lets the image's own "
+        "packages satisfy the check and hide a broken install"
+    )
+    check = next(
+        i for i, ln in enumerate(text.splitlines()) if 'PYTHONPATH="$PY_DEPS_DIR" python3 -' in ln
+    )
+    install = next(
+        i for i, ln in enumerate(text.splitlines()) if re.search(r"-m\s+pip\s+install", ln)
+    )
+    assert check > install, "the import verification must run after the install"
+    missing = next(
+        i
+        for i, ln in enumerate(text.splitlines())
+        if ln.strip() == 'missing="$(missing_python_packages)"'
+    )
+    assert missing > check, (
+        "the result of the import check must be captured and tested, or a "
+        "non-empty missing list would not stop the build"
+    )
+    # The packages that have to be importable for this deployment to start at all.
+    for module in ("uvicorn", "fastapi", "sqlalchemy", "asyncpg"):
+        assert module in text, (
+            f"the build's import verification must cover {module}; the run phase "
+            "starts the API and the BFF on it"
+        )
+    fail_line = next(
+        ln
+        for ln in text.split("\n")[-40:]
+        if ln.strip().startswith("fail ") and "will not import" in ln
+    )
+    assert re.search(r"\$\{?missing\}?", fail_line), (
+        "the build failure must name the packages that would not import, so a "
+        "republish is not needed to diagnose it"
+    )
+
+
+def test_build_and_run_agree_on_the_dependency_directory() -> None:
+    """The directory name is written twice, so both spellings are asserted.
+
+    The build writes it and the run phase reads it, and there is no shared
+    constant to import between two shell scripts that are started by different
+    Replit phases. So the name is duplicated, and a rename on one side is a
+    startup failure on the other.
+
+    The failure is at least loud -- the run phase fails immediately, naming the
+    path it looked for -- but it is a failure that only appears on a machine, so
+    it is caught here instead. This is the same reason the standalone artifact path
+    is asserted in both scripts.
+    """
+    build = _launcher(BUILD_SCRIPT)
+    run = _launcher("start_replit_web.sh")
+    name = re.search(r'^readonly PY_DEPS_DIRNAME="([^"]+)"$', build, flags=re.MULTILINE)
+    assert name, f"{BUILD_SCRIPT} must define PY_DEPS_DIRNAME"
+    assert name.group(1) == ".replit-python", (
+        f"the dependency directory name changed to {name.group(1)!r}; the run phase "
+        "looks for .replit-python/, and both scripts have to change together"
+    )
+    run_name = re.search(r'^readonly PY_DEPS_DIRNAME="([^"]+)"$', run, flags=re.MULTILINE)
+    assert run_name and run_name.group(1) == name.group(1), (
+        f"the two phases disagree on the dependency directory: build says "
+        f"{name.group(1)!r}, run says {run_name.group(1) if run_name else None!r}"
+    )
+    # Both must derive it the same way, from the repository root.
+    for label, text in ((BUILD_SCRIPT, build), ("start_replit_web.sh", run)):
+        assert re.search(
+            r'^readonly PY_DEPS_DIR="\$REPO_ROOT/\$PY_DEPS_DIRNAME"$', text, flags=re.MULTILINE
+        ), f"{label} must derive PY_DEPS_DIR from REPO_ROOT and PY_DEPS_DIRNAME"
+
+
+def test_web_launcher_exports_the_packaged_directory_on_pythonpath() -> None:
+    """One exported PYTHONPATH, prepended, with the repository root behind it.
+
+    Three separate interpreters run in this script -- the import check, the
+    preflight, and uvicorn -- and the preflight imports the application's third
+    party dependencies. So the value is exported once here rather than prefixed
+    onto each command, because a PYTHONPATH repeated in three places is one that
+    will eventually be missing from the place it mattered.
+
+    The order is load-bearing too: the packaged directory is prepended, so an
+    installed package wins over a same-named module in the image, and REPO_ROOT
+    follows because the project is imported from it (`app`, `scripts`). The
+    ambient value, if any, is appended last -- it is the least trusted of the
+    three and must not be able to shadow either.
+
+    And it must be an `export`. A shell-local assignment would apply to no child
+    process at all, which is the same bug as not setting it: uvicorn would start
+    with a PYTHONPATH that does not contain the packages.
+    """
+    text = _effective("start_replit_web.sh")
+    export = re.search(
+        r'^export PYTHONPATH="\$PY_DEPS_DIR:\$REPO_ROOT\$\{PYTHONPATH:\+:\$PYTHONPATH\}"$',
+        text,
+        flags=re.MULTILINE,
+    )
+    assert export, (
+        'the web launcher must `export PYTHONPATH="$PY_DEPS_DIR:$REPO_ROOT..."`, '
+        "prepending the build's package directory ahead of the repository root"
+    )
+    # A per-command override would discard the exported value, taking the packaged
+    # dependencies with it. This is the specific way the wiring breaks silently:
+    # the export looks right, the preflight and uvicorn still cannot import.
+    assert not re.search(r"PYTHONPATH=\"\\?\$REPO_ROOT\"?\s", text), (
+        "the web launcher must not re-assign PYTHONPATH per command; a "
+        "per-command value replaces the exported one, so the packaged "
+        "dependencies would be dropped from uvicorn's path"
+    )
+    assert len(re.findall(r"PYTHONPATH=", text)) == 1, (
+        "PYTHONPATH must be assigned exactly once, as an export"
+    )
+    export_at = next(
+        i for i, ln in enumerate(text.splitlines()) if ln.startswith("export PYTHONPATH=")
+    )
+    for required in (
+        'missing="$(missing_python_packages)"',
+        "preflight_production_env.py",
+        "-m uvicorn",
+    ):
+        at = text.index(required)
+        assert export_at < at, (
+            f"PYTHONPATH must be exported before {required!r}; every interpreter "
+            "this script starts inherits the exported value"
+        )
+
+
+def test_web_launcher_requires_the_packaged_directory_before_anything_else() -> None:
+    """The directory check comes first, and the message names the build phase.
+
+    Order is the whole point. Without this check the first interpreter to run
+    reports a missing module, and a missing module reads as a broken build rather
+    than as a build that never happened -- the operator goes looking at
+    requirements.txt pins instead of at the build log.
+
+    The message has to name `scripts/build_replit_web.sh` for the same reason the
+    missing-frontend message does: with the build in its own phase, "start it
+    again" is the wrong remedy, and it is the obvious one.
+    """
+    text = _effective("start_replit_web.sh")
+    lines = text.splitlines()
+    dir_check = next(
+        i for i, ln in enumerate(lines) if re.match(r'\s*\[ -d "\$PY_DEPS_DIR" \]', ln)
+    )
+    fail = next(ln for ln in lines[dir_check : dir_check + 3] if ln.strip().startswith("|| fail"))
+    assert "build_replit_web.sh" in fail, (
+        "the missing-directory message must name scripts/build_replit_web.sh, "
+        "since re-running the run command is no longer the remedy"
+    )
+    assert ".replit-python" in fail or "PY_DEPS_DIR" in fail, (
+        "the message must name the directory that was not found"
+    )
+    # Nothing that starts an interpreter, and nothing that opens the published
+    # port, may precede it.
+    for earlier, label in (
+        ("missing_python_packages", "the import check"),
+        ("preflight_production_env.py", "the preflight"),
+        ('node "$STANDALONE_SERVER"', "the frontend server"),
+    ):
+        at = text.index(earlier)
+        assert dir_check < at, (
+            f"the dependency directory check must precede {label}; otherwise its "
+            "failure is reported as an unrelated missing module"
+        )
+
+
+def test_web_launcher_starts_the_api_with_the_system_interpreter() -> None:
+    """`python3 -m uvicorn`, with the packages reached through PYTHONPATH.
+
+    Asserted as the image's interpreter, not a build artifact's. The packages are
+    plain files installed by the build phase, so the only thing uvicorn needs is
+    to be run by an interpreter that can see the directory -- and the image's
+    `python3` can, because that is what the build phase installed them with.
+
+    `--target` also means there are no console scripts to find: pip did not put
+    `uvicorn` on PATH, and `-m uvicorn` is the invocation that works anyway. A
+    future edit to `uvicorn app.main:app` without the `-m` would find whatever the
+    image has on PATH, if anything, and quietly bypass the packaged install.
+    """
+    text = _effective("start_replit_web.sh")
+    assert re.search(r'^readonly PYTHON_BIN="\$\{PYTHON:-python3\}"$', text, flags=re.MULTILINE), (
+        "the web launcher must default PYTHON_BIN to the image's python3"
+    )
+    assert re.search(r'"\$PYTHON_BIN" -m uvicorn app\.main:app', text), (
+        'the API must be started as `"$PYTHON_BIN" -m uvicorn app.main:app` -- the '
+        "system interpreter, with the packaged dependencies on the exported "
+        "PYTHONPATH"
+    )
+    for forbidden, label in (
+        (".venv/bin/python", "a build-time venv interpreter"),
+        ("$PY_DEPS_DIR/bin/", "a console script from the target directory"),
+    ):
+        assert forbidden not in text, (
+            f"the web launcher must not use {label}; the packages are imported "
+            "through PYTHONPATH, and --target installs no console scripts"
+        )
+    # The preflight runs in the same environment, so it must not carry its own
+    # PYTHONPATH either -- see the export test for why.
+    assert re.search(r'if ! "\$PYTHON_BIN" scripts/preflight_production_env\.py', text), (
+        "the preflight must run under the exported PYTHONPATH, with no per-command override"
+    )
 
 
 @pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
@@ -1060,7 +1570,7 @@ def test_no_migrations_at_boot(launcher: str) -> None:
 
 @pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
 def test_production_preflight_still_runs_and_still_gates(launcher: str) -> None:
-    """The pip fix must not have weakened the production environment gate.
+    """Neither the pip fix nor the build/run split weakened the env gate.
 
     Two properties, both load-bearing: the preflight still executes, and a
     failure still aborts. A preflight that ran but no longer blocked would be
@@ -1087,9 +1597,56 @@ def test_production_preflight_still_runs_and_still_gates(launcher: str) -> None:
         f"{launcher}: a failing preflight must still abort the start, but no "
         f"`fail` follows it. Lines after the gate: {following!r}"
     )
-    # The gate must run after the dependency install, since it imports the app.
-    assert idx > next(i for i, ln in enumerate(lines) if re.match(r"\s*venv_pip\s+install", ln)), (
-        f"{launcher}: the preflight imports project dependencies, so it cannot run before they are installed"
+
+
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
+def test_preflight_runs_after_the_dependency_install(launcher: str) -> None:
+    """The preflight imports the app, so it cannot run before its dependencies.
+
+    `preflight_production_env.py` calls `validate_encryption_keys` and
+    constructs `Settings`, so on a launcher that has to install first, running
+    the gate earlier reports a missing module instead of the configuration
+    problem the operator actually has.
+    """
+    lines = _effective(launcher).splitlines()
+    gate = next(i for i, ln in enumerate(lines) if "preflight_production_env.py" in ln)
+    install = next(i for i, ln in enumerate(lines) if re.match(r"\s*venv_pip\s+install", ln))
+    assert gate > install, (
+        f"{launcher}: the preflight imports project dependencies, so it cannot "
+        "run before they are installed"
+    )
+
+
+def test_web_preflight_runs_after_the_artifact_and_package_checks() -> None:
+    """Same ordering rule for the web launcher, against the steps it does have.
+
+    The web launcher no longer installs, so there is no `venv_pip install` line
+    to order against. What replaces it is a stronger argument for the same
+    ordering: the script must not open the published port, and must not report a
+    configuration fault, before it has established that the prebuilt frontend
+    exists and that the image has the packages the preflight is about to import.
+    Asserting the ordering keeps a future edit that hoists the preflight to the
+    top of the script from turning three distinct startup failures into one
+    undifferentiated "environment preflight failed".
+    """
+    text = _effective("start_replit_web.sh")
+    lines = text.splitlines()
+    gate = next(i for i, ln in enumerate(lines) if "preflight_production_env.py" in ln)
+    artifact = next(i for i, ln in enumerate(lines) if ".next/standalone/server.js" in ln)
+    assert gate > artifact, (
+        "the prebuilt-frontend check must run before the preflight, so a missing "
+        "build artifact is reported as a missing artifact"
+    )
+    assert 'if [ -n "$missing" ]' in text or 'if [ -n "$missing" ]' in text, (
+        "the web launcher must keep the Python package check; without it the "
+        "preflight is the first thing to import a package the image may not have"
+    )
+    packages = next(
+        i for i, ln in enumerate(lines) if ln.strip() == 'missing="$(missing_python_packages)"'
+    )
+    assert gate > packages, (
+        "the Python package check must run before the preflight, so a missing "
+        "package is named rather than surfacing as an import error"
     )
 
 
@@ -1139,6 +1696,13 @@ def test_launcher_is_syntactically_valid_bash(launcher: str) -> None:
 # above would still pass. So the committed `venv_pip` body is extracted and
 # executed against a disposable venv with PIP_USER=true injected.
 #
+# The launcher under test is the worker. The web launcher no longer contains a
+# `venv_pip` body to extract, because it no longer installs Python -- so the
+# coverage was narrowed, not lost. The crash-loop this section describes is
+# caused by the Reserved VM injecting `PIP_USER=true`, which it does for every
+# deployment from this repository, and the worker is now the only one that
+# installs.
+#
 # The test also runs a CONTROL first: the same unguarded command with the same
 # injected variable. If the control does not reproduce the error, the guard is
 # being tested against nothing and the test skips rather than passing silently.
@@ -1178,7 +1742,7 @@ def _run_bash(script: str, cwd, env: dict):
     )
 
 
-@pytest.mark.parametrize("launcher", DEPLOYMENT_LAUNCHERS)
+@pytest.mark.parametrize("launcher", VENV_PIP_LAUNCHERS)
 def test_guarded_install_survives_an_injected_pip_user(launcher: str, tmp_path) -> None:
     """Execute the committed guard under PIP_USER=true; it must hold.
 
@@ -1253,3 +1817,426 @@ def test_user_install_error_string_is_still_the_one_we_guard_against() -> None:
     assert USER_INSTALL_ERROR in (
         "Can not perform a '--user' install. User site-packages are not visible in this virtualenv."
     ), "update USER_INSTALL_ERROR and section F together if pip reworded this"
+
+
+# ---------------------------------------------------------------------------
+# G. The build phase does the building, and the run phase only starts
+#
+# Background: one script used to install Python, run `npm ci`, run `next build`,
+# and then start uvicorn and Next.js. Replit's Reserved VM re-runs the RUN
+# command on every restart, so a build measured in minutes happened in front of
+# the published port on every restart. The deployment was reported as
+# `hostingpid1: an open port was not detected` -- a readiness failure produced by
+# work that had nothing to do with readiness.
+#
+# The fix is a phase split: `[deployment] build` produces the artifact once,
+# `[deployment] run` starts it. Replit documents deployment secrets as the place
+# for "environment variables or secrets your build command needs to run
+# securely", so the build does receive the deployment configuration the frontend
+# build inlines.
+#
+# These tests pin the split from both sides, because either half alone is a
+# different outage: a build phase that does not build produces a deployment that
+# starts and then serves nothing, and a run phase that rebuilds reintroduces the
+# original timeout.
+#
+# The split is also where the Python dependency question is settled. Moving the
+# install out of the run phase created a new question -- if nothing installs
+# requirements.txt at start, what guarantees they exist? -- and the answer cannot
+# be the image, because Replit's `packager.features.enabledForHosting` defaults
+# to false, so a hosting install is not something the platform promises to do.
+# So the build phase installs them, with the system interpreter, into a
+# project-local `--target` directory: no venv, no PATH, no mutation of the
+# image's site-packages, and nothing for the run phase to do but prepend the
+# directory to PYTHONPATH.
+# ---------------------------------------------------------------------------
+
+
+def _build_script() -> str:
+    return _launcher(BUILD_SCRIPT)
+
+
+def test_build_script_exists_and_is_valid_bash() -> None:
+    """`bash -n` on the build command, which is a deployment phase of its own.
+
+    A syntax error here fails the publish before any runtime is reached, and the
+    build command is a shell function (`fail`) plus a heredoc, both of which only
+    fail when the script is parsed or executed. `test_deployment_build_script_exists
+    _and_is_executable` covers presence; this covers the thing actually running.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ["bash", "-n", str(REPO_ROOT / "scripts" / BUILD_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"bash -n failed for {BUILD_SCRIPT}: {result.stderr}"
+
+
+def test_build_script_fails_fast_and_resolves_the_repo_root() -> None:
+    """`set -euo pipefail`, and a root resolved from the script's own location.
+
+    Two properties that are easy to lose in a shell script and impossible to lose
+    silently:
+
+    * `set -e` is what turns a failed `next build` into a failed deployment rather
+      than a successful build phase that ships a stale `.next` from a previous
+      run. Without it, a build error scrolls past and the run phase then serves
+      whatever the last good build left behind -- which looks like a deploy that
+      did not take effect.
+    * `REPO_ROOT` is derived from `BASH_SOURCE` rather than `$PWD`, because the
+      working directory of a build phase is not guaranteed to be the repository
+      root. A `cd frontend` relative to the wrong directory installs the wrong
+      project's dependencies.
+    """
+    text = _build_script()
+    assert re.search(r"^set -euo pipefail$", text, flags=re.MULTILINE), (
+        f"{BUILD_SCRIPT} must use `set -euo pipefail`; without -e a failed "
+        "`next build` is a successful build phase that ships a stale artifact"
+    )
+    assert "BASH_SOURCE[0]" in text, (
+        f"{BUILD_SCRIPT} must derive REPO_ROOT from BASH_SOURCE[0]; the working "
+        "directory of a build phase is not guaranteed to be the repository root"
+    )
+    assert re.search(r'^cd "\$REPO_ROOT"$', text, flags=re.MULTILINE), (
+        f"{BUILD_SCRIPT} must cd to REPO_ROOT before doing anything else"
+    )
+
+
+def test_build_script_installs_with_npm_ci_and_includes_dev() -> None:
+    """`npm ci --include=dev` — both halves are load-bearing.
+
+    `npm ci` rather than `npm install` because it installs the lockfile exactly
+    and fails outright when package.json and package-lock.json disagree. A
+    mismatched lock is otherwise a hard error discovered at the worst moment, and
+    it is a silent divergence until then.
+
+    `--include=dev` because devDependencies are required to BUILD, not optional:
+    `next build` runs the TypeScript compiler and the PostCSS toolchain. A
+    production-only install produces a build that fails on a missing binary --
+    and NODE_ENV=production is set for this script, so npm would otherwise be
+    entitled to skip them.
+    """
+    text = _build_script()
+    assert re.search(r"npm ci --include=dev", text), (
+        f"{BUILD_SCRIPT} must run `npm ci --include=dev`; `npm install` can "
+        "silently diverge from the lockfile, and a production-only install has no "
+        "TypeScript or PostCSS toolchain to build with"
+    )
+
+
+def test_build_script_runs_the_next_production_build() -> None:
+    """The build phase must actually invoke the build.
+
+    Asserted on the npm script name rather than on `next build`, so the
+    repository keeps one definition of what "the production build" means
+    (frontend/package.json's `"build": "next build"`) instead of two spellings
+    that can drift.
+    """
+    text = _build_script()
+    assert re.search(r"npm run build", text), (
+        f"{BUILD_SCRIPT} must run `npm run build`; without it the phase installs "
+        "dependencies and ships nothing"
+    )
+    assert re.search(r"^export NODE_ENV=production$", text, flags=re.MULTILINE), (
+        f"{BUILD_SCRIPT} must set NODE_ENV=production for the build. It cannot be "
+        "inherited from `.replit [env]`: a project-wide NODE_ENV=production also "
+        "applies to the workspace run, and `next dev` does not start under it."
+    )
+
+
+def test_build_script_verifies_standalone_output() -> None:
+    """The artifact must be checked for, not assumed.
+
+    `output: "standalone"` is a config setting in next.config.ts, and a change
+    there (or a Next version that resolves differently) removes
+    `.next/standalone/server.js` without failing the build. The run phase would
+    then start, bind no port, and the deployment would fail its readiness check
+    for a reason that has nothing to do with readiness — which is the shape of
+    the bug this split is fixing. Asserting it in the build phase turns that into
+    a build error that names the path.
+
+    Asserted through the path variables rather than the literal `.next/standalone`
+    string, because the two scripts and the test have to agree on the path while
+    only spelling it once each. A test that hardcoded the literal would still
+    pass if the script's `STANDALONE_DIR` moved somewhere else, which is the one
+    change that would actually break the run phase.
+    """
+    text = _build_script()
+    assert re.search(
+        r'^readonly NEXT_DIR="\$REPO_ROOT/\$FRONTEND_DIR/\.next"$', text, flags=re.MULTILINE
+    ), (
+        "the build script must derive NEXT_DIR from the frontend directory; the "
+        "run phase looks for the artifact at this path"
+    )
+    assert re.search(
+        r'^readonly STANDALONE_DIR="\$NEXT_DIR/standalone"$', text, flags=re.MULTILINE
+    ), (
+        "the build script must expect `output: standalone`; without it the "
+        "verified path is not the one Next emits"
+    )
+    assert re.search(r'\[ -f "\$STANDALONE_DIR/server\.js" \]', text), (
+        "the build must assert the standalone server exists with an -f guard, not "
+        "merely reference the path: a config change that drops `output: standalone` "
+        "is otherwise discovered as a port that never opens"
+    )
+    assert re.search(r'fail "[^"]*\$STANDALONE_DIR/server\.js', text), (
+        "the failure must name the missing artifact path, so the build error is "
+        "actionable without reading the script"
+    )
+
+
+def test_build_script_stages_static_and_public_into_standalone() -> None:
+    """Next's standalone output omits `.next/static` and `public/` by design.
+
+    It expects a container image to copy them in. Skipping the copy is the
+    classic result: HTML renders, every `/_next/static/*.js` 404s, and the app is
+    a blank page that no build log or startup log mentions. The destinations are
+    removed first, because `cp -R src dst` nests into `dst/src` when `dst` already
+    exists — which is what happens on any build that did not start from a clean
+    `.next`.
+    """
+    text = _build_script()
+    assert re.search(r'cp -R "\$NEXT_DIR/static" "\$STANDALONE_DIR/\.next/static"', text), (
+        f"{BUILD_SCRIPT} must copy .next/static into the standalone output, or "
+        "every JS and CSS asset 404s and the deployed app is a blank page"
+    )
+    assert re.search(r'cp -R "\$PUBLIC_DIR" "\$STANDALONE_DIR/public"', text), (
+        f"{BUILD_SCRIPT} must copy public/ into the standalone output"
+    )
+    assert len(re.findall(r"rm -rf \"\$STANDALONE_DIR", text)) >= 2, (
+        "both copy destinations must be removed first; `cp -R src dst` nests "
+        "rather than replacing when dst already exists"
+    )
+    # public/ is optional in a Next app, so its copy is guarded rather than
+    # unconditional. An unguarded copy of a directory that may not exist is a
+    # build failure on a perfectly valid project.
+    assert re.search(r'if \[ -d "\$PUBLIC_DIR" \]', text), (
+        f"{BUILD_SCRIPT} must guard the public/ copy with a directory test"
+    )
+
+
+def test_build_script_requires_the_public_build_config() -> None:
+    """The three build-inlined values are required, never defaulted.
+
+    `next build` inlines `process.env` for prerendered routes and for every
+    `NEXT_PUBLIC_*` reference, so these cannot be supplied at run time. The
+    failure mode without the check is quiet and late: robots.txt and sitemap.xml
+    advertise `http://localhost:PORT` as the canonical origin, and every staff
+    session throws `NhostConfigurationError` on first use. Neither appears in a
+    build log, and both read as a broken frontend rather than a missing setting.
+
+    No value is invented and no default is applied. The user asked for safe public
+    defaults only where the source already establishes an unambiguous production
+    value, and it does not for any of these three.
+    """
+    text = _build_script()
+    for name in (
+        "CXOPS_PUBLIC_SITE_URL",
+        "NEXT_PUBLIC_NHOST_SUBDOMAIN",
+        "NEXT_PUBLIC_NHOST_REGION",
+    ):
+        assert name in text, f"{BUILD_SCRIPT} must require {name}; next build inlines it"
+
+
+def test_build_script_requires_no_sensitive_secret() -> None:
+    """No sensitive runtime secret may be required to build the frontend.
+
+    The distinction is require-vs-reference, and it is the same one the dev
+    launcher test draws. A build step that demanded DATABASE_URL, ENCRYPTION_KEYS
+    or OPENAI_API_KEY would fail a completely correct deployment for the sake of a
+    check that already runs, later, in the preflight — and the failure would read
+    as a configuration fault at the wrong phase.
+
+    So the check is on the shell expansion that would DEMAND a value: `${NAME}` or
+    `${NAME:?msg}` with no default. A `${NAME:-}` is safe, because the default
+    branch is the one that runs when the variable is absent. The indirect
+    `${!name}` form used by the required-public-config loop is checked separately,
+    below, because it is the same demand written generically.
+    """
+    text = _effective(BUILD_SCRIPT)
+    demanded = re.findall(r"\$\{([A-Z_][A-Z0-9_]*)(:\?[^}]*)?\}", text)
+    for name in demanded:
+        assert name not in SENSITIVE_RUNTIME_SECRETS, (
+            f"{BUILD_SCRIPT} demands {name} with no default, so the build fails "
+            "whenever a sensitive runtime secret is absent — even if the "
+            "configuration is correct. Those are checked by the preflight, at run "
+            "time."
+        )
+    # The required-public-config loop demands whatever it is handed, one level of
+    # indirection down. So the demand has to be checked where it is expressed.
+    assert re.search(r'if \[ -z "\$\{!name:-\}" \]', text), (
+        f"{BUILD_SCRIPT} must demand its required public variables through a "
+        "defaulted expansion (`${{!name:-}}`) so `set -u` reports the missing "
+        "setting rather than aborting with an unbound-variable error"
+    )
+    loop = re.search(r"for name in ([^\n]+); do", text)
+    assert loop, f"{BUILD_SCRIPT} must enumerate the variables it requires"
+    required = set(re.findall(r"[A-Z][A-Z0-9_]+", loop.group(1)))
+    assert not (required & SENSITIVE_RUNTIME_SECRETS), (
+        f"{BUILD_SCRIPT} requires sensitive secret(s) "
+        f"{sorted(required & SENSITIVE_RUNTIME_SECRETS)} at build time"
+    )
+    assert required == {
+        "CXOPS_PUBLIC_SITE_URL",
+        "NEXT_PUBLIC_NHOST_SUBDOMAIN",
+        "NEXT_PUBLIC_NHOST_REGION",
+    }, (
+        f"{BUILD_SCRIPT} requires {sorted(required)}; the build-inlined public "
+        "values are exactly these three"
+    )
+
+
+def test_build_script_rejects_a_non_https_canonical_origin() -> None:
+    """A plaintext canonical origin is refused at build time.
+
+    The same reasoning the preflight applies to FRONTEND_BASE_URL: the value
+    parses, the deployment starts, and the only symptom is a site telling every
+    crawler and every tenant that its own origin is plaintext. The message strips
+    the query string, because a value carrying a token in it must not reach the
+    build log.
+    """
+    text = _build_script()
+    assert re.search(r'case "\$CXOPS_PUBLIC_SITE_URL" in\s*\n\s*https://\*\)', text), (
+        f"{BUILD_SCRIPT} must accept only an https CXOPS_PUBLIC_SITE_URL"
+    )
+    assert "must be https" in text, "the rejection must name what is wrong, not just exit non-zero"
+
+
+def test_web_launcher_validates_the_prebuilt_artifact_before_starting() -> None:
+    """The run phase must check the artifact exists, and fail naming the build.
+
+    This is the half of the split that turns a missing build into a one-line fix.
+    Without it the run phase would start uvicorn, find no server.js, and the
+    frontend child would die instantly — reported as a child exit, which is
+    accurate and useless.
+
+    The message has to mention the build script by name, because "restart it" was
+    the correct remedy when the run command built and is the wrong one now.
+    """
+    text = _effective("start_replit_web.sh")
+    assert re.search(r'\[ -f "\$STANDALONE_SERVER" \]', text), (
+        "the web launcher must test the standalone server with an -f guard before starting anything"
+    )
+    assert BUILD_SCRIPT in _launcher("start_replit_web.sh"), (
+        "the missing-artifact message must name scripts/build_replit_web.sh, since "
+        "re-running the run command is no longer the remedy"
+    )
+
+
+def test_web_launcher_validates_python_packages_and_names_them() -> None:
+    """The build's packages are importable, and a miss is named.
+
+    The build phase already verified the install with the same interpreter and the
+    same PYTHONPATH. This repeats it because it is cheap -- four imports, well
+    under a second -- and because the run phase is the last point at which an
+    unusable install can still be turned into a clear message instead of a
+    half-started deployment serving 502s.
+
+    The check has to report WHICH packages are missing. A bare `import uvicorn`
+    behind an `if !` says only that something is absent, which is the same
+    undifferentiated failure the previous design produced — minutes of pip and
+    then a crash — with a shorter wait.
+    """
+    text = _effective("start_replit_web.sh")
+    assert "missing_python_packages" in text, (
+        "the web launcher must keep an explicit Python package check"
+    )
+    for module in ("uvicorn", "fastapi", "sqlalchemy", "app"):
+        assert module in text, (
+            f"the package check must cover {module}; the first thing the run phase "
+            "runs is uvicorn on app.main"
+        )
+    assert re.search(r'missing="\$\(missing_python_packages\)"', text), (
+        "the check's result must be captured, so the failure can name the packages"
+    )
+    assert re.search(r'if \[ -n "\$missing" \]', text), (
+        "a non-empty missing-package list must gate the start"
+    )
+    assert "fail " in text, "the missing-package branch must abort the start"
+
+
+def test_web_launcher_does_not_build_or_install_node_dependencies() -> None:
+    """No npm, no Next build, in the run command.
+
+    This is the invariant the whole change is for. Every one of these tokens in
+    the run command puts minutes of work between the machine starting and the
+    published port opening, which is what produced
+    `hostingpid1: an open port was not detected` on a deployment that was in fact
+    fine.
+    """
+    text = _effective("start_replit_web.sh")
+    for forbidden, label in (
+        ("npm ci", "a dependency install"),
+        ("npm install", "a dependency install"),
+        ("npm run build", "a frontend build"),
+        ("next build", "a frontend build"),
+    ):
+        assert forbidden not in text, (
+            f"the web launcher contains {label} ({forbidden!r}); the frontend is "
+            "built by the [deployment] build phase"
+        )
+    # The standalone server is started as `node <path>`, never through an npm
+    # wrapper: `npm start &` makes $! the npm process, and signalling npm leaves
+    # the real server alive holding the published port.
+    assert re.search(r'node "\$STANDALONE_SERVER"', text), (
+        "the standalone server must be started through node, so the supervised pid "
+        "is the process that binds the published port"
+    )
+
+
+def test_web_launcher_still_serves_the_frontend_on_the_published_port() -> None:
+    """The origin shape is unchanged by the split.
+
+    FastAPI stays on loopback, Next.js stays on 0.0.0.0 at the injected PORT, and
+    BACKEND_API_URL still defaults to that loopback API. The split moved work out
+    of the run command; it must not have moved a port.
+    """
+    text = _effective("start_replit_web.sh")
+    assert "--host 127.0.0.1" in text, "the API must bind loopback"
+    assert "--host 0.0.0.0" not in text, (
+        "the API must not bind all interfaces; only the frontend is published"
+    )
+    assert 'PORT="$PUBLIC_PORT"' in text and "HOSTNAME=0.0.0.0" in text, (
+        "the frontend must bind 0.0.0.0 on the injected PORT"
+    )
+    assert re.search(r'PUBLIC_PORT="\$\{PORT:-\d+\}"', text), (
+        "PUBLIC_PORT must expand PORT with a default, so Replit's injected value wins when present"
+    )
+    assert 'BACKEND_API_URL="http://127.0.0.1:${INTERNAL_API_PORT}"' in text, (
+        "BACKEND_API_URL must still default to the loopback API"
+    )
+
+
+def test_web_launcher_still_supervises_both_children() -> None:
+    """Signal handling and child reaping are unchanged by the split.
+
+    Worth restating because the split deleted a large block of the script above
+    the supervisor, and a supervisor that is "re-added" carelessly is the
+    regression that block's removal makes easy to introduce. The failure it
+    prevents is specific: if uvicorn dies and the shell keeps running Next.js,
+    the platform sees the port open and the deployment looks healthy while every
+    backend call 503s through the BFF.
+    """
+    text = _effective("start_replit_web.sh")
+    for required in (
+        "trap 'on_signal TERM' TERM",
+        "trap 'on_signal INT' INT",
+        "trap 'terminate' EXIT",
+        "wait -n",
+        'for pid in "$api_pid" "$web_pid"',
+    ):
+        assert required in text, f"the web launcher is missing: {required}"
+    for pid_var in ("api_pid", "web_pid"):
+        assert pid_var in text, f"{pid_var} is not supervised"
+    # The API must be started before the frontend, so $! binds to the right
+    # child, and both must be started before the wait loop.
+    api_at = text.index("-m uvicorn")
+    web_at = text.index('node "$STANDALONE_SERVER"')
+    assert api_at < web_at, "uvicorn must be started first so api_pid is correct"
+    assert web_at < text.index("wait -n"), (
+        "both children must be started before the wait loop, or a failure during "
+        "startup is not observed as a child exit"
+    )

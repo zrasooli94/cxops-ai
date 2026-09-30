@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # CXOps web/API process for a Replit Reserved VM deployment.
 #
+# THIS IS THE RUN PHASE. THE FRONTEND IS ALREADY BUILT AND PYTHON IS ALREADY
+# INSTALLED.
+#
+# `[deployment] build` runs scripts/build_replit_web.sh once, before the machine
+# starts, and this script is `[deployment] run`. It installs nothing and builds
+# nothing: `npm ci`, `next build` and a `pip install` are minutes of work that
+# used to happen on every restart, before anything listened on the published
+# port, which is how a healthy deployment gets reported as `an open port was not
+# detected`. The two artifacts that work produced are checked here, and a missing
+# one fails in a second with a message naming the build phase.
+#
 # WHY ONE VM RUNS BOTH SERVERS
 #
 # Replit publishes exactly one port for a deployment, behind its own TLS
@@ -56,98 +67,97 @@ readonly PUBLIC_PORT="${PORT:-8080}"
 readonly INTERNAL_API_PORT="${INTERNAL_API_PORT:-8000}"
 readonly PYTHON_BIN="${PYTHON:-python3}"
 readonly FRONTEND_DIR="${FRONTEND_DIR:-frontend}"
+readonly STANDALONE_SERVER="$REPO_ROOT/$FRONTEND_DIR/.next/standalone/server.js"
+
+# requirements.txt is installed by the build phase into this directory, and this
+# is where the run phase expects it. The name is written once here and once in the
+# build script; a rename on one side is a startup failure on the other, and the
+# message below says which phase to look at rather than leaving an ImportError to
+# be interpreted.
+readonly PY_DEPS_DIRNAME=".replit-python"
+readonly PY_DEPS_DIR="$REPO_ROOT/$PY_DEPS_DIRNAME"
 
 log() { printf '%s replit-web %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 fail() { log "ERROR: $*" >&2; exit 1; }
 
-# --- 1. Dependencies -------------------------------------------------------------
+# --- 1. The prebuilt frontend ---------------------------------------------------
 #
-# Replit's nix layer provides the interpreters; the language dependencies are
-# installed here so a fresh Reserved VM is reproducible from the repo alone.
+# Checked first, before anything is imported or validated, because it is the one
+# failure this script can name exactly and completely. A missing artifact means
+# the build phase did not run or did not finish, and the fix is to republish --
+# not to change any environment variable. The message says so, because the
+# previous behaviour (build at start) made "start it again" look like the remedy.
+[ -f "$STANDALONE_SERVER" ] \
+  || fail "no prebuilt frontend at $STANDALONE_SERVER; the [deployment] build phase did not complete -- run scripts/build_replit_web.sh and republish, do not expect this script to build it"
+
+# --- 2. The packaged Python dependencies -----------------------------------------
 #
-# This runs BEFORE the preflight on purpose. The preflight imports
-# app.core.encryption, so it needs the project's own dependencies -- on a fresh
-# VM, running it against the system interpreter fails with ModuleNotFoundError
-# and reports a broken environment rather than an invalid one.
+# The build phase installed requirements.txt with the system interpreter and
+# `pip install --target`, so the packages are plain files in a directory rather
+# than a virtual environment. Importing them is therefore PYTHONPATH and nothing
+# else: the directory is prepended ahead of the repository root so an installed
+# package wins over anything of the same name in the image, and the root follows
+# because the project itself is imported from it (`app`, `scripts`).
 #
-# EVERY pip invocation in this file goes through venv_pip below. There is no
-# other pip call, no system-Python fallback, and no sudo, so an install either
-# lands in .venv or the deployment fails.
+# It is exported once, here, rather than prefixed onto each command: uvicorn, the
+# preflight and the import check below are three separate interpreters, and a
+# PYTHONPATH that has to be repeated in three places is one that will eventually
+# be missing from the one place it mattered.
 #
-# WHY venv_pip EXISTS -- user-install inheritance
+# The ambient value is appended, not prepended, so it is the least trusted of the
+# three entries. `.replit [env]` does set PYTHONPATH="." -- the repository root,
+# which this script has already added explicitly -- so appending is a no-op for
+# the value that is actually configured here, and a guarantee against a future
+# ambient value outranking either entry.
+export PYTHONPATH="$PY_DEPS_DIR:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+# The directory has to exist. A missing one means the build phase did not run or
+# did not finish, and the fix is to republish -- not to install anything here,
+# which is the slow path this split removed. Checking the directory itself, before
+# any interpreter starts, is what makes that a one-line diagnosis: without it, the
+# first import below reports a missing package and reads as a broken build rather
+# than a build that never happened.
 #
-# The first version of this section ran a bare `python -m pip install`, and on a
-# Reserved VM that crash-looped on the first install:
+# Note that this is the same assumption the standalone-frontend check above makes:
+# that the build phase's filesystem is the deployment's filesystem, so what it
+# wrote is still there. If that does not hold on the platform, it does not hold for
+# either artifact -- which is why both checks name the same remedy instead of
+# offering a per-artifact workaround.
+[ -d "$PY_DEPS_DIR" ] \
+  || fail "no Python packages at $PY_DEPS_DIR; the [deployment] build phase did not complete -- run scripts/build_replit_web.sh and republish, do not expect this script to install them"
+
+# The build already verified these import, with PYTHONPATH pointing at the target
+# and nothing else. This repeats the check because the two environments are
+# different -- the build's interpreter and this one are both "python3" from the
+# same image, but the run phase is where an unusable install would otherwise
+# surface -- and because it is cheap: importing these four takes well under a
+# second. `app` proves the repository-root half of the PYTHONPATH. Importing
+# `app.main` is NOT done here: it takes seconds, and the preflight below is the
+# authoritative check that the application loads.
 #
-#     creating virtualenv
-#     ERROR: Can not perform a '--user' install. User site-packages are not
-#     visible in this virtualenv.
-#
-# The venv is correct and the command is correct; what was wrong is that pip
-# inherits user-install behavior from the environment, and a user install inside
-# a venv is a contradiction pip refuses to perform. Four separate mechanisms can
-# turn that behavior on, none of them visible in this repository:
-#
-#   1. PIP_USER=true in the process environment (the most likely one, and how
-#      the platform most often injects it)
-#   2. `user = true` under [install] in the user-level pip.conf, at either
-#      ~/.config/pip/pip.conf or the legacy ~/.pip/pip.conf
-#   3. `user = true` in a site-level pip.conf at <venv>/pip.conf
-#   4. the same setting in a global /etc/pip.conf
-#
-# All four are verified reproductions, not theories, and all four were checked
-# against this fix.
-#
-# pip's configuration precedence is: command line, then ENVIRONMENT VARIABLES,
-# then site, then user, then global config files. So an environment variable is
-# the one lever that beats every config file at once -- which is why the fix is
-# an environment variable and not a deleted or rewritten pip.conf. Rewriting a
-# file we do not own is also the fragile option: it is per-user, per-machine, and
-# would have to be redone on every deploy anyway.
-#
-# Note PIP_NO_USER=1 does NOT work. pip has no general "no" prefix for boolean
-# options, and it still attempts the user install. PIP_USER=false is the form
-# that works, and it is boolean-parsed, so false/0/no/off/"" are all equivalent.
-#
-# Scoped with `env` rather than `export`: this overrides the value for these
-# commands only, and the running uvicorn and Node children do not inherit a
-# mutated pip environment. Every pip call in the script uses this function, so
-# there is one place to audit and no way to add an un-guarded install later.
-venv_pip() {
-  env \
-    PIP_USER=false \
-    PIP_REQUIRE_VIRTUALENV=1 \
-    "$REPO_ROOT/.venv/bin/python" -m pip "$@"
+# The names are reported, so a missing package is a one-line fix rather than a
+# ModuleNotFoundError traceback from inside uvicorn's import chain.
+missing_python_packages() {
+  "$PYTHON_BIN" - <<'PY' 2>/dev/null || true
+import importlib
+
+missing = []
+for name in ("uvicorn", "fastapi", "sqlalchemy", "app"):
+    try:
+        importlib.import_module(name)
+    except ImportError as exc:
+        missing.append(exc.name or name)
+print(" ".join(missing))
+PY
 }
 
-if [ ! -x .venv/bin/python ]; then
-  log "creating virtualenv"
-  "$PYTHON_BIN" -m venv .venv
-  # The message names the cause, not just the failure. A bare `set -e` exit here
-  # surfaces only pip's last line and the platform's "exit status 1", which
-  # names no component at all. Nothing is echoed about the environment, so no
-  # deployment secret can reach the log through this path.
-  venv_pip install --quiet --upgrade pip \
-    || fail "could not upgrade pip inside .venv; the Reserved VM image or its pip configuration is unusable"
+missing="$(missing_python_packages)"
+if [ -n "$missing" ]; then
+  fail "the packaged Python dependencies in $PY_DEPS_DIRNAME/ are missing ${missing}; the build phase installed them, so this is a stale or partial build -- republish"
 fi
+log "python dependencies present ($("$PYTHON_BIN" -V 2>&1), from $PY_DEPS_DIRNAME/)"
 
-if [ ! -x .venv/bin/uvicorn ]; then
-  log "installing Python dependencies"
-  venv_pip install --quiet -r requirements.txt \
-    || fail "could not install requirements.txt into .venv; the pip output above names the cause"
-fi
-
-cd "$FRONTEND_DIR"
-if [ ! -d node_modules ]; then
-  log "installing Node dependencies"
-  # Node 22 ships npm 10, which honours --include=dev by default; the explicit
-  # flag documents that devDependencies are required, because `next build` needs
-  # the TypeScript and PostCSS toolchain.
-  npm ci --include=dev
-fi
-cd "$REPO_ROOT"
-
-# --- 2. Fail fast on configuration ------------------------------------------------
+# --- 3. Fail fast on configuration ----------------------------------------------
 #
 # A crash loop is the desired outcome for a misconfigured production process: it
 # is visible and bounded, and it cannot serve a customer. This has bitten before
@@ -155,14 +165,20 @@ cd "$REPO_ROOT"
 # restarted forever while the previously healthy instance kept answering.
 #
 # Before either server starts, so that a process which starts and *then* discovers
-# it has no encryption key has not already accepted traffic.
-if ! .venv/bin/python scripts/preflight_production_env.py; then
+# it has no encryption key has not already accepted traffic. The preflight also
+# imports the project's third-party dependencies, so running it is also the
+# authoritative check that the image's packages are the versions the code
+# expects.
+if ! "$PYTHON_BIN" scripts/preflight_production_env.py; then
   fail "environment preflight failed; refusing to start"
 fi
 
-# CXOPS_PUBLIC_SITE_URL is inlined into the build by next/robots/sitemap, so it
-# has to be present *now*, not merely at runtime, or the deployed site advertises
-# localhost as its canonical origin to every crawler.
+# CXOPS_PUBLIC_SITE_URL is inlined into the bundle by the build phase
+# (next/robots/sitemap), so it has to be present *now*, not merely at runtime, or
+# the deployed site advertises localhost as its canonical origin to every
+# crawler. The build phase requires it too; repeating the check here means a
+# deployment cannot start with a public origin that differs from the one the
+# bundle was built with, which would be a silent split between the two.
 if [ -z "${CXOPS_PUBLIC_SITE_URL:-}" ]; then
   fail "CXOPS_PUBLIC_SITE_URL is not set; it is inlined at build time and cannot be defaulted"
 fi
@@ -178,39 +194,6 @@ if [ -z "${BACKEND_API_URL:-}" ]; then
   export BACKEND_API_URL="http://127.0.0.1:${INTERNAL_API_PORT}"
   log "BACKEND_API_URL unset; defaulting to the loopback API on port ${INTERNAL_API_PORT}"
 fi
-
-# --- 3. Build the frontend --------------------------------------------------------
-#
-# Built on every deploy, not at image build time, because the canonical origin is
-# a deployment environment variable. Replit injects Secrets as process
-# environment, so a build that happens at VM start sees them.
-export NEXT_TELEMETRY_DISABLED=1
-# NODE_ENV used to be set project-wide in .replit [env]. It is set per-process
-# here instead, because a project-wide NODE_ENV=production also applied to the
-# workspace's development run — and `next dev` under NODE_ENV=production fails
-# to start. Fixing that meant taking the variable out of [env], which in turn
-# meant the build could no longer inherit it, so it is set explicitly for both
-# the build and the server below.
-export NODE_ENV=production
-log "building frontend with CXOPS_PUBLIC_SITE_URL already in the environment"
-( cd "$FRONTEND_DIR" && npm run build )
-[ -f "$FRONTEND_DIR/.next/standalone/server.js" ] \
-  || fail "frontend build did not produce .next/standalone/server.js"
-
-# Next's standalone output emits only the server and its traced dependencies. It
-# deliberately does NOT copy .next/static or public/, because a Docker image can
-# copy them itself. Running server.js straight from the build directory without
-# doing that copy is the classic result: HTML renders, every /_next/static/*.js
-# 404s, and the app is a blank page.
-#
-# The next.config.ts rewrites proxy /health, /ready, and /version to the loopback
-# API through BACKEND_API_URL, so those stay reachable on the published port
-# without publishing the API itself.
-cp -R "$FRONTEND_DIR/.next/static" "$FRONTEND_DIR/.next/standalone/.next/static"
-if [ -d "$FRONTEND_DIR/public" ]; then
-  cp -R "$FRONTEND_DIR/public" "$FRONTEND_DIR/.next/standalone/public"
-fi
-log "frontend build complete"
 
 # --- 4. Supervise ----------------------------------------------------------------
 #
@@ -291,7 +274,11 @@ trap 'on_signal TERM' TERM
 trap 'on_signal INT' INT
 trap 'terminate' EXIT
 
-.venv/bin/python -m uvicorn app.main:app \
+# The system interpreter, and the packaged dependencies from the build phase via
+# the exported PYTHONPATH. There is no venv to activate and no interpreter other
+# than the image's to choose: the packages are importable files, so the only
+# requirement is that the interpreter can see them.
+"$PYTHON_BIN" -m uvicorn app.main:app \
   --host 127.0.0.1 \
   --port "$INTERNAL_API_PORT" \
   --proxy-headers \
@@ -300,8 +287,11 @@ trap 'terminate' EXIT
   --no-server-header &
 api_pid=$!
 
+# NODE_ENV is set on the server process rather than exported project-wide, for
+# the reason given in scripts/build_replit_web.sh: `next dev` under
+# NODE_ENV=production does not start, and the workspace Run command needs it off.
 PORT="$PUBLIC_PORT" HOSTNAME=0.0.0.0 NODE_ENV=production \
-  node "$FRONTEND_DIR/.next/standalone/server.js" &
+  node "$STANDALONE_SERVER" &
 web_pid=$!
 
 log "api pid=${api_pid} on 127.0.0.1:${INTERNAL_API_PORT}"

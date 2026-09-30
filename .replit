@@ -26,10 +26,10 @@
 # There are no `[[run]]` tables in this file, and the regression test in
 # tests/test_replit_config.py fails the build if one is added back.
 #
-#   deployment      run command                        published port
-#   -------------   --------------------------------   ---------------
-#   cxops-web       scripts/start_replit_web.sh       yes (PORT)
-#   cxops-worker    scripts/start_replit_worker.sh    no
+#   deployment       build command                   run command                       published port
+#   --------------   -----------------------------   -------------------------------   ---------------
+#   cxops-web        scripts/build_replit_web.sh     scripts/start_replit_web.sh       yes (PORT)
+#   cxops-worker     --                              scripts/start_replit_worker.sh    no
 #
 # The worker is a separate deployment, not a second entry in the web
 # deployment's run list. One consumer per deployment is the intended shape: a
@@ -92,14 +92,24 @@ PYTHONUNBUFFERED = "1"
 NEXT_TELEMETRY_DISABLED = "1"
 
 [deployment]
-# The web deployment only. This is a single run target, not a list.
+# The web deployment only. These are single run targets, not lists.
 #
 # It was `["web", "worker"]`, which asked one deployment to start two
 # long-running processes and would have made the worker scale with the web
 # deployment's replica count -- the exact mistake the separate worker deployment
 # exists to prevent. The worker is a separate deployment with its own Run
 # command, selected when that deployment is created.
+#
+# build/run as a PAIR, and both are plain strings. Replit documents
+# `deployment.build` as "Command that executes before running a Deployment" and
+# `deployment.run` as "Command that executes when a Deployment container starts".
+# An array is not a way of saying "several steps" for either key -- it is how a
+# value becomes invalid, which is the same failure `build = []` produced earlier
+# and which Publishing reported as "The .replit deployment configuration is
+# invalid". Chaining happens inside the scripts, where it can be read, tested,
+# and made to fail with a message.
 run = "scripts/start_replit_web.sh"
+build = "scripts/build_replit_web.sh"
 
 # No `deploymentTarget`, and none is substituted.
 #
@@ -122,30 +132,62 @@ run = "scripts/start_replit_web.sh"
 # If a future Replit release documents Reserved VM as a .replit value, add it
 # then, from that documentation rather than from memory.
 
-# No build command, deliberately.
+# WHY THERE IS NOW A BUILD COMMAND, WHEN THERE PREVIOUSLY WAS NONE
 #
-# The obvious choice is a production config validation step, and it is wrong:
-# that needs production secrets (https public URLs, AUTH_JWKS_URL,
-# ENCRYPTION_KEYS) and a live database connection. A build step has neither --
-# deployment secrets are injected into the running deployment, not into its
-# build, and a private database is reachable from the deployment rather than
-# from a build. So it would fail for a completely correct configuration, and the
-# failure would read like a configuration fault rather than a misplaced check.
+# The earlier version of this file omitted `build` entirely, on the reasoning
+# that "deployment secrets are injected into the running deployment, not into its
+# build". That reasoning was wrong, and it was load-bearing: it was why the
+# frontend had to be built by the RUN command, on every restart of the machine.
 #
-# There is also nothing to build here. The frontend build depends on
-# CXOPS_PUBLIC_SITE_URL, a deployment environment variable, so it cannot run
-# before the deployment exists. scripts/start_replit_web.sh builds at start time
-# for exactly that reason, and runs the environment gate there too, before
-# either server starts.
+# Replit documents the opposite. The Publishing tool's deployment secrets are the
+# place to add "environment variables or secrets your build command needs to run
+# securely", and the build command itself is documented as executing before the
+# deployment starts. So the build phase does receive deployment configuration.
 #
-# The key is therefore OMITTED, not set to an empty value. It used to read
-# `build = []`, written to mean "no build step" -- and Replit's schema takes
-# `build` to be a command string, so an array is not a way of saying "none" but
-# an invalid value. Publishing rejected the whole deployment config with "The
-# .replit deployment configuration is invalid", which is a far worse failure than
-# the one it was trying to express: it blocked the publish instead of describing
-# an absent optional step.
+# That is what makes the split possible, and the split is the fix for the
+# symptom this repository kept hitting:
 #
-# Do not reintroduce it in any form, including `build = ""`. Omit the key; that
-# is how TOML expresses "no value", and it is what the schema expects.
-# tests/test_replit_config.py fails the build if a `build` key reappears here.
+#   * The frontend build takes minutes -- `npm ci` plus a full `next build`.
+#   * It used to run inside scripts/start_replit_web.sh, so it ran on EVERY
+#     restart, before anything bound the published port.
+#   * A healthy deployment was therefore reported as
+#     `hostingpid1: an open port was not detected`, because the port opened after
+#     the health check's window rather than after the build.
+#
+# So `build` now exists, and it owns exactly the work that must not repeat:
+# npm install, the Next production build, staging .next/static and public/ into
+# the standalone output, and -- for the same reason -- the `pip install
+# --target .replit-python/` of requirements.txt. scripts/start_replit_web.sh then
+# starts the prebuilt artifact and installs nothing.
+#
+# The Python half of that needs its own justification, because it is a second
+# dependency system in a repository that already had one. Moving the install out
+# of the run phase left the question of what guarantees requirements.txt exists
+# at all, and the image cannot answer it: Replit's
+# `packager.features.enabledForHosting` setting defaults to false, so a hosting
+# install is not something the platform promises to perform. The build phase
+# therefore installs them with the system interpreter into a project-local
+# `--target` directory -- no venv, no PATH, no mutation of the image's
+# site-packages -- and the run phase prepends that one directory to PYTHONPATH.
+# `.replit-python/` is a build artifact and belongs in .gitignore.
+#
+# WHAT THE BUILD PHASE IS NOT ALLOWED TO DO
+#
+# It must not require a sensitive runtime secret. The variables it does require
+# (CXOPS_PUBLIC_SITE_URL, NEXT_PUBLIC_NHOST_SUBDOMAIN, NEXT_PUBLIC_NHOST_REGION)
+# are the ones `next build` inlines into the bundle, and they are public by
+# construction: they are visible in the served HTML and the client bundle. The
+# sensitive runtime configuration -- DATABASE_URL, ENCRYPTION_KEYS,
+# OPENAI_API_KEY, the public URLs that must be https -- is checked where it
+# belongs, in scripts/preflight_production_env.py, at run time. A build step that
+# demanded those would fail a correct deployment for the sake of a check that
+# already runs, and later.
+#
+# A note on the value FORM, which is what actually broke before. This key used to
+# read `build = []`, written to mean "no build step". Replit's schema takes
+# `build` to be a command string, so an array is not how you say "none" -- it is
+# simply an invalid value, and Publishing rejected the entire deployment config
+# with "The .replit deployment configuration is invalid". The same applies now: it
+# is a string naming one script, never an array, never `build = ""`.
+# tests/test_replit_config.py asserts the parsed value is a string naming
+# scripts/build_replit_web.sh.
