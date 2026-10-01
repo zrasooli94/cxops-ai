@@ -9,12 +9,12 @@ import type { NextConfig } from "next";
  * key, a hostile parent could overlay it to phish a visitor of that tenant.
  *
  * These are the tenants' *custom* domains, which is what matters: A1 and RISPU
- * are separate Replit deployments reached through their own domains, so nothing
- * here needs to know about Replit at all. A `*.replit.app` wildcard is
- * deliberately absent -- every Replit deployment gets a sibling subdomain of a
- * shared parent, so such a wildcard would let any Replit user on earth frame a
- * tenant's widget and read its key out of the URL. Add a host here only when a
- * tenant's real domain is known.
+ * are separate production deployments reached through their own domains, so
+ * nothing here needs to know where the app is hosted at all. A wildcard over any
+ * hosting provider's shared domain is deliberately absent -- every tenant
+ * deployment gets a sibling subdomain of a shared parent, so such a wildcard
+ * would let an unrelated tenant frame this widget and read its key out of the
+ * URL. Add a host here only when a tenant's real domain is known.
  */
 const WIDGET_FRAME_ANCESTORS = [
   "'self'",
@@ -26,24 +26,32 @@ const WIDGET_FRAME_ANCESTORS = [
  * Internal API location, read by the server-side BFF and Control Center
  * modules. It is a runtime value on purpose: Next.js server code reads
  * `process.env` at request time, so the same built image can be pointed at a
- * different API without a rebuild. It never leaves the machine on the Replit
- * topology (see scripts/start_replit_web.sh), which is why it is not required
- * to be https.
+ * different API without a rebuild.
+ *
+ * In production this is the public https origin of the Render API service
+ * (scripts/start_render_api.sh). It is still only ever read server-side, so the
+ * browser never learns it: the BFF calls it and returns the response, which is
+ * what keeps the widget and Control Center same-origin with this deployment and
+ * removes the need for CORS on the public chat route.
+ *
+ * The loopback default is a local-development convenience, not a production
+ * topology. Left as a fallback it cannot fail loudly on a misconfigured deploy,
+ * so production must set BACKEND_API_URL explicitly.
  */
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
 
 /**
- * Backend probes re-exported on the single published port.
+ * Backend probes re-exported on this deployment's own origin.
  *
- * The frontend and the API share one host, and only one port is published, so
- * the API is bound to loopback. An operator (and the readiness script) still
- * needs to reach /health, /ready, and /version through the public origin. These
- * rewrites proxy them to the same API the BFF uses, so there is exactly one
- * reachable entry point and no reason to publish a second.
+ * The frontend and the API are separate services here, so this deployment
+ * publishes only the Next.js port. An operator (and the readiness script) still
+ * needs to reach /health, /ready, and /version through the frontend origin.
+ * These rewrites proxy them to the API the BFF already uses, so there is exactly
+ * one reachable entry point per service and no second port to publish.
  *
  * `destination` is a full URL, so Next proxies server-side and the browser never
- * learns the loopback address.
+ * learns the API's address.
  */
 const BACKEND_PROBES = ["/health", "/ready", "/version"] as const;
 

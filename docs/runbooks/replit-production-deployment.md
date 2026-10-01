@@ -1,7 +1,17 @@
 # Replit production deployment runbook
 
-The procedure for deploying CXOps AI to Replit, replacing the previous
-Render/Vercel topology. Read
+> **Not the authoritative production path.** Production is Vercel (frontend) +
+> Render (API and worker) + Nhost (auth) + Neon (database). See
+> [production-environment-contract.md](production-environment-contract.md) for
+> that topology and what each environment value must be.
+>
+> This runbook is retained for the Replit compatibility files
+> (`scripts/start_replit_web.sh`, `scripts/start_replit_worker.sh`,
+> `config/replit/deployment-env.yaml`), which still work and are still tested. It
+> documents the previous production topology. Do not apply it to a new
+> deployment.
+
+The procedure for deploying CXOps AI to Replit. Read
 [production-environment-contract.md](production-environment-contract.md) for
 *what* each value must be; this file is *how* to apply it.
 

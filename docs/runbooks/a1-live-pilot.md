@@ -81,18 +81,10 @@ sending a real vehicle description and reading a truthful reply.
    DATABASE_URL='postgresql+asyncpg://…' scripts/run_migrations.sh
    ```
 
-   **This command intentionally uses `DATABASE_URL`, not
-   `EXTERNAL_DATABASE_URL`.** The deployed services (`cxops-web`,
-   `cxops-worker`) receive `EXTERNAL_DATABASE_URL` as a Replit Secret, and each
-   Replit launcher maps it with
-   `export DATABASE_URL="$EXTERNAL_DATABASE_URL"` before starting. That mapping
-   lives inside the launchers, so it does not exist here: this command is run by
-   an operator from a one-off shell, outside any launcher, and therefore takes
-   the same Neon connection string directly under the name
-   `scripts/run_migrations.sh` reads. Do not set `DATABASE_URL` as the Replit
-   *service* deployment secret — Replit injects a platform-managed one, and the
-   launchers deliberately overwrite it, so the services use the external Neon
-   database and never the Replit-managed one. Use the Neon **direct** (unpooled)
+   **This command takes the same `DATABASE_URL` the services use.** It is run
+   by an operator from a one-off shell, outside both Render launchers, so no
+   mapping exists here — supply the Neon connection string directly under the
+   name `scripts/run_migrations.sh` reads. Use the Neon **direct** (unpooled)
    connection here: a migration holds a session and its advisory lock for as
    long as it takes, and a pooler may hand the connection away or cut it.
 
@@ -137,49 +129,58 @@ sending a real vehicle description and reading a truthful reply.
 
 ---
 
-## 3. Deployment topology (Replit)
+## 3. Deployment topology (Vercel + Render + Nhost + Neon)
 
-One Replit project, two deployments from the same source:
+Five services, each with one job:
 
-- **`cxops-web`** — Next.js on the published `PORT`, FastAPI on
-  `127.0.0.1:$INTERNAL_API_PORT` behind a same-origin BFF. Health probes
-  (`/health`, `/ready`, `/version`) are re-exported through Next.js so the
-  public origin is the only reachable entry point.
-- **`cxops-worker`** — durable job consumer, no published port.
-- **Managed PostgreSQL** — 12 or newer, with the `vector` extension enabled by
-  the database owner (see `config/replit/deployment-env.yaml`).
+- **Vercel** — Next.js: public widget, staff Control Center, same-origin BFF.
+  Health probes (`/health`, `/ready`, `/version`) are re-exported through
+  Next.js so the frontend origin is the only browser entry point.
+- **Render API** (`cxops-api`) — FastAPI/uvicorn on `0.0.0.0:$PORT`, started by
+  `scripts/start_render_api.sh`.
+- **Render worker** (`cxops-worker`) — durable job consumer, started by
+  `scripts/start_render_worker.sh`. No published port.
+- **Nhost** — staff identity and the JWKS issuer.
+- **Neon (Singapore)** — PostgreSQL 12+ with `pgvector`, already at Alembic head
+  `1p4a0001`.
 
-The environment contract is `config/replit/deployment-env.yaml`, and
-`tests/test_deployment_env_parity.py` fails the build if it drifts from what
-the application requires. (The previous Render blueprint is archived at
-`docs/archive/render.yaml` and is not authoritative.)
+`scripts/start_render.sh` is a compatibility shim delegating to
+`scripts/start_render_api.sh`, because an existing Render service still points
+its start command there.
+
+**Do not create or attach a Render PostgreSQL database.** Neon is the only
+production database. A second one would be an unprotected copy of
+customer-shaped data that nothing points at, and both services would connect
+successfully, so the split would never surface as an error.
+
+The environment contract is
+[production-environment-contract.md](production-environment-contract.md).
 
 Four properties are load-bearing:
 
 - **Migrations never run at a start command.** Every restart re-runs the start
-  command, so a migration there races itself. Migrate explicitly, then deploy.
-  The test strips comments before checking, so a warning naming the migration
-  step cannot register as the defect it prevents.
-- **No secret has a literal default.** Every credential is `secret: true` with
-  no `value`, meaning the operator sets it as a Replit Secret. A shipped
-  placeholder is a silent outage, and a shipped *working* default is worse.
-- **The worker is never weaker than the web deployment.** It imports
-  `app.core.config`, whose production validation refuses to import without
-  https public URLs, `AUTH_MODE=jwks` with a real JWKS URL,
-  `AUTH_DEV_MODE=false`, and `ENCRYPTION_KEYS`. A missing one is a crash loop,
-  not a degraded feature.
-- **`FORWARDED_ALLOW_IPS` defaults to `127.0.0.1`, never `*`.** The API is
-  bound to loopback and reached only by the local frontend, so a wildcard would
-  let anything able to open that socket dictate the scheme the app believes it
-  is served over.
+  command, so a migration there races itself on DDL locks. Migrate explicitly
+  (`scripts/run_migrations.sh`), then deploy. The tests strip comments before
+  checking, so a warning naming the migration step cannot register as the defect
+  it prevents.
+- **The preflight runs before either service starts.** Both Render launchers run
+  `scripts/preflight_production_env.py` and refuse to start on failure, so a
+  process never accepts traffic and *then* discovers a missing encryption key or
+  a plaintext-capable `DATABASE_URL`.
+- **No secret has a literal default.** Every credential is set in the Vercel and
+  Render dashboards. A shipped placeholder is a silent outage, and a shipped
+  *working* default is worse.
+- **The worker is never weaker than the API.** It imports `app.core.config`,
+  whose production validation refuses to import without https public URLs,
+  `AUTH_MODE=jwks` with a real JWKS URL, `AUTH_DEV_MODE=false`, and
+  `ENCRYPTION_KEYS`. A missing one is a crash loop, not a degraded feature.
 
-`FORWARDED_ALLOW_IPS` and `INTERNAL_API_PORT` are web-only; the Zendesk OAuth
-variables are deliberately absent from the worker, which consumes jobs rather
-than running an OAuth client.
-
-The managed database is internal-only: only deployments on the same Replit
-account can open a socket, so a leaked `DATABASE_URL` is not reachable from the
-public internet. Do not open it up.
+`FORWARDED_ALLOW_IPS` is API-only and is `*` on Render, because Render
+terminates TLS and forwards: uvicorn is started with `--proxy-headers`, and a
+proxy whose headers are not trusted makes the app build `http://` URLs and mark
+cookies insecure behind that termination. The Zendesk OAuth variables are
+deliberately absent from the worker, which consumes jobs rather than running an
+OAuth client.
 
 ---
 
