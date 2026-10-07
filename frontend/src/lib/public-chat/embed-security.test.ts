@@ -64,6 +64,36 @@ describe("widget framing policy", () => {
     assert.match(allowlist, /'self'/);
   });
 
+  it("allows framing by RISPU, the first live pilot tenant, and nothing shared", () => {
+    // RISPU's widget is embedded from its own site, so both the apex and www
+    // host must be frameable; the existing A1 pair and 'self' stay intact.
+    const allowlist = nextConfigSource.slice(
+      nextConfigSource.indexOf("WIDGET_FRAME_ANCESTORS = ["),
+      nextConfigSource.indexOf("];", nextConfigSource.indexOf("WIDGET_FRAME_ANCESTORS = [")),
+    );
+
+    for (const origin of ["https://rispu.com", "https://www.rispu.com"]) {
+      assert.ok(allowlist.includes(origin), `${origin} missing from frame-ancestors`);
+    }
+    assert.ok(allowlist.includes("'self'"));
+    assert.ok(allowlist.includes("https://a1cashforcars.com.au"));
+    assert.ok(allowlist.includes("https://www.a1cashforcars.com.au"));
+    assert.equal(allowlist.split(/rispu\.com/).length - 1, 2, "both RISPU hosts present");
+
+    // No wildcard and no shared-hosting host may enter the allowlist: every
+    // tenant deployment is a sibling subdomain of one shared parent, so either
+    // would let an unrelated site frame the widget and read its key from the URL.
+    for (const forbidden of [
+      "https://*",
+      "*.rispu.com",
+      "*.replit.app",
+      "*.vercel.app",
+      "*",
+    ]) {
+      assert.ok(!allowlist.includes(forbidden), `forbidden origin ${forbidden} present`);
+    }
+  });
+
   it("does not leave the widget framable by any origin", () => {
     // Scoped to the CSP builder: a bare /frame-ancestors[^;]*\*/ would match
     // across newlines and trip on the unrelated "/:path*" route pattern.

@@ -191,6 +191,34 @@ deleted or weakened.
   authorization is enforced server-side from the token's membership claims, so
   selecting another tenant in the UI cannot widen access.
 
+## Pilot tenants
+
+RISPU (`config/tenants/rispu.yaml`) is the **first live pilot tenant**: its
+public widget is enabled and customer-reachable from RISPU's own site. The A1 Cash
+for Cars pilot is a `local_demo` provider pilot; RISPU is the live demonstration
+of the public chat surface against a real customer domain.
+
+Facts that hold while RISPU is in `pilot.state: pilot`:
+
+- The widget may be embedded only from `https://rispu.com` and
+  `https://www.rispu.com`. Both are the exact `allowed_origins` in the manifest
+  and the matching `frame-ancestors` hosts in `frontend/next.config.ts`
+  (`WIDGET_FRAME_ANCESTORS`). No other RISPU origin is allowlisted anywhere, and
+  no wildcard or shared-hosting host is permitted.
+- The widget key is **public by design**: it travels in the embed URL so the
+  customer page can load the widget. It is stored only as a hash; the raw key is
+  printed exactly once by onboarding (at `CREATE`, or on an explicit
+  `--rotate-widget-key`). Losing it means rotating it.
+- RISPU chat is **handoff-only** for anything with an external effect. The
+  agent answers questions and creates a support ticket for staff review; it
+  performs no real provider or business action, and nothing reaches an external
+  vendor.
+- RISPU declares **no** business integration and ships **no** knowledge
+  documents in this pilot.
+- `pilot.state: pilot` is documentation, not a production claim: **pilot state
+  does not equal production business actions.** A real provider would flip both
+  the manifest and this contract in the same change.
+
 ## What is deliberately *not* required
 
 | Value | Why not |

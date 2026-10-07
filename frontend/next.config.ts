@@ -20,6 +20,8 @@ const WIDGET_FRAME_ANCESTORS = [
   "'self'",
   "https://a1cashforcars.com.au",
   "https://www.a1cashforcars.com.au",
+  "https://rispu.com",
+  "https://www.rispu.com",
 ];
 
 /**

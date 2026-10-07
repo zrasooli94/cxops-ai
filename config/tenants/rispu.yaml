@@ -1,0 +1,77 @@
+# RISPU - first live pilot tenant (Phase 1P.3)
+#
+# This file is the declarative source of truth for the RISPU pilot tenant. It is
+# applied by:
+#
+#     .venv/bin/python scripts/onboard_tenant.py \
+#         --manifest config/tenants/rispu.yaml --dry-run
+#     .venv/bin/python scripts/onboard_tenant.py \
+#         --manifest config/tenants/rispu.yaml
+#
+# The command is idempotent: re-running it changes nothing and never mints a new
+# public widget key unless you pass --rotate-widget-key.
+#
+# SECURITY: this file is committed. It must never contain credentials, API keys,
+# connection strings, webhook secrets, or staff tokens. The loader rejects
+# credential-shaped keys and values outright.
+#
+# PILOT POSTURE: the RISPU widget is LIVE and customer-reachable. The agent
+# answers questions and hands a conversation to a human; there is no real
+# provider integration, and the agent performs no real provider or business
+# action. Staff must review every customer-facing action before it has any
+# effect. This pilot is handoff-only.
+
+schema_version: 1
+
+tenant:
+  # Stable tenant slug. Stored in organizations.external_id (unique, <=100 chars)
+  # and used in commands, logs, and rollback instructions.
+  slug: rispu
+  name: RISPU
+  industry: Software
+
+public_chat:
+  enabled: true
+  display_name: RISPU Support
+  welcome_message: >-
+    Hi! How can we help? Send us a message and our support team will review it.
+  # Exact origins only. No wildcards, no paths, no trailing slashes. The
+  # embedding origin is matched server-side against the request referrer; an
+  # origin that is not listed here is rejected before a session is created.
+  #
+  # PRODUCTION origins for RISPU. The live site is reached at both the apex
+  # and the www host, which are distinct origins to a browser. Matching is
+  # exact string membership, so "https://rispu.com.evil.example" is rejected.
+  # Do NOT add a bare host, a wildcard, or a subdomain; a subdomain embeds the
+  # widget on every site under that host.
+  allowed_origins:
+    - https://rispu.com
+    - https://www.rispu.com
+  # Opaque token rendered from a closed set of known mappings. Free-form CSS or
+  # arbitrary markup is deliberately not supported.
+  theme_token: default
+  max_message_length: 2000
+  max_messages_per_minute: 12
+  session_ttl_hours: 24
+
+# No business_integrations: the agent offers RISPU no provider tools, so nothing
+# in this pilot can reach a real vendor backend.
+
+# No knowledge: RISPU ships without ingested documents; the widget answers from
+# the welcome message and hands everything else to staff review.
+
+pilot:
+  # Documentation-only marker. It records the intended posture for operators
+  # and reviewers; it has no runtime effect on the app.
+  #
+  # Deliberately "pilot", not "production". The widget is live, but no real
+  # provider performs real actions: the assistant informs and hands off, and
+  # staff must review customer-facing actions. The "production" posture is
+  # reserved for a build where a real provider performs real actions.
+  state: pilot
+  notes: >-
+    Pilot scope: public widget, AI conversation, and human handoff from
+    RISPU's site (https://rispu.com and https://www.rispu.com only). The agent
+    performs no real provider or business action and nothing reaches an
+    external vendor. Not in scope: real provider integration and any action
+    with an effect beyond a support ticket created for staff review.
