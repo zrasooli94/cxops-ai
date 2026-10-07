@@ -142,7 +142,9 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
       ENVIRONMENT: development
       DEBUG: "true"
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Optional live evaluation. Runs only when BOTH dedicated evaluation
+      # secrets exist; the production OPENAI_API_KEY is never available here.
+      EVALUATION_ENABLED: ${{ secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
       ZENDESK_WEBHOOK_SECRET: test-secret
     services:
       postgres:
@@ -177,21 +179,23 @@ jobs:
         run: alembic upgrade head
 
       - name: Seed knowledge base
-        if: ${{ env.OPENAI_API_KEY != '' }}
-        run: python -m scripts.seed_knowledge_base
+        if: ${{ env.EVALUATION_ENABLED == 'true' }}
+        run: python -m scripts.seed_knowledge_base --organization-id "$EVALUATION_ORGANIZATION_ID"
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.EVALUATION_OPENAI_API_KEY }}
+          EVALUATION_ORGANIZATION_ID: ${{ secrets.EVALUATION_ORGANIZATION_ID }}
 
       - name: Run RAG evaluation
-        if: ${{ env.OPENAI_API_KEY != '' }}
-        run: python -m scripts.evaluate_rag
+        if: ${{ env.EVALUATION_ENABLED == 'true' }}
+        run: python -m scripts.evaluate_rag --organization-id "$EVALUATION_ORGANIZATION_ID"
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.EVALUATION_OPENAI_API_KEY }}
+          EVALUATION_ORGANIZATION_ID: ${{ secrets.EVALUATION_ORGANIZATION_ID }}
 
       - name: RAG evaluation skipped
-        if: ${{ env.OPENAI_API_KEY == '' }}
+        if: ${{ env.EVALUATION_ENABLED == 'false' }}
         run: |
-          echo "Live RAG evaluation skipped: OPENAI_API_KEY is not configured."
+          echo "Live RAG evaluation skipped: EVALUATION_OPENAI_API_KEY and EVALUATION_ORGANIZATION_ID are not both configured."
 
   agent-evaluation:
     name: Agent Evaluation (Live - Optional)
@@ -200,7 +204,9 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
       ENVIRONMENT: development
       DEBUG: "true"
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Optional live evaluation. Runs only when BOTH dedicated evaluation
+      # secrets exist; the production OPENAI_API_KEY is never available here.
+      EVALUATION_ENABLED: ${{ secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
       ZENDESK_WEBHOOK_SECRET: test-secret
     services:
       postgres:
@@ -235,21 +241,23 @@ jobs:
         run: alembic upgrade head
 
       - name: Seed knowledge base
-        if: ${{ env.OPENAI_API_KEY != '' }}
-        run: python -m scripts.seed_knowledge_base
+        if: ${{ env.EVALUATION_ENABLED == 'true' }}
+        run: python -m scripts.seed_knowledge_base --organization-id "$EVALUATION_ORGANIZATION_ID"
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.EVALUATION_OPENAI_API_KEY }}
+          EVALUATION_ORGANIZATION_ID: ${{ secrets.EVALUATION_ORGANIZATION_ID }}
 
       - name: Run agent evaluation
-        if: ${{ env.OPENAI_API_KEY != '' }}
-        run: python -m scripts.evaluate_agent
+        if: ${{ env.EVALUATION_ENABLED == 'true' }}
+        run: python -m scripts.evaluate_agent --organization-id "$EVALUATION_ORGANIZATION_ID"
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.EVALUATION_OPENAI_API_KEY }}
+          EVALUATION_ORGANIZATION_ID: ${{ secrets.EVALUATION_ORGANIZATION_ID }}
 
       - name: Agent evaluation skipped
-        if: ${{ env.OPENAI_API_KEY == '' }}
+        if: ${{ env.EVALUATION_ENABLED == 'false' }}
         run: |
-          echo "Live Agent evaluation skipped: OPENAI_API_KEY is not configured."
+          echo "Live Agent evaluation skipped: EVALUATION_OPENAI_API_KEY and EVALUATION_ORGANIZATION_ID are not both configured."
 
   secret-scan:
     name: Secret Scan

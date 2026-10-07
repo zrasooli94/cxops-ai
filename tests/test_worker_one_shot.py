@@ -38,7 +38,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import scripts.worker as worker
+
+from scripts import worker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKER_SOURCE = REPO_ROOT / "scripts" / "worker.py"
