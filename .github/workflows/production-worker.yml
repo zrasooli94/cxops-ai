@@ -1,0 +1,91 @@
+# Scheduled production worker for the live pilot.
+#
+# This is the pilot's ONLY background worker. It runs a bounded one-shot pass
+# every five minutes: one SLA escalation scan, then every job the queue already
+# holds, then exit. It is not a replacement for a long-lived worker -- it is a
+# deliberately cheaper one, chosen because pilot traffic is bursty and a runner
+# that exists for 240 seconds costs nothing between bursts.
+#
+# Properties this file is responsible for, in order:
+#
+#   1. The environment preflight runs BEFORE the worker and its failure stops
+#      the job. A process that starts with a half-configured environment can
+#      claim a job and act on it; the gate has to come first or it gates
+#      nothing.
+#   2. Nothing here runs a database migration. Migrations are an explicit
+#      operator action (scripts/run_migrations.sh) and belong in no start
+#      command and no scheduled job.
+#   3. Least privilege: read-only contents. This job needs the source and the
+#      environment, nothing else.
+#   4. The application-level 240-second bound is the real deadline. The job
+#      timeout is a platform backstop behind it, not the primary control.
+#
+# Correctness under overlap (with another scheduled run, or with the always-on
+# Render worker after an upgrade) comes from atomic row-locked job claiming in
+# the database, not from the concurrency group below. The concurrency group is
+# an operational guard that keeps two runners from being billed at once; it is
+# NOT the data-integrity mechanism, and removing it would not make the worker
+# unsafe.
+#
+# Secrets are read from GitHub Actions secrets and never printed. The preflight
+# reports presence/validity only.
+
+name: Production Worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-production-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    name: One-shot worker
+    runs-on: ubuntu-latest
+    # Platform backstop only. The application-level --max-seconds 240 bound
+    # normally finishes first; this exists so a hung connection can never hold
+    # a runner until GitHub kills it at the six-hour ceiling.
+    timeout-minutes: 6
+    env:
+      # Production configuration. Non-sensitive by construction: these are the
+      # shapes and origins of the deployment, not credentials.
+      ENVIRONMENT: production
+      DEBUG: "false"
+      AUTH_MODE: jwks
+      AUTH_DEV_MODE: "false"
+      FRONTEND_BASE_URL: https://cxops-ai.vercel.app
+      BACKEND_PUBLIC_URL: https://cxops-ai.onrender.com
+      # Production secrets. Same Neon database the Render API uses -- there is
+      # exactly one production database, and this worker must not have its own.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ENCRYPTION_KEYS: ${{ secrets.ENCRYPTION_KEYS }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AUTH_JWKS_URL: ${{ secrets.AUTH_JWKS_URL }}
+      AUTH_JWT_ISSUER: ${{ secrets.AUTH_JWT_ISSUER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Production environment preflight
+        run: python scripts/preflight_production_env.py
+
+      - name: Run one-shot worker
+        run: python -m scripts.worker --once --max-jobs 25 --max-seconds 240

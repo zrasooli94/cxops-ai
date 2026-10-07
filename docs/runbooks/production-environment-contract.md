@@ -6,13 +6,14 @@ what and why.
 
 ## The production topology
 
-Five services, each with one job:
+Six services, each with one job:
 
 | Layer | Host | Serves | Start command |
 | --- | --- | --- | --- |
 | Frontend | **Vercel** | Next.js: public widget, staff Control Center, same-origin BFF | build: `npm run build` |
 | API | **Render** (Singapore) | FastAPI/uvicorn | `scripts/start_render_api.sh` |
-| Worker | **Render** (Singapore) | Durable integration-job consumer, no published port | `scripts/start_render_worker.sh` |
+| **Pilot worker** | **GitHub Actions** | Scheduled one-shot integration-job consumer, every 5 minutes | `python -m scripts.worker --once --max-jobs 25 --max-seconds 240` |
+| Worker (upgrade path) | **Render** (Singapore) | Always-on integration-job consumer, no published port | `scripts/start_render_worker.sh` |
 | Auth | **Nhost** | Staff identity; JWKS issuer | — |
 | Database | **Neon** (Singapore) | PostgreSQL + `pgvector`, at Alembic head `1p4a0001` | — |
 
@@ -24,11 +25,14 @@ its start command there.
 Render-managed PostgreSQL database to either service. A second database would be
 a decoy holding a copy of customer-shaped data that nothing protects, and the
 two services would connect to it successfully, so the split would never surface
-as an error.
+as an error. The Render API and the GitHub Actions worker read the *same*
+`DATABASE_URL` — there is one queue in one database, and two ways of draining
+it.
 
-**No service start command runs migrations.** Every replica re-runs its start
-command, so a migration there races itself on DDL locks. Migrations are a single
-explicit step — see "The production database" below.
+**No service start command and no scheduled job runs migrations.** Every
+replica re-runs its start command and every scheduled run re-runs the workflow,
+so a migration in either races itself on DDL locks. Migrations are a single
+explicit operator action — see "The production database" below.
 
 Validate any environment mechanically with:
 
@@ -116,6 +120,53 @@ configuring a health check for one is a sign the service is misconfigured. Its
 Prometheus listener on `WORKER_METRICS_PORT` (default `9101`) is not published;
 set it to `0` only if the platform forbids extra listeners, at the cost of losing
 the metrics that distinguish "idle" from "dead".
+
+## Pilot production worker (GitHub Actions)
+
+The pilot's *only* background worker is a scheduled one-shot run, defined in
+`.github/workflows/production-worker.yml`:
+
+- **Every 5 minutes** (`cron: "*/5 * * * *"`), on the default branch.
+- Runs `python scripts/preflight_production_env.py` first; a failed preflight
+  fails the job and the worker never runs.
+- Runs `python -m scripts.worker --once --max-jobs 25 --max-seconds 240`: one
+  SLA escalation scan, then jobs until the queue is empty or a bound is hit,
+  then exit. It never sleeps waiting for work, never starts the Prometheus
+  metrics listener, and never touches the deployed API.
+- Is bounded at the application level to 240 seconds, inside the 5-minute
+  interval, so two scheduled runs do not overlap by design. A 6-minute job
+  timeout is the platform backstop, not the primary control.
+
+Environment: the workflow sets `ENVIRONMENT`, `DEBUG`, `AUTH_MODE`,
+`AUTH_DEV_MODE`, `FRONTEND_BASE_URL`, and `BACKEND_PUBLIC_URL` literally, and
+reads the five credentials below from **GitHub Actions secrets** (never
+printed):
+
+| Secret | Why |
+| --- | --- |
+| `DATABASE_URL` | **The same Neon production URL the Render API uses.** One queue in one database. A second, workflow-owned database would be the same decoy as a Render-managed one: jobs consumed against a schema the API never reads, and no error ever raised. |
+| `ENCRYPTION_KEYS` | The worker executes integration jobs, which read stored provider credentials. A different key set means it cannot decrypt what the API wrote. |
+| `OPENAI_API_KEY` | Integration jobs can reach the agent workflow. |
+| `AUTH_JWKS_URL`, `AUTH_JWT_ISSUER` | `Settings` refuses to construct in production without them. |
+
+Everything the always-on Render worker needs is present here, and `Settings`
+validates process-wide, so a missing value is a crash and the run fails — never
+a silently degraded run.
+
+**Expected-delivery caveat.** GitHub schedules runs with best effort; a run can
+start minutes late or be delayed by runner availability. That is acceptable for
+pilot traffic (the SLA scanner escalates on the next tick, and the next run is
+always coming) but it is why this worker is *not* the real-time mechanism: it
+is the pilot worker, and the upgrade path below is the always-on mechanism.
+
+**The upgrade path is a process change, not a data model change.** The job
+model, atomic row-locked claiming, retry/failure semantics, metrics, and SLA
+advisory locking are identical between the two workers because they are the
+same `scripts/worker.py`. Moving to continuous processing means pointing a
+Render Background Worker at `scripts/start_render_worker.sh` and stopping the
+schedule — no migration, and no re-architecting of the queue. Until then,
+`scripts/start_render_worker.sh` remains supported and is deliberately not
+deleted or weakened.
 
 ## Vercel frontend
 
