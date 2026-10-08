@@ -6,11 +6,12 @@ does not wire anything into public chat; wiring would be a separate change.
 
 from app.services.citation_service import CitationService
 
-
 FALLBACK_STRINGS = (
     "I don't have enough information in the knowledge base to answer that question.",
-    "I found potentially relevant information, but I could not "
-    "produce a sufficiently grounded answer with valid citations.",
+    (
+        "I found potentially relevant information, but I could not "
+        "produce a sufficiently grounded answer with valid citations."
+    ),
 )
 
 
