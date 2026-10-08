@@ -51,8 +51,17 @@
       }
       // The widget pins itself 20px inside its document corner, so the
       // embedded frame is that much larger and the margins create the gap.
-      width = Math.max(56, Math.min(width + 40, 520));
-      height = Math.max(56, Math.min(height + 40, 640));
+      // Clamp against the parent page viewport too: the loader runs in the
+      // parent page (where window.inner* is the real browser viewport), so a
+      // small screen never grows the expanded frame beyond the usable area.
+      width = Math.max(
+        56,
+        Math.min(width + 40, 520, window.innerWidth)
+      );
+      height = Math.max(
+        56,
+        Math.min(height + 40, 640, window.innerHeight)
+      );
       iframe.style.width = width + "px";
       iframe.style.height = height + "px";
     },

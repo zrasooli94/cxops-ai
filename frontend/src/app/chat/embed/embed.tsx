@@ -368,15 +368,13 @@ export function PublicChatWidget({
   useEffect(() => {
     const isPanel =
       state !== "launcher" && state !== "closed";
-    let width: number;
-    let height: number;
-    if (isPanel) {
-      width = Math.min(380, window.innerWidth - 24);
-      height = Math.min(540, window.innerHeight - 24);
-    } else {
-      width = 56;
-      height = 56;
-    }
+    // The panel requests its intended logical size, not a size derived from
+    // this iframe's own viewport: inside the iframe, window.inner* reports the
+    // iframe's viewport (the loader creates it at 96x96), so deriving the
+    // panel size from it produces a tiny panel on open. The parent loader
+    // clamps against the real page viewport instead.
+    const width = isPanel ? 380 : 56;
+    const height = isPanel ? 540 : 56;
     window.parent.postMessage(
       {
         type: "cxops-embed:resize",
