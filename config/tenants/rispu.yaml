@@ -20,6 +20,13 @@
 # provider integration, and the agent performs no real provider or business
 # action. Staff must review every customer-facing action before it has any
 # effect. This pilot is handoff-only.
+#
+# KNOWLEDGE: the documents below are grounded only in content currently
+# published on RISPU's public website (https://rispu.com and its pages). They
+# describe what RISPU does, its services, how projects and enquiries start,
+# site-supported FAQs, and the explicit limitations and non-guarantees the
+# assistant must respect. Nothing here is invented, promised, or inferred beyond
+# the published pages.
 
 schema_version: 1
 
@@ -57,8 +64,247 @@ public_chat:
 # No business_integrations: the agent offers RISPU no provider tools, so nothing
 # in this pilot can reach a real vendor backend.
 
-# No knowledge: RISPU ships without ingested documents; the widget answers from
-# the welcome message and hands everything else to staff review.
+knowledge:
+  - source_id: rispu-company-overview
+    version: 1
+    title: "RISPU company overview"
+    department: company
+    source_uri: https://rispu.com/about
+    content: >-
+      RISPU connects AI and software development with web experiences and
+      digital marketing. Its focus is useful systems, understandable
+      experiences, and helping businesses explain themselves and make their
+      offerings discoverable.
+
+      The name RISPU means "rope", representing connections between products
+      and users, workflows and people, and businesses and discovery.
+
+      RISPU's published principles are to make it useful, make it clear, and
+      keep people in the loop. Consequential actions remain subject to human
+      approval.
+
+      RISPU's public site does not publish team size, headquarters,
+      certifications, service territory, or any staff beyond what is explicitly
+      shown. Those details must not be inferred from the site.
+
+  - source_id: rispu-project-approach
+    version: 1
+    title: "How RISPU approaches a project"
+    department: services
+    source_uri: https://rispu.com/approach
+    content: >-
+      RISPU works in four stages, each with a defined output.
+
+      Understand: map goals, users, current systems, and constraints; make
+      assumptions visible. The output is an agreed brief and success criteria.
+
+      Design and build: explore important flows; choose a proportionate
+      technical approach; show progress at agreed review points. The output is
+      a prototype and reviewed working increments.
+
+      Review and launch: test the agreed scope; document known limits and
+      handover needs; surface unresolved issues. The client confirms
+      permissions and content and approves the release. The output is a release
+      checklist and an operational handover.
+
+      Improve: where ongoing work is agreed, review available evidence and
+      prioritise changes. The output is an evidence-led next-step plan.
+
+      Project depth follows scope; it is not a fixed package. Clients provide
+      context, authorised content and access, consolidated feedback, and
+      approval of scope and consequential release decisions. RISPU explains
+      tradeoffs, shows working increments, surfaces blockers, and prepares the
+      agreed documentation and handover.
+
+      A finished technical specification is not required; a problem, a rough
+      idea, or an existing product is an acceptable starting point. Timing
+      depends on scope, dependencies, and review needs, and no universal
+      delivery timetable is promised. Handover, access, and known limitations
+      are agreed before release. Maintenance, support, and improvements may be
+      scoped separately after launch.
+
+  - source_id: rispu-project-enquiries
+    version: 1
+    title: "Contacting RISPU and starting a project enquiry"
+    department: sales
+    source_uri: https://rispu.com/contact
+    content: >-
+      RISPU's published contact email is contact@rispu.com, and the project
+      enquiry page is https://rispu.com/contact.
+
+      The enquiry form asks for a name, an email, and the project goal or
+      problem. Optional context includes the organisation, an existing website
+      or product URL, the service needed, the current stage, desired timing,
+      budget context, and additional details.
+
+      Visitors review the brief before sending. The "prepare project brief"
+      action prepares a review and does not itself send the information.
+
+      Desired timing is context only, not a delivery commitment. The choices
+      are: as soon as practical; within one to three months; three to six
+      months; or flexible, not sure.
+
+      Budget context is also context only and is not a RISPU pricing package.
+      The choices are: under $5k; $5k to $15k; $15k to $30k; $30k+; or prefer
+      not to say. A currency must not be inferred from the dollar sign alone.
+
+      The site does not establish a telephone number, a WhatsApp contact, an
+      office address, opening hours, or a response-time commitment. For any
+      question the site does not answer, direct the visitor to contact@rispu.com
+      or the project enquiry page instead of inventing an answer.
+
+  - source_id: rispu-services-overview
+    version: 1
+    title: "RISPU services overview"
+    department: services
+    source_uri: https://rispu.com/services
+    content: >-
+      RISPU's service overview groups work into Digital Marketing; AI and
+      Software Development; and Web and Content.
+
+      Capabilities are offered within an agreed project scope. They are not
+      automatically bundled packages.
+
+  - source_id: rispu-ai-products-automation
+    version: 1
+    title: "RISPU AI products and automation"
+    department: ai
+    source_uri: https://rispu.com/services/ai-products-automation
+    content: >-
+      RISPU works on operational tools, data-backed interfaces, task-specific
+      AI prototypes and products, bounded agents, chatbots, custom CRM,
+      automations, and integrations.
+
+      Agents operate within defined boundaries including permissions, stop
+      conditions, and approval boundaries. Chatbots use permitted information
+      and have a fallback when they cannot help.
+
+      A small, focused AI prototype can be used to test uncertainty before a
+      wider product is built. Existing tools may potentially be integrated
+      after checking their APIs, permissions, data formats, and operating
+      constraints.
+
+      AI is not always necessary. Predictable rules may be better suited to
+      conventional automation, and uncertain outputs require evaluation and
+      review. RISPU does not claim unrestricted autonomous action, guaranteed
+      AI accuracy, or compatibility with arbitrary systems.
+
+  - source_id: rispu-web-software-apps
+    version: 1
+    title: "RISPU websites, software, and apps"
+    department: web
+    source_uri: https://rispu.com/services/web-software-apps
+    content: >-
+      RISPU provides website design and development, browser-based
+      applications, content-managed draft, review and publishing workflows,
+      Android and iOS development, and improvements to existing products.
+
+      An existing system does not need to be rewritten; RISPU can improve a
+      product that already exists.
+
+  - source_id: rispu-mobile-app-development
+    version: 1
+    title: "RISPU mobile app development"
+    department: mobile
+    source_uri: https://rispu.com/services/mobile-app-development
+    content: >-
+      RISPU mobile work covers product definition, touch-first interfaces,
+      approved backend, account, and data integrations, supported-device
+      testing, and agreed distribution preparation.
+
+      A native app is not always necessary; a responsive website may be
+      sufficient. The choice depends on device capabilities, distribution, and
+      maintenance needs.
+
+      App-store approval is not guaranteed, and platform review timing is not
+      guaranteed. RISPU does not infer that every device capability or offline
+      support is included, and does not guarantee approval by Apple or Google.
+
+  - source_id: rispu-seo-geo-ai-visibility
+    version: 1
+    title: "RISPU SEO, GEO, and AI visibility"
+    department: seo
+    source_uri: https://rispu.com/services/seo-geo-ai-visibility
+    content: >-
+      RISPU visibility work includes reviewing crawlability and indexing
+      signals, performance considerations, page structure, clearer entities and
+      service relationships, answers to customer questions, topic structure and
+      internal links, and contextual recording of AI mentions and answers.
+
+      RISPU does not promise rankings, AI citations, traffic, visibility, or
+      demand. Search engines and AI providers control what they surface.
+
+  - source_id: rispu-digital-marketing
+    version: 1
+    title: "RISPU digital marketing"
+    department: marketing
+    source_uri: https://rispu.com/services/digital-marketing
+    content: >-
+      RISPU may coordinate selected search, advertising, social, website, and
+      content activities. Work can include channel priorities, bounded
+      marketing AI tools, and connected landing-page and enquiry journeys.
+
+      Not every channel must be used; scope depends on the audience, the offer,
+      and evidence. Media spend, provider subscriptions, and delivery scope are
+      discussed separately. Activation and budget increases require approval.
+
+  - source_id: rispu-google-ads
+    version: 1
+    title: "RISPU Google Ads"
+    department: marketing
+    source_uri: https://rispu.com/services/google-ads
+    content: >-
+      RISPU Google Ads work includes campaign and intent planning, audience and
+      geographic scope, exclusions, ad and landing-page alignment, agreed
+      conversion measurement, and evidence-led adjustments within approved
+      budgets.
+
+      RISPU does not promise return on ad spend, enquiry volume, traffic,
+      conversions, or demand. Results depend on demand, competition, the offer,
+      the conversion experience, and other factors.
+
+  - source_id: rispu-social-media-marketing
+    version: 1
+    title: "RISPU social media marketing"
+    department: marketing
+    source_uri: https://rispu.com/services/social-media-marketing
+    content: >-
+      RISPU social media marketing includes channel and message direction,
+      content planning, review and publishing workflows, and linking profiles
+      and content to relevant website destinations.
+
+      RISPU does not imply that every platform is included, that content
+      production is unlimited, or that paid social is automatically included.
+      Channel choices, production responsibilities, publication rights, and
+      approvals are agreed. RISPU does not promise follower or engagement
+      growth.
+
+  - source_id: rispu-answering-boundaries
+    version: 1
+    title: "RISPU answering boundaries and non-guarantees"
+    department: support
+    content: >-
+      The assistant must not invent or promise fixed prices, pricing packages,
+      delivery dates, free consultations, response-time SLAs, search rankings,
+      AI citations, traffic, demand, advertising returns, enquiry volumes,
+      follower growth, engagement, automatic ongoing maintenance, unlimited
+      post-launch support, unrestricted autonomous AI actions, AI accuracy,
+      integration with arbitrary systems, app-store approval, app-store review
+      timing, a RISPU office location, service territory, a phone number,
+      WhatsApp contact, team size, or certifications. None of these items is
+      promised or guaranteed.
+
+      The site's examples and demonstrations are illustrative, not proof of
+      client outcomes: conceptual examples are not client case studies, and
+      demonstrations are not completed client deployments.
+
+      Product status is as RISPU describes it: CXOps and SearchIntel are
+      described as "In development", ChargeOps is described as "Prototype", and
+      the A1 website is described as "Live".
+
+      If public content seems inconsistent, do not reconcile it by guessing.
+      Answer conservatively from what is published, or hand the question to
+      staff for review.
 
 pilot:
   # Documentation-only marker. It records the intended posture for operators

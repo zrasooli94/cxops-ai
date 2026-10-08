@@ -79,7 +79,7 @@ def test_rispu_manifest_loads_as_the_live_pilot() -> None:
     assert manifest.public_chat.max_messages_per_minute == 12
     assert manifest.public_chat.session_ttl_hours == 24
     assert manifest.business_integrations == ()
-    assert manifest.knowledge == ()
+    assert manifest.knowledge, "RISPU pilot must ship tenant knowledge"
     assert manifest.pilot is not None and manifest.pilot.state == "pilot"
 
 
@@ -100,11 +100,11 @@ def test_rispu_allowed_origins_are_exact_https_origins_only() -> None:
         assert "vercel.app" not in origin
 
 
-def test_rispu_manifest_declares_no_integrations_and_no_knowledge() -> None:
+def test_rispu_manifest_declares_no_integrations_and_ships_rispu_knowledge() -> None:
     manifest = load_manifest_file(MANIFEST)
 
     assert manifest.business_integrations == ()
-    assert manifest.knowledge == ()
+    assert manifest.knowledge, "RISPU pilot must ship tenant knowledge"
 
 
 def test_rispu_pilot_state_is_documentation_not_a_production_claim() -> None:
