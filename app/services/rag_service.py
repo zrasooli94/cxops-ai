@@ -257,26 +257,65 @@ Answer the question and cite the supporting sources.
         )
 
         # -------------------------------------------------
-        # 10. LLM answered without valid grounding
+        # 9a. Citation repair (at most one attempt)
         # -------------------------------------------------
 
-        if not citations_valid:
-            fallback_answer = (
-                "I found potentially relevant "
-                "information, but I could not "
-                "produce a sufficiently grounded "
-                "answer with valid citations."
+        if not citations_valid and sources:
+            repair_prompt = f"""
+You are CXOps AI, a customer support knowledge assistant.
+
+REPAIR INSTRUCTION: The previous answer failed citation validation.
+
+Rewrite the answer using ONLY the supplied knowledge-base context.
+You must use ONLY the following supplied source IDs: {sorted(valid_source_ids)}.
+Do not add new factual claims.
+Do not change the substantive conclusion unless required by the source.
+Do not cite any source ID not supplied.
+Every factual statement must be cited using one of the supplied source IDs.
+For negative/absence statements (e.g., "does not guarantee", "does not publish", "no phone number is published"), you must cite the source that states the absence/non-guarantee.
+If the supplied context does not fully answer the question, you may still answer based on what is explicitly stated in the context.
+Return the rewritten answer with citations.
+
+PREVIOUS ANSWER (untrusted draft):
+{answer_text}
+
+QUESTION:
+{question}
+
+KNOWLEDGE BASE CONTEXT:
+{context}
+"""
+            repair_response = await self.llm.ainvoke(
+                [
+                    SystemMessage(content=system_prompt.strip()),
+                    HumanMessage(content=repair_prompt.strip()),
+                ]
             )
+            repair_answer = self._extract_answer_text(repair_response.content)
+            (
+                citations_valid,
+                _invalid_citations,
+            ) = CitationService.validate(
+                answer=repair_answer,
+                valid_source_ids=(valid_source_ids),
+            )
+            if citations_valid:
+                answer_text = repair_answer
 
-            latency_ms = (perf_counter() - started_at) * 1000
+        # -------------------------------------------------
+        # 11. Successful grounded answer or safe fallback
+        # -------------------------------------------------
 
+        latency_ms = (perf_counter() - started_at) * 1000
+
+        if citations_valid:
             await AIObservabilityService.record(
                 db=db,
                 organization_id=organization_id,
                 request_id=request_id,
                 question=question,
-                answer=fallback_answer,
-                grounded=False,
+                answer=answer_text,
+                grounded=True,
                 llm_called=True,
                 retrieval_count=len(sources),
                 best_similarity=(best_similarity),
@@ -289,26 +328,25 @@ Answer the question and cite the supporting sources.
 
             return {
                 "request_id": request_id,
-                "answer": fallback_answer,
-                "grounded": False,
+                "answer": answer_text,
+                "grounded": True,
                 "sources": sources,
                 "retrieval_count": len(sources),
                 "best_similarity": (best_similarity),
             }
 
-        # -------------------------------------------------
-        # 11. Successful grounded answer
-        # -------------------------------------------------
-
-        latency_ms = (perf_counter() - started_at) * 1000
+        fallback_answer = (
+            "I found potentially relevant information, but I could not "
+            "produce a sufficiently grounded answer with valid citations."
+        )
 
         await AIObservabilityService.record(
             db=db,
             organization_id=organization_id,
             request_id=request_id,
             question=question,
-            answer=answer_text,
-            grounded=True,
+            answer=fallback_answer,
+            grounded=False,
             llm_called=True,
             retrieval_count=len(sources),
             best_similarity=(best_similarity),
@@ -321,8 +359,8 @@ Answer the question and cite the supporting sources.
 
         return {
             "request_id": request_id,
-            "answer": answer_text,
-            "grounded": True,
+            "answer": fallback_answer,
+            "grounded": False,
             "sources": sources,
             "retrieval_count": len(sources),
             "best_similarity": (best_similarity),
