@@ -1,10 +1,12 @@
-"""Human reply submission and durable enqueue.
+"""Human reply submission and delivery dispatch.
 
-A human reply is a ``ConversationMessage`` plus a durable ``IntegrationJob``
-created atomically in one transaction. The message owns the body and delivery
-lifecycle; the job owns the asynchronous delivery attempt. This module never
-performs external network calls — delivery is the worker's responsibility via
-``ConversationDeliveryService``.
+A human reply is a ``ConversationMessage`` plus, for externally-delivered
+providers, a durable ``IntegrationJob`` created atomically in one transaction.
+The message owns the body and delivery lifecycle; the job owns the asynchronous
+delivery attempt. For CXOps-local conversations the reply is finalized
+synchronously inside the request transaction via ``ConversationDeliveryService``
+— no job, no worker hop, no external network call. Zendesk replies keep the
+durable outbox path and the worker performs delivery.
 """
 
 from uuid import uuid4
@@ -22,6 +24,7 @@ from app.repositories.conversation_message_repository import (
 )
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.integration_job_repository import IntegrationJobRepository
+from app.services.conversation_delivery_service import ConversationDeliveryService
 
 log = get_logger("conversation_reply")
 
@@ -102,11 +105,14 @@ class ConversationReplyService:
         requested_by_subject: str,
         authz: AuthorizationContext | None = None,
     ) -> dict:
-        """Atomically create a human reply message and its durable delivery job.
+        """Create a human reply message and atomically dispatch it.
 
-        Returns the existing accepted reply if the same client_request_id is
-        replayed. Duplicate detection is by ``conversation_id + dedupe_key``,
-        not by body text.
+        For CXOps-local conversations the reply is finalized synchronously
+        (delivered inside this transaction, no job created). For zendesk the
+        message and its durable ``conversation.reply`` job are created
+        atomically and the worker delivers it later. Returns the existing
+        accepted reply if the same client_request_id is replayed. Duplicate
+        detection is by ``conversation_id + dedupe_key``, not by body text.
         """
         if authz is not None:
             require_capability(authz, Capability.TICKET_WRITE)
@@ -181,24 +187,36 @@ class ConversationReplyService:
         ConversationMessageRepository.add(db, message)
         await ConversationMessageRepository.flush(db)
 
-        job = IntegrationJob(
-            organization_id=organization_id,
-            dedupe_key=job_dedupe_key,
-            job_type=JOB_TYPE_CONVERSATION_REPLY,
-            payload={
-                "message_id": message.id,
-                "request_id": client_request_id,
-            },
-        )
+        # CXOps-local replies have no external target, so they skip the durable
+        # outbox entirely: the worker's exact local delivery path runs here in
+        # the same transaction as the accepted reply.
+        local_fast_path = conversation.provider == "cxops"
 
-        IntegrationJobRepository.add(db, job)
+        if local_fast_path:
+            await ConversationDeliveryService().deliver(
+                db,
+                message_id=message.id,
+                organization_id=organization_id,
+            )
+        else:
+            job = IntegrationJob(
+                organization_id=organization_id,
+                dedupe_key=job_dedupe_key,
+                job_type=JOB_TYPE_CONVERSATION_REPLY,
+                payload={
+                    "message_id": message.id,
+                    "request_id": client_request_id,
+                },
+            )
+
+            IntegrationJobRepository.add(db, job)
 
         try:
             await db.commit()
         except IntegrityError:
             await db.rollback()
 
-            # Race lost: another request created the message/job first.
+            # Race lost: another request created the message first.
             # Re-resolve and return the winner without surfacing PII.
             existing_message = (
                 await ConversationMessageRepository.get_by_dedupe_key(
@@ -223,6 +241,23 @@ class ConversationReplyService:
             }
 
         await db.refresh(message)
+
+        if local_fast_path:
+            log.info(
+                "human_reply_sent",
+                organization_id=organization_id,
+                conversation_id=conversation.id,
+                message_id=message.id,
+                job_id=None,
+            )
+
+            return {
+                "message_id": message.id,
+                "delivery_status": message.delivery_status,
+                "duplicate": False,
+                "job_id": None,
+            }
+
         await db.refresh(job)
 
         log.info(
