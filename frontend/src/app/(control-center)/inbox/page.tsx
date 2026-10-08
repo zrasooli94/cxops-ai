@@ -18,6 +18,10 @@ import {
   useMemo,
   useState,
 } from "react";
+import {
+  replySuccessMessage,
+  type ReplyResult,
+} from "@/lib/inbox/reply-result";
 
 type DeliveryStatus =
   | "queued"
@@ -389,8 +393,12 @@ export default function InboxPage() {
           );
         }
 
+        const result = (await response
+          .json()
+          .catch(() => ({}))) as ReplyResult;
+
         setReplyBody("");
-        setReplySuccess("Reply queued for delivery.");
+        setReplySuccess(replySuccessMessage(result));
         void loadThread(conversationId);
       } catch (err) {
         setReplyError(
