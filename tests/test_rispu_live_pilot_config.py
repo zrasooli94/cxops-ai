@@ -71,8 +71,12 @@ def test_rispu_manifest_loads_as_the_live_pilot() -> None:
     assert manifest.public_chat.enabled is True
     assert manifest.public_chat.display_name == "RISPU Support"
     assert manifest.public_chat.welcome_message == (
-        "Hi! How can we help? Send us a message and our support team will review it."
+        "Hi! Ask us about RISPU services or projects. If we can't answer from "
+        "published information, our support team will review your message."
     )
+    # Phase 1P.5: RISPU is the tenant that opts in to bounded grounded
+    # auto-replies; every other tenant defaults to off.
+    assert manifest.public_chat.grounded_auto_reply_enabled is True
     assert manifest.public_chat.allowed_origins == RISPU_ORIGINS
     assert manifest.public_chat.theme_token == "default"
     assert manifest.public_chat.max_message_length == 2000

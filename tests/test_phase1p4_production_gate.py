@@ -45,8 +45,8 @@ from app.models.public_chat import PublicChatConfiguration
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "config" / "tenants" / "a1-cash-for-cars.yaml"
 
-EXPECTED_HEAD = "1p4a0001"
-PREVIOUS_HEAD = "1p2a0001"
+EXPECTED_HEAD = "1p5a0001"
+PREVIOUS_HEAD = "1p4a0001"
 
 # A1's real production origins, per config/tenants/a1-cash-for-cars.yaml.
 A1_APEX = "https://a1cashforcars.com.au"
@@ -90,7 +90,7 @@ def test_repository_head_is_exactly_the_expected_revision():
 
 
 def test_expected_head_migration_revises_the_previous_phase_head():
-    """The chain is linear: 1p4a0001 sits directly on 1p2a0001."""
+    """The chain is linear: 1p5a0001 sits directly on 1p4a0001."""
     from alembic import script as alembic_script
 
     directory = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))

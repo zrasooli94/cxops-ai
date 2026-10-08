@@ -16,10 +16,12 @@
 # credential-shaped keys and values outright.
 #
 # PILOT POSTURE: the RISPU widget is LIVE and customer-reachable. The agent
-# answers questions and hands a conversation to a human; there is no real
-# provider integration, and the agent performs no real provider or business
-# action. Staff must review every customer-facing action before it has any
-# effect. This pilot is handoff-only.
+# may return an informational answer directly to the customer ONLY when it is
+# grounded in published knowledge, passes citation validation, and the answer is
+# eligible for auto-reply. Unsupported questions and every action request go to
+# human handoff. There is no real provider integration, and the agent performs
+# no real provider or business action. No business or provider action executes
+# automatically; staff review every customer-facing action before any effect.
 #
 # KNOWLEDGE: the documents below are grounded only in content currently
 # published on RISPU's public website (https://rispu.com and its pages). They
@@ -41,7 +43,15 @@ public_chat:
   enabled: true
   display_name: RISPU Support
   welcome_message: >-
-    Hi! How can we help? Send us a message and our support team will review it.
+    Hi! Ask us about RISPU services or projects. If we can't answer from
+    published information, our support team will review your message.
+  # Opt-in for bounded grounded auto-replies. When false (the default for
+  # every tenant), the widget never returns an AI answer directly and always
+  # hands off. RISPU is the only tenant where this is enabled; informational
+  # answers are returned only from grounded published knowledge, unsupported
+  # or action requests go to human handoff, and no business/provider action
+  # executes automatically.
+  grounded_auto_reply_enabled: true
   # Exact origins only. No wildcards, no paths, no trailing slashes. The
   # embedding origin is matched server-side against the request referrer; an
   # origin that is not listed here is rejected before a session is created.

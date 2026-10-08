@@ -205,6 +205,56 @@ def test_theme_token_is_not_treated_as_a_secret():
     assert manifest.public_chat.theme_token == "acme-dark"
 
 
+def test_grounded_auto_reply_defaults_to_false_when_omitted():
+    """Every tenant is opt-in: omitting the field must leave auto-reply off."""
+    manifest = parse_manifest(_manifest_document())
+
+    assert manifest.public_chat is not None
+    assert manifest.public_chat.grounded_auto_reply_enabled is False
+
+
+def test_grounded_auto_reply_true_is_parsed():
+    document = _manifest_document()
+    document["public_chat"]["grounded_auto_reply_enabled"] = True
+
+    manifest = parse_manifest(document)
+
+    assert manifest.public_chat is not None
+    assert manifest.public_chat.grounded_auto_reply_enabled is True
+
+
+def test_grounded_auto_reply_false_is_parsed():
+    document = _manifest_document()
+    document["public_chat"]["grounded_auto_reply_enabled"] = False
+
+    manifest = parse_manifest(document)
+
+    assert manifest.public_chat is not None
+    assert manifest.public_chat.grounded_auto_reply_enabled is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, "yes", None])
+def test_grounded_auto_reply_rejects_non_boolean_values(value):
+    """YAML strings like ``true`` must not be silently coerced to on."""
+    document = _manifest_document()
+    document["public_chat"]["grounded_auto_reply_enabled"] = value
+
+    with pytest.raises(ManifestError) as excinfo:
+        parse_manifest(document)
+
+    joined = " ".join(excinfo.value.problems)
+    assert "grounded_auto_reply_enabled" in joined, joined
+    assert "must be true or false" in joined, joined
+
+
+def test_shipped_a1_manifest_does_not_enable_grounded_auto_reply():
+    """A1 stays a human-approved pilot; only RISPU opts in."""
+    manifest = load_manifest_file(A1_MANIFEST)
+
+    assert manifest.public_chat is not None
+    assert manifest.public_chat.grounded_auto_reply_enabled is False
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_fragment"),
     [
@@ -574,6 +624,106 @@ async def test_reapply_updates_changed_fields_only(db):
     config, _ = await resolve_canonical_public_chat_config(db, organization.id)
     assert config is not None
     assert config.welcome_message == "Hello there!"
+    assert config.public_widget_key_hash == hash_digest(first.public_widget_key)
+
+
+@pytest.mark.asyncio
+async def test_apply_creates_widget_with_grounded_auto_reply_from_manifest(db):
+    """A create writes the opt-in flag verbatim; the default remains off."""
+    slug = _unique_slug()
+    document = _manifest_document(tenant=_tenant_block(slug))
+    document["public_chat"]["grounded_auto_reply_enabled"] = True
+
+    result, _ = await _onboard(db, parse_manifest(document))
+
+    organization = (
+        await db.execute(select(Organization).where(Organization.external_id == slug))
+    ).scalar_one()
+    config, _ = await resolve_canonical_public_chat_config(db, organization.id)
+    assert config is not None
+    assert config.grounded_auto_reply_enabled is True
+    # Creating the widget still mints exactly one key, never a rotation.
+    assert result.widget_key_created is True
+    assert result.widget_key_rotated is False
+    assert config.public_widget_key_hash == hash_digest(result.public_widget_key)
+
+
+@pytest.mark.asyncio
+async def test_apply_defaults_grounded_auto_reply_to_false(db):
+    """A manifest that omits the flag must not opt the tenant in."""
+    slug = _unique_slug()
+    manifest = parse_manifest(_manifest_document(tenant=_tenant_block(slug)))
+
+    await _onboard(db, manifest)
+
+    organization = (
+        await db.execute(select(Organization).where(Organization.external_id == slug))
+    ).scalar_one()
+    config, _ = await resolve_canonical_public_chat_config(db, organization.id)
+    assert config is not None
+    assert config.grounded_auto_reply_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_reapply_toggling_grounded_auto_reply_is_the_only_field_change(db):
+    """Flipping the flag is a narrow config UPDATE, not a key rotation."""
+    slug = _unique_slug()
+    first_manifest = parse_manifest(
+        _manifest_document(tenant=_tenant_block(slug))
+    )
+    first, _ = await _onboard(db, first_manifest)
+
+    second_document = _manifest_document(tenant=_tenant_block(slug))
+    second_document["public_chat"]["grounded_auto_reply_enabled"] = True
+    second_manifest = parse_manifest(second_document)
+
+    plan = await build_plan(db, second_manifest)
+    action = next(a for a in plan.actions if a.target == "public_chat")
+    assert action.action == ACTION_UPDATE
+    assert set(action.fields) == {"grounded_auto_reply_enabled"}
+    assert plan.rotates_widget_key is False
+
+    result = await apply_plan(db, second_manifest, plan)
+    assert result.public_widget_key is None
+    assert result.widget_key_created is False
+    assert result.widget_key_rotated is False
+
+    organization = (
+        await db.execute(select(Organization).where(Organization.external_id == slug))
+    ).scalar_one()
+    config, _ = await resolve_canonical_public_chat_config(db, organization.id)
+    assert config is not None
+    assert config.grounded_auto_reply_enabled is True
+    # The update must not disturb the key or the origin allowlist.
+    assert config.public_widget_key_hash == hash_digest(first.public_widget_key)
+    assert config.allowed_origins == ["https://www.acme.example"]
+
+
+@pytest.mark.asyncio
+async def test_reapplying_with_the_flag_set_is_a_pure_no_op(db):
+    """Once the flag matches, re-apply reports UNCHANGED, not UPDATE."""
+    slug = _unique_slug()
+    document = _manifest_document(tenant=_tenant_block(slug))
+    document["public_chat"]["grounded_auto_reply_enabled"] = True
+    manifest = parse_manifest(document)
+
+    first, _ = await _onboard(db, manifest)
+    second_plan = await build_plan(db, manifest)
+
+    assert second_plan.is_noop, second_plan.describe()
+    assert all(a.action == ACTION_UNCHANGED for a in second_plan.actions)
+
+    second = await apply_plan(db, manifest, second_plan)
+    assert second.public_widget_key is None
+    assert second.widget_key_created is False
+    assert second.widget_key_rotated is False
+
+    organization = (
+        await db.execute(select(Organization).where(Organization.external_id == slug))
+    ).scalar_one()
+    config, _ = await resolve_canonical_public_chat_config(db, organization.id)
+    assert config is not None
+    assert config.grounded_auto_reply_enabled is True
     assert config.public_widget_key_hash == hash_digest(first.public_widget_key)
 
 

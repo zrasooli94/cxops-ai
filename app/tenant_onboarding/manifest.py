@@ -193,6 +193,7 @@ class PublicChatManifest:
     max_message_length: int
     max_messages_per_minute: int
     session_ttl_hours: int
+    grounded_auto_reply_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -476,6 +477,7 @@ def _parse_public_chat(
                 "max_message_length",
                 "max_messages_per_minute",
                 "session_ttl_hours",
+                "grounded_auto_reply_enabled",
             }
         ),
         path,
@@ -483,6 +485,13 @@ def _parse_public_chat(
     )
 
     enabled = _bool(mapping, "enabled", path, validator, default=True)
+    grounded_auto_reply_enabled = _bool(
+        mapping,
+        "grounded_auto_reply_enabled",
+        path,
+        validator,
+        default=False,
+    )
     display_name = _required_str(
         mapping,
         "display_name",
@@ -572,6 +581,7 @@ def _parse_public_chat(
             maximum=168,
             default=24,
         ),
+        grounded_auto_reply_enabled=bool(grounded_auto_reply_enabled),
     )
 
 

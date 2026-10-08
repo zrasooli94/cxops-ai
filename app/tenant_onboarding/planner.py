@@ -228,6 +228,10 @@ def _public_chat_diff(
         changed.append("max_messages_per_minute")
     if existing.session_ttl_hours != desired.session_ttl_hours:
         changed.append("session_ttl_hours")
+    if bool(existing.grounded_auto_reply_enabled) != bool(
+        desired.grounded_auto_reply_enabled
+    ):
+        changed.append("grounded_auto_reply_enabled")
 
     if not desired.enabled and existing.enabled:
         return ACTION_DISABLE, tuple(changed)
@@ -592,6 +596,7 @@ async def _apply_public_chat(
             max_message_length=desired.max_message_length,
             max_messages_per_minute=desired.max_messages_per_minute,
             session_ttl_hours=desired.session_ttl_hours,
+            grounded_auto_reply_enabled=bool(desired.grounded_auto_reply_enabled),
         )
         db.add(config)
         await db.flush()
@@ -614,6 +619,7 @@ async def _apply_public_chat(
     config.max_message_length = desired.max_message_length
     config.max_messages_per_minute = desired.max_messages_per_minute
     config.session_ttl_hours = desired.session_ttl_hours
+    config.grounded_auto_reply_enabled = bool(desired.grounded_auto_reply_enabled)
     await db.flush()
     return widget_key, created, rotated
 

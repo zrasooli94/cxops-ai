@@ -56,7 +56,7 @@ MANIFEST_DIR = REPO_ROOT / "config" / "tenants"
 # A drifted expectation is itself a deploy blocker: it means the deploy is not
 # the code that was reviewed, so the rest of this report describes something
 # other than what would run.
-EXPECTED_ALEMBIC_HEAD = "1p4a0001"
+EXPECTED_ALEMBIC_HEAD = "1p5a0001"
 
 PASS = "PASS"
 WARN = "WARN"
@@ -560,7 +560,7 @@ def check_migrations(reporter: Reporter) -> None:
         return proc.returncode, proc.stdout.strip()
 
     # A revision id is whatever the migration author chose, conventionally hex but
-    # not required to be: this repository's head is "1p4a0001", which contains
+    # not required to be: this repository's head is "1p5a0001", which contains
     # non-hex letters. Accept the `alembic heads`/`current` line shape and nothing
     # else, so a database one revision behind is a FAIL rather than a warning.
     _REVISION_LINE = re.compile(r"^(?P<rev>[0-9A-Za-z][0-9A-Za-z_]*)(?:\s+\(head\))?$")
@@ -624,7 +624,7 @@ def check_migrations(reporter: Reporter) -> None:
     #
     # The history is read in-process from the repository's own migration scripts
     # rather than by parsing `alembic history` output. That output is
-    # human-formatted ("1p4a0001 -> 1p2a0001 (head)") and its exact shape varies
+    # human-formatted ("1p5a0001 -> 1p4a0001 (head)") and its exact shape varies
     # across Alembic versions; parsing it would be a fragile way to learn
     # something the ScriptDirectory already knows exactly.
     known_ids: set[str] | None = None

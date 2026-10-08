@@ -94,6 +94,13 @@ class PublicChatConfiguration(Base):
         nullable=False,
     )
 
+    grounded_auto_reply_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
     display_name: Mapped[str] = mapped_column(
         String(100),
         nullable=False,

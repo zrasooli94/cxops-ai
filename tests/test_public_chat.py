@@ -17,6 +17,11 @@ properties end-to-end over the real HTTP routes:
   and flips the session to human_requested; only no-op decisions return the
   fixed fallback without an escalation — the widget never receives live model
   text
+- Phase 1P.5 adds one narrow opt-in carve-out on top of that default: a tenant
+  with ``grounded_auto_reply_enabled`` may have a pure ``information`` intent
+  with a bare ``respond`` decision answered from the knowledge base, but only
+  when the answer passes ``public_answer_eligible`` with valid citations and no
+  business tool; every other case fails closed to the human handoff
 - rate limits (per-session, per-widget, per-hour session creation, active
   session capacity) reject abuse with 429
 - tenant isolation cannot be pierced across organizations: unknown widget keys
@@ -53,6 +58,7 @@ os.environ["ENVIRONMENT"] = "development"
 from app.core.config import reset_settings_cache, settings
 from app.core.database import AsyncSessionLocal
 from app.main import app
+from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
 from app.models.base import Base
 from app.models.conversation import Conversation
@@ -79,9 +85,11 @@ from app.services.public_chat_service import (
     LOCAL_PROVIDER,
     TICKET_PLACEHOLDER_SUBJECT,
     PublicChatMessageInFlightError,
+    _strip_source_markers,
     hash_digest,
     public_chat_service,
 )
+from app.services.rag_service import rag_service
 
 ALLOWED_ORIGIN = "https://widget.example.test"
 X_ORIGIN = "X-Embedding-Origin"
@@ -240,6 +248,7 @@ async def _make_widget_config(
     max_message_length: int = 4000,
     max_messages_per_minute: int = 20,
     session_ttl_hours: int = 24,
+    grounded_auto_reply_enabled: bool = False,
 ) -> tuple[PublicChatConfiguration, str]:
     key = f"pk_live_{secrets.token_hex(20)}"
     config = PublicChatConfiguration(
@@ -252,6 +261,7 @@ async def _make_widget_config(
         max_message_length=max_message_length,
         max_messages_per_minute=max_messages_per_minute,
         session_ttl_hours=session_ttl_hours,
+        grounded_auto_reply_enabled=grounded_auto_reply_enabled,
     )
     db.add(config)
     await db.commit()
@@ -283,12 +293,16 @@ def _ai_decision(
     draft: str = "Sure — here is the plain answer.",
     requires_human: bool = False,
     action: str = "respond",
+    business_tool: str | None = None,
+    business_arguments: dict | None = None,
 ) -> AgentDecision:
     return AgentDecision(
         action=action,  # type: ignore[arg-type]
         reason="Customer-visible reply.",
         requires_human_approval=requires_human,
         response_draft="" if requires_human else draft,
+        business_tool=business_tool,
+        business_arguments=business_arguments,
     )
 
 
@@ -319,6 +333,58 @@ def _stub_agent(monkeypatch, decision: AgentDecision) -> _CapturingDecisionLLM:
     fake_llm = _CapturingDecisionLLM(decision)
     monkeypatch.setattr(agent_workflow_service, "decision_llm", fake_llm)
     return fake_llm
+
+
+def _rag_result(
+    *,
+    answer: str = "Refunds are processed within five business days [S1].",
+    grounded: bool = True,
+    retrieval_count: int = 1,
+    best_similarity: float | None = 0.82,
+    sources: list[dict] | None = None,
+) -> dict:
+    return {
+        "request_id": uuid.uuid4().hex,
+        "answer": answer,
+        "grounded": grounded,
+        "sources": sources
+        if sources is not None
+        else [
+            {
+                "source_id": "S1",
+                "document_id": 1,
+                "chunk_id": 1,
+                "title": "Refund policy",
+                "content": "Refunds are processed within five business days.",
+                "similarity": 0.82,
+            }
+        ],
+        "retrieval_count": retrieval_count,
+        "best_similarity": best_similarity,
+    }
+
+
+def _stub_rag(
+    monkeypatch,
+    rag_result: dict | None = None,
+    *,
+    error: Exception | None = None,
+) -> list[dict]:
+    """Replace ``rag_service.answer`` with a deterministic fake.
+
+    Records each call's organization_id/question and returns ``rag_result`` (or
+    raises ``error``). No OpenAI call is ever made.
+    """
+    calls: list[dict] = []
+
+    async def _fake_answer(_db, *, organization_id, question, top_k=None):
+        calls.append({"organization_id": organization_id, "question": question})
+        if error is not None:
+            raise error
+        return rag_result
+
+    monkeypatch.setattr(rag_service, "answer", _fake_answer)
+    return calls
 
 
 async def _latest_run(db, ticket_id: int, organization_id: int) -> AgentRun:
@@ -1071,3 +1137,650 @@ async def test_prompt_injection_cannot_authorize_tools(db, client, org_scope, mo
     assert injection in prompt_text
     assert "UNTRUSTED reference data" in prompt_text
     assert prompt_text.count("UNTRUSTED reference data") == 1
+
+
+# ----------------------------------------------------------------------
+# Phase 1P.5 — opt-in grounded auto-reply (fail-closed)
+# ----------------------------------------------------------------------
+
+
+def test_grounded_auto_reply_requested_predicate_rejects_business_tool():
+    config = types.SimpleNamespace(grounded_auto_reply_enabled=True)
+    run = types.SimpleNamespace(action="respond")
+
+    assert public_chat_service._grounded_auto_reply_requested(
+        configuration=config,
+        result={
+            "coordinator_intent": "information",
+            "decision": {"action": "respond", "business_tool": None},
+        },
+        run=run,
+    )
+
+    assert not public_chat_service._grounded_auto_reply_requested(
+        configuration=config,
+        result={
+            "coordinator_intent": "information",
+            "decision": {"action": "respond", "business_tool": "customer.send_reply"},
+        },
+        run=run,
+    )
+
+
+def test_grounded_auto_reply_requested_predicate_fails_closed_by_default():
+    run = types.SimpleNamespace(action="respond")
+    result = {
+        "coordinator_intent": "information",
+        "decision": {"action": "respond", "business_tool": None},
+    }
+
+    assert not public_chat_service._grounded_auto_reply_requested(
+        configuration=types.SimpleNamespace(grounded_auto_reply_enabled=False),
+        result=result,
+        run=run,
+    )
+    assert not public_chat_service._grounded_auto_reply_requested(
+        configuration=types.SimpleNamespace(grounded_auto_reply_enabled=True),
+        result=result,
+        run=None,
+    )
+    assert not public_chat_service._grounded_auto_reply_requested(
+        configuration=types.SimpleNamespace(grounded_auto_reply_enabled=True),
+        result={**result, "coordinator_intent": "action"},
+        run=run,
+    )
+    assert not public_chat_service._grounded_auto_reply_requested(
+        configuration=types.SimpleNamespace(grounded_auto_reply_enabled=True),
+        result=result,
+        run=types.SimpleNamespace(action="human_review"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_eligible_returns_validated_answer(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Model draft that must never ship."))
+    rag_calls = _stub_rag(
+        monkeypatch,
+        _rag_result(answer="Refunds take five business days [S1]."),
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "g-1", "text": "How long does a refund take?"},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == "Refunds take five business days."
+    assert "[S" not in body["reply"]
+    assert "Model draft that must never ship." not in body["reply"]
+    assert body["handoff"] is False
+    assert body["status"] == "ai_active"
+
+    assert len(rag_calls) == 1
+    assert rag_calls[0]["organization_id"] == org.id
+    assert rag_calls[0]["question"] == "How long does a refund take?"
+
+    state = await client.get(
+        "/public/chat/sessions/state", headers=_origin_headers(token=token)
+    )
+    assert state.status_code == 200
+    assert state.json()["status"] == "ai_active"
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    outbound = [m for m in messages if m.direction == "outbound"]
+    assert len(outbound) == 1
+    assert outbound[0].body == "Refunds take five business days."
+
+    jobs = await db.execute(
+        select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+    )
+    assert jobs.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_ineligible_answer_falls_back_to_handoff(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(monkeypatch, _rag_result(grounded=False, best_similarity=None))
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "g-2", "text": "How long does a refund take?"},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_disabled_flag_skips_rag_and_hands_off(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "g-3", "text": "How long does a refund take?"},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+    assert rag_calls == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_requires_information_intent(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "g-4", "text": "Please cancel and refund my order."},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert rag_calls == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_requires_respond_action(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(action="human_review", requires_human=False))
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "g-5", "text": "How long does a refund take?"},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert rag_calls == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_rag_failure_falls_back_to_handoff(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(monkeypatch, error=RuntimeError("retrieval exploded"))
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "g-6", "text": "How long does a refund take?"},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_is_idempotent_on_retry(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    rag_calls = _stub_rag(
+        monkeypatch,
+        _rag_result(answer="Refunds take five business days [S1]."),
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+    payload = {"client_message_id": "g-retry", "text": "How long does a refund take?"}
+    headers = _origin_headers(token=token)
+
+    first = await client.post("/public/chat/messages", json=payload, headers=headers)
+    second = await client.post("/public/chat/messages", json=payload, headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert first.json()["reply"] == "Refunds take five business days."
+    assert first.json()["handoff"] is False
+    assert len(rag_calls) == 1
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert sum(1 for m in messages if m.direction == "outbound") == 1
+
+    events = (
+        await db.execute(
+            select(AgentActionEvent)
+            .join(AgentRun, AgentActionEvent.agent_run_id == AgentRun.id)
+            .where(AgentRun.organization_id == org.id)
+        )
+    ).scalars().all()
+    assert (
+        sum(1 for e in events if e.event_type == "public_grounded_auto_reply") == 1
+    )
+
+
+def test_strip_source_markers_collapses_marker_whitespace():
+    assert _strip_source_markers("Drive on the left [S1].") == "Drive on the left."
+    assert _strip_source_markers("Answer [S1] ends [S2]") == "Answer ends"
+    assert _strip_source_markers("  [S1] leading marker") == "leading marker"
+    assert _strip_source_markers("[S1]") == ""
+    assert _strip_source_markers("No markers here.") == "No markers here."
+    assert _strip_source_markers("Double  space [S1] stays clean") == "Double space stays clean"
+
+
+def test_strip_source_markers_leaves_urls_and_plain_brackets_alone():
+    assert "https://rispu.com" in _strip_source_markers(
+        "See https://rispu.com for details [S1]."
+    )
+    assert "[note] not a citation" == _strip_source_markers("[note] not a citation")
+    assert "[s1]" in _strip_source_markers("lowercase [s1] is not a citation marker")
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_mixed_intent_skips_rag_and_hands_off(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-mixed",
+            "text": "How do I cancel my subscription?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+    assert rag_calls == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_business_tool_skips_rag_and_hands_off(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(
+        monkeypatch,
+        _ai_decision(
+            draft="Model draft.",
+            business_tool="customer.send_reply",
+            business_arguments={"body": "Hello from the agent."},
+        ),
+    )
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-tool",
+            "text": "How long does a refund take?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+    assert rag_calls == []
+    assert "Model draft." not in body["reply"]
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    run = await _latest_run(db, conversation.ticket_id, org.id)
+    assert run.action == "respond"
+    assert run.status != "approved"
+    assert run.executed_at is None
+    assert run.authorization_source is None
+    assert run.authorization_digest is None
+
+    jobs = await db.execute(
+        select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+    )
+    assert jobs.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_eligibility_error_falls_back_to_handoff(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(monkeypatch, _rag_result())
+
+    def _boom(_rag_result: dict) -> tuple[bool, str]:
+        raise RuntimeError("eligibility exploded")
+
+    monkeypatch.setattr(
+        "app.services.public_chat_service.public_answer_eligible",
+        _boom,
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-elig-err",
+            "text": "How long does a refund take?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_marker_only_answer_falls_back_to_handoff(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(monkeypatch, _rag_result(answer="[S1]"))
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-marker",
+            "text": "How long does a refund take?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_ungrounded_question_hands_off_without_guessing(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(
+        monkeypatch,
+        _rag_result(
+            answer="RISPU is located in Paris and London.",
+            grounded=False,
+            retrieval_count=0,
+            best_similarity=None,
+            sources=[],
+        ),
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-office",
+            "text": "Which office is RISPU located in?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert "Paris" not in body["reply"]
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_valid_citation_publishes_stripped_answer(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(
+        monkeypatch,
+        _rag_result(answer="RISPU publishes no public phone number [S1]."),
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-phone-cited",
+            "text": "Does RISPU have a phone number?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == "RISPU publishes no public phone number."
+    assert "[S" not in body["reply"]
+    assert body["handoff"] is False
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_invalid_citation_hands_off(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    _stub_rag(
+        monkeypatch,
+        _rag_result(answer="RISPU publishes no public phone number."),
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-phone-uncited",
+            "text": "Does RISPU have a phone number?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Start my project now.",
+        "Increase my Google Ads budget.",
+        "Publish my app.",
+        "Change my website.",
+        "Please refund my order.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_action_requests_never_auto_reply(
+    db, client, org_scope, monkeypatch, text
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": f"g-action-{abs(hash(text))}", "text": text},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] == HANDOFF_REPLY
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+    assert rag_calls == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_auto_reply_records_audit_event_and_never_approves_run(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Model draft that must never ship."))
+    _stub_rag(
+        monkeypatch,
+        _rag_result(answer="Refunds take five business days [S1]."),
+    )
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "g-audit",
+            "text": "How long does a refund take?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["reply"] == "Refunds take five business days."
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    run = await _latest_run(db, conversation.ticket_id, org.id)
+    assert run.status != "approved"
+    assert run.executed_at is None
+    assert run.authorization_source is None
+
+    events = (
+        await db.execute(
+            select(AgentActionEvent)
+            .join(AgentRun, AgentActionEvent.agent_run_id == AgentRun.id)
+            .where(AgentRun.organization_id == org.id)
+        )
+    ).scalars().all()
+    auto_reply_events = [e for e in events if e.event_type == "public_grounded_auto_reply"]
+    assert len(auto_reply_events) == 1
+    event = auto_reply_events[0]
+    assert event.actor == "public_chat"
+    assert event.event_data["eligibility_reason"] == "eligible"
+    assert event.event_data["retrieval_count"] == 1
+    assert event.event_data["best_similarity"] == 0.82
+    assert event.event_data["source_ids"] == ["S1"]
+    assert event.event_data["rag_request_id"]
+
+    jobs = await db.execute(
+        select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+    )
+    assert jobs.scalars().all() == []

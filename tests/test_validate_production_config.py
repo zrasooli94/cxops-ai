@@ -602,12 +602,12 @@ def _fake_alembic(monkeypatch, *, current: str, heads: str, code: int = 0) -> No
 def test_migration_check_parses_revision_ids_containing_non_hex_letters(
     monkeypatch,
 ) -> None:
-    """The repository head is '1p4a0001', which is not valid hex.
+    """The repository head is '1p5a0001', which is not valid hex.
 
     A parser that only accepts hex silently reports "no revisions" and downgrades
     a database one migration behind to a warning.
     """
-    _fake_alembic(monkeypatch, current="1p4a0001 (head)\n", heads="1p4a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="1p5a0001 (head)\n", heads="1p5a0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
@@ -619,7 +619,7 @@ def test_migration_check_parses_revision_ids_containing_non_hex_letters(
 def test_migration_gap_is_a_failure_not_a_warning(monkeypatch) -> None:
     """An unapplied head must be a hard FAIL with the revision named."""
     # A real ancestor of the head, so this is a gap rather than a mismatch.
-    _fake_alembic(monkeypatch, current="1p2a0001 (head)\n", heads="1p4a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="1p4a0001 (head)\n", heads="1p5a0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
@@ -627,7 +627,7 @@ def test_migration_gap_is_a_failure_not_a_warning(monkeypatch) -> None:
     assert reporter.failures >= 1, reporter.lines
     joined = "\n".join(reporter.lines)
     assert "migration gap" in joined
-    assert "1p4a0001" in joined
+    assert "1p5a0001" in joined
     assert "alembic upgrade head" in joined
 
 
@@ -637,7 +637,7 @@ def test_database_at_an_unknown_revision_is_reported_as_a_mismatch(monkeypatch) 
     A database at a revision this build has never heard of is a schema mismatch;
     telling the operator to run the migration would be wrong advice.
     """
-    _fake_alembic(monkeypatch, current="ffff9999 (head)\n", heads="1p4a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="ffff9999 (head)\n", heads="1p5a0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
@@ -655,7 +655,7 @@ def test_unreachable_database_fails_loudly(monkeypatch) -> None:
         if "current" in subcommand:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         return subprocess.CompletedProcess(
-            cmd, 0, stdout="1p4a0001 (head)\n", stderr=""
+            cmd, 0, stdout="1p5a0001 (head)\n", stderr=""
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -687,7 +687,7 @@ def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         subcommand = cmd[cmd.index("alembic") + 1 :]
         target = "current" if "current" in subcommand else "heads"
-        stdout = "1p2a0001 (head)\n" if target == "current" else "1p4a0001 (head)\n"
+        stdout = "1p4a0001 (head)\n" if target == "current" else "1p5a0001 (head)\n"
         stderr = "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n"
         return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -696,7 +696,7 @@ def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
     validator.check_migrations(reporter)
 
     assert reporter.failures >= 1, reporter.lines
-    assert "1p4a0001" in "\n".join(reporter.lines)
+    assert "1p5a0001" in "\n".join(reporter.lines)
 
 
 def test_migrations_can_be_skipped_for_air_gapped_runs(monkeypatch):
