@@ -28,13 +28,21 @@ import {
   type PublicChatTheme,
 } from "@/lib/public-chat/theme";
 
-// Client widget for the public web-chat embed (Phase 1P.1, hardened 1P.6).
+// Client widget for the public web-chat embed (Phase 1P.1, hardened 1P.6+).
 //
-// The widget mirrors backend state transitions: launcher -> connecting ->
-// ai_active; ai_active may move to human_requested (handoff) after a message
-// or a manual human request; a staff member may then claim the session
-// (human_assigned) or return it to the queue (back to human_requested); the
-// session ends in error or closed.
+// Server/session state transitions: connecting -> ai_active; ai_active may move
+// to human_requested (handoff) after a message or a manual human request; a
+// staff member may then claim the session (human_assigned) or return it to the
+// queue (back to human_requested); "closed" is terminal (explicit End or a
+// server-side close).
+//
+// The launcher is NOT part of session state (Phase 1P.6.1): a UI-only
+// ``panelOpen`` flag decides whether the panel or the launcher is visible. The
+// header X minimizes — it only hides the panel and keeps the conversation,
+// token, and stored session so reopening restores the same chat. Ending a
+// conversation is an explicit, confirmed action (sent to the backend and the
+// stored token removed). Reload persistence still relies on sessionStorage
+// (D): CHAT_SESSION_STORAGE_KEY + GET /sessions/state.
 //
 // Phase 1P.6: the first click opens the panel immediately — the connect work
 // starts behind a composing/session request while the panel is already being
@@ -54,7 +62,6 @@ import {
 // palettes, so no tenant input becomes CSS or markup.
 
 type WidgetState =
-  | "launcher"
   | "connecting"
   | "ai_active"
   | "human_requested"
@@ -228,8 +235,14 @@ export function PublicChatWidget({
 }: {
   widgetKey: string;
 }) {
+  // Server/session state. "closed" is terminal (explicit End or a server-side
+  // close); the launcher is a separate UI concern — see ``panelOpen`` below.
   const [state, setState] =
-    useState<WidgetState>("launcher");
+    useState<WidgetState>("closed");
+  // UI-only visibility: when false, the launcher renders no matter what the
+  // session state is. Minimize never touches ``state``.
+  const [panelOpen, setPanelOpen] =
+    useState(false);
   const [config, setConfig] =
     useState<PublicChatConfigResponse | null>(null);
   const [sessionToken, setSessionToken] =
@@ -241,6 +254,8 @@ export function PublicChatWidget({
   const [errorMessage, setErrorMessage] =
     useState<string | null>(null);
   const [composerFocused, setComposerFocused] =
+    useState(false);
+  const [endConfirm, setEndConfirm] =
     useState(false);
 
   const embeddingOriginRef =
@@ -353,8 +368,20 @@ export function PublicChatWidget({
     if (connectInflightRef.current) {
       return;
     }
-    connectInflightRef.current = true;
     setErrorMessage(null);
+
+    // Reopening a minimized session: show the same in-memory conversation
+    // immediately. No backend close, no storage discard, no token clear, and
+    // no new session — the state (ai_active / human_requested /
+    // human_assigned) is already correct and the active polling reconciles
+    // server truth.
+    if (sessionTokenRef.current) {
+      setPanelOpen(true);
+      return;
+    }
+
+    connectInflightRef.current = true;
+    setPanelOpen(true);
     setState("connecting");
 
     try {
@@ -537,18 +564,48 @@ export function PublicChatWidget({
     }
   }, []);
 
-  const closeChat = useCallback(async () => {
-    clearPoll();
+  const minimize = useCallback(() => {
+    // UI-only collapse: hide the panel but keep the conversation, the in-memory
+    // session token, and the persisted token. No backend call, no storage
+    // removal, no status change — reopening shows the same conversation.
+    setPanelOpen(false);
+  }, []);
+
+  const endConversation = useCallback(async () => {
     const token = sessionTokenRef.current;
-    if (token) {
-      try {
-        await closePublicChatSession(token);
-      } catch {
-        // The widget still closes locally even if the backend is unreachable.
-      }
+    // No server token means there is no remote conversation to close; local
+    // cleanup is safe because nothing remains running on the backend.
+    if (!token) {
+      clearPoll();
+      discardSession();
+      setSessionToken(null);
+      setMessages([]);
+      setPanelOpen(false);
+      setEndConfirm(false);
+      setState("closed");
+      return;
     }
+
+    try {
+      await closePublicChatSession(token);
+    } catch {
+      // A failed backend close must not diverge the client from a still-active
+      // server session: keep the token, stored token, messages, panel, state,
+      // and polling so the user can retry against the same conversation.
+      setErrorMessage(
+        "Unable to end this conversation right now. Please try again.",
+      );
+      setEndConfirm(false);
+      return;
+    }
+
+    // End confirmed by the backend — only now is local cleanup safe.
+    clearPoll();
     discardSession();
     setSessionToken(null);
+    setMessages([]);
+    setPanelOpen(false);
+    setEndConfirm(false);
     setState("closed");
   }, [clearPoll, discardSession]);
 
@@ -606,7 +663,7 @@ export function PublicChatWidget({
 
   useEffect(() => {
     const isPanel =
-      state !== "launcher" && state !== "closed";
+      panelOpen && state !== "closed";
     // The panel requests its intended logical size, not a size derived from
     // this iframe's own viewport: inside the iframe, window.inner* reports the
     // iframe's viewport (the loader creates it at 96x96), so deriving the
@@ -624,7 +681,7 @@ export function PublicChatWidget({
       },
       "*",
     );
-  }, [state, theme]);
+  }, [panelOpen, state, theme]);
 
   useEffect(() => {
     return () => {
@@ -633,11 +690,11 @@ export function PublicChatWidget({
   }, [clearPoll]);
 
   // The authored chrome styles must apply to the /chat/embed document in every
-  // widget state — launcher and closed render a div, not the panel section —
-  // so the transparent-frame rules reach html/body even before a click.
+  // widget state — the launcher and the panel both render the sheet — so the
+  // transparent-frame rules reach html/body even before a click.
   const embedStyles = <style>{EMBED_STYLE_RULES}</style>;
 
-  if (state === "launcher") {
+  if (!panelOpen || state === "closed") {
     return (
       <div
         style={{
@@ -652,26 +709,6 @@ export function PublicChatWidget({
           theme={theme}
           onClick={() => void open()}
           ariaLabel="Open support chat"
-        />
-      </div>
-    );
-  }
-
-  if (state === "closed") {
-    return (
-      <div
-        style={{
-          position: "fixed",
-          right: "20px",
-          bottom: "20px",
-          zIndex: 9990,
-        }}
-      >
-        {embedStyles}
-        <LauncherButton
-          theme={theme}
-          onClick={() => setState("launcher")}
-          ariaLabel="Reopen support chat"
         />
       </div>
     );
@@ -756,8 +793,8 @@ export function PublicChatWidget({
         </div>
         <button
           type="button"
-          onClick={closeChat}
-          aria-label="Close chat"
+          onClick={minimize}
+          aria-label="Minimize chat"
           style={{
             border: "none",
             background: "transparent",
@@ -1032,6 +1069,93 @@ export function PublicChatWidget({
             Chat with a human
           </button>
         )}
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            paddingTop: "8px",
+            borderTop: `1px solid ${theme.panel.border}`,
+          }}
+        >
+          {endConfirm ? (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "8px",
+                alignItems: "center",
+                maxWidth: "100%",
+              }}
+            >
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "12px",
+                  color: theme.text.secondary,
+                  textAlign: "center",
+                }}
+              >
+                End this conversation? You will start a
+                new chat next time.
+              </p>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => void endConversation()}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: theme.composer.sendBackground,
+                    color: theme.composer.sendForeground,
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  End conversation
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEndConfirm(false)}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "8px",
+                    border: `1px solid ${theme.composer.border}`,
+                    background: "transparent",
+                    color: theme.text.primary,
+                    fontSize: "12px",
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEndConfirm(true)}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: theme.text.secondary,
+                fontSize: "12px",
+                cursor: "pointer",
+                padding: "2px 6px",
+                textDecoration: "underline",
+              }}
+            >
+              End conversation
+            </button>
+          )}
+        </div>
       </footer>
     </section>
   );

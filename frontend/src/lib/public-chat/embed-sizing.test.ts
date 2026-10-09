@@ -143,9 +143,11 @@ describe("embed size requests (embed.tsx)", () => {
   it("requests the panel size while still connecting", () => {
     // Phase 1P.6: the first click expands the panel before any request has
     // completed, so the connecting state must already post the panel size.
+    // Phase 1P.6.1: visibility now rides the UI-only panelOpen flag; every
+    // panel state that is not "closed" is treated as panel-sized.
     assert.ok(
       embedSource.includes(
-        'state !== "launcher" && state !== "closed"',
+        "const isPanel =\n      panelOpen && state !== \"closed\"",
       ),
       "the resize effect must treat connecting as panel state",
     );
@@ -257,8 +259,8 @@ describe("transparent embed frame (visual hotfix)", () => {
       "the authored sheet must be the single source of the embed chrome",
     );
     assert.ok(
-      (embedSource.split("{embedStyles}").length - 1) >= 3,
-      "launcher, closed, and panel branches must each apply the sheet",
+      (embedSource.split("{embedStyles}").length - 1) >= 2,
+      "launcher and panel branches must each apply the sheet",
     );
   });
 

@@ -23,6 +23,18 @@ import { fileURLToPath } from "node:url";
  *   - a failed connection offers a friendly retry;
  *   - handed-off sessions keep the composer enabled (human_requested and
  *     human_assigned) and never downgrade human_assigned.
+ *
+ * Phase 1P.6.1 additions:
+ *   - the launcher is a UI-only `panelOpen` flag, not a session state;
+ *   - the header X minimizes — it only hides the panel and mutates nothing;
+ *   - reopening a minimized session shows the same conversation via a
+ *     no-session reopen branch in open();
+ *   - ending a conversation is explicit and confirmed, and alone reaches the
+ *     close endpoint and strips the stored token;
+ *   - an explicit End also fails safely (1P.6.1 correction): the close
+ *     endpoint is awaited first and all local cleanup happens only after the
+ *     backend confirms; on failure nothing is discarded, polling continues,
+ *     and a bounded friendly error allows a retry.
  */
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = join(HERE, "..", "..", "..");
@@ -180,7 +192,9 @@ describe("config prefetch before any click", () => {
       embedSource.includes("const theme = resolveTheme(config?.theme_token);"),
       "the theme must resolve from config, which the mount prefetch populates",
     );
-    const launcher = embedSource.indexOf('if (state === "launcher") {');
+    const launcher = embedSource.indexOf(
+      'if (!panelOpen || state === "closed") {',
+    );
     assert.notEqual(launcher, -1);
     assert.ok(
       embedSource
@@ -267,5 +281,217 @@ describe("failed-connection retry", () => {
       "the retry control must reuse the single-flight open flow",
     );
     assert.ok(embedSource.includes('state === "error"'));
+  });
+});
+
+describe("minimize vs end conversation (Phase 1P.6.1)", () => {
+  it("treats panel visibility as UI-only, separate from session state", () => {
+    assert.ok(
+      embedSource.includes('useState<WidgetState>("closed")'),
+      "the initial session state must be closed, not launcher",
+    );
+    assert.ok(
+      embedSource.includes(
+        "const [panelOpen, setPanelOpen] =\n    useState(false);",
+      ),
+      "a UI-only panelOpen flag must gate visibility",
+    );
+    assert.ok(
+      !embedSource.includes('"launcher"'),
+      "launcher must no longer be a session state",
+    );
+    assert.ok(
+      embedSource.includes(
+        'if (!panelOpen || state === "closed") {',
+      ),
+      "the launcher renders exactly when the panel is closed",
+    );
+    assert.ok(
+      embedSource.includes(
+        'const isPanel =\n      panelOpen && state !== "closed";',
+      ),
+      "the resize must follow the UI-only visibility flag",
+    );
+    assert.ok(
+      embedSource.includes("}, [panelOpen, state, theme]);"),
+      "the resize effect must watch panelOpen",
+    );
+  });
+
+  it("minimizes without a backend call or any session mutation", () => {
+    const minimizeStart = embedSource.indexOf(
+      "const minimize = useCallback",
+    );
+    const minimizeEnd = embedSource.indexOf(
+      "}, []);",
+      minimizeStart,
+    );
+    assert.ok(minimizeStart !== -1 && minimizeEnd !== -1);
+    const minimizeBlock = embedSource.slice(
+      minimizeStart,
+      minimizeEnd,
+    );
+    assert.ok(
+      minimizeBlock.includes("setPanelOpen(false);"),
+      "minimize must hide the panel",
+    );
+    for (const forbidden of [
+      "closePublicChatSession",
+      "discardSession",
+      "setSessionToken",
+      "setMessages",
+      "removeItem",
+      'setState("closed")',
+      "clearPoll",
+    ]) {
+      assert.ok(
+        !minimizeBlock.includes(forbidden),
+        `minimize must not ${forbidden}`,
+      );
+    }
+  });
+
+  it("binds the header X to minimize", () => {
+    assert.ok(
+      embedSource.includes(
+        'onClick={minimize}\n          aria-label="Minimize chat"',
+      ),
+      "the header close button must minimize, never end the conversation",
+    );
+    assert.ok(
+      !embedSource.includes('aria-label="Close chat"'),
+      "no control may present ending as a mere close",
+    );
+  });
+
+  it("reopens an in-memory session without a new session", () => {
+    const openStart = embedSource.indexOf("const open = useCallback");
+    const openEnd = embedSource.indexOf("widgetKey,\n  ]);", openStart);
+    const openBlock = embedSource.slice(openStart, openEnd);
+    const reopenAt = openBlock.indexOf("if (sessionTokenRef.current) {");
+    assert.notEqual(reopenAt, -1, "open must check for an in-memory session");
+    const reopenSlice = openBlock.slice(reopenAt, reopenAt + 120);
+    assert.ok(
+      reopenSlice.includes("setPanelOpen(true);"),
+      "the reopen branch must show the panel and return",
+    );
+    assert.ok(
+      !reopenSlice.includes("createPublicChatSession"),
+      "the reopen branch must not create a session",
+    );
+    assert.ok(
+      reopenAt < openBlock.indexOf("const created ="),
+      "the reopen branch must precede the fresh-session create path",
+    );
+  });
+
+  it("ends a conversation only through an explicit, confirmed action", () => {
+    const endStart = embedSource.indexOf(
+      "const endConversation = useCallback",
+    );
+    const endEnd = embedSource.indexOf(
+      "}, [clearPoll, discardSession]);",
+      endStart,
+    );
+    assert.ok(endStart !== -1 && endEnd !== -1);
+    const endBlock = embedSource.slice(endStart, endEnd);
+    assert.ok(endBlock.includes("await closePublicChatSession(token);"));
+    assert.ok(endBlock.includes("discardSession();"));
+    assert.ok(endBlock.includes("setSessionToken(null);"));
+    assert.ok(endBlock.includes("setMessages([]);"));
+    assert.ok(endBlock.includes('setState("closed");'));
+    assert.ok(
+      embedSource.includes(
+        "End this conversation? You will start a\n                new chat next time.",
+      ),
+      "the footer must gate an end behind an inline confirmation",
+    );
+    assert.ok(
+      embedSource.includes("onClick={() => setEndConfirm(true)}"),
+      "the footer end action must ask for confirmation first",
+    );
+  });
+});
+
+describe("end-conversation failure safety (Phase 1P.6.1 correction)", () => {
+  const endStart = embedSource.indexOf(
+    "const endConversation = useCallback",
+  );
+  const endEnd = embedSource.indexOf(
+    "}, [clearPoll, discardSession]);",
+    endStart,
+  );
+  const endBlock = embedSource.slice(endStart, endEnd);
+  const catchStart = endBlock.indexOf("} catch {");
+  const catchEnd = endBlock.indexOf("return;\n    }", catchStart);
+  const catchBlock = endBlock.slice(catchStart, catchEnd);
+  const confirmMarker = "// End confirmed by the backend";
+  const successBlock = endBlock.slice(
+    endBlock.indexOf(confirmMarker),
+    endBlock.length,
+  );
+  const cleanupCalls = [
+    "clearPoll();",
+    "discardSession();",
+    "setSessionToken(null);",
+    "setMessages([]);",
+    "setPanelOpen(false);",
+    "setEndConfirm(false);",
+    'setState("closed");',
+  ];
+
+  it("fails safely: preserves the token on a failed End", () => {
+    assert.ok(
+      endBlock.includes("const token = sessionTokenRef.current;"),
+      "End must read the in-memory token before deciding",
+    );
+    assert.ok(!catchBlock.includes("setSessionToken"));
+    assert.ok(!catchBlock.includes("removeItem"));
+  });
+
+  it("fails safely: does not discard the stored session on a failed End", () => {
+    assert.ok(!catchBlock.includes("discardSession"));
+  });
+
+  it("fails safely: preserves messages on a failed End", () => {
+    assert.ok(!catchBlock.includes("setMessages"));
+  });
+
+  it("fails safely: preserves panel and session state on a failed End", () => {
+    assert.ok(!catchBlock.includes("setState"));
+    assert.ok(!catchBlock.includes("setPanelOpen"));
+    assert.ok(!catchBlock.includes('setState("closed")'));
+    assert.ok(
+      catchBlock.includes(
+        '"Unable to end this conversation right now. Please try again."',
+      ),
+      "a failed End must surface a bounded, friendly error",
+    );
+    assert.ok(
+      catchBlock.includes("setEndConfirm(false);"),
+      "failure must reset the confirm so the user can retry",
+    );
+  });
+
+  it("fails safely: does not stop polling on a failed End", () => {
+    assert.ok(!catchBlock.includes("clearPoll"));
+  });
+
+  it("successful End still performs full cleanup, only after the backend close", () => {
+    const awaitIndex = endBlock.indexOf(
+      "await closePublicChatSession(token);",
+    );
+    const confirmIndex = endBlock.indexOf(confirmMarker);
+    assert.ok(awaitIndex !== -1 && confirmIndex !== -1);
+    assert.ok(
+      awaitIndex < confirmIndex,
+      "local cleanup must run only after the confirmed server close",
+    );
+    for (const call of cleanupCalls) {
+      assert.ok(
+        successBlock.includes(call),
+        `a successful End must ${call}`,
+      );
+    }
   });
 });
