@@ -377,8 +377,14 @@ def _stub_rag(
     """
     calls: list[dict] = []
 
-    async def _fake_answer(_db, *, organization_id, question, top_k=None):
-        calls.append({"organization_id": organization_id, "question": question})
+    async def _fake_answer(_db, *, organization_id, question, top_k=None, feature="rag_answer"):
+        calls.append(
+            {
+                "organization_id": organization_id,
+                "question": question,
+                "feature": feature,
+            }
+        )
         if error is not None:
             raise error
         return rag_result

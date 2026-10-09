@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
@@ -10,20 +11,38 @@ import {
   RefreshCw,
   User,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import {
+  SUMMARY_WINDOWS,
   assignHandoffSession,
   fetchHandoffBusinessActions,
   fetchHandoffSessions,
+  fetchPublicChatSummary,
   releaseHandoffSession,
+  type SummaryWindow,
 } from "@/lib/public-chat/staff";
 import type {
+  PublicChatPilotSummary,
   StaffBusinessAction,
   StaffHandoffSession,
 } from "@/lib/public-chat/types";
 import { CAPABILITIES } from "@/lib/authorization/capabilities";
 import { useAuthorization } from "@/lib/authorization/context";
+import {
+  applySummaryChangeFor,
+  emptyPilotWorkbench,
+  patchForOrganization,
+  pilotWorkbenchForOrganization,
+  visiblePilotWorkbench,
+  type PilotWorkbenchState,
+} from "@/lib/public-chat/pilotWorkbench";
 
 function statusBadge(status: string) {
   switch (status) {
@@ -80,49 +99,168 @@ function actionStatusBadge(status: string) {
 }
 
 export default function PublicChatPage() {
-  const { can } = useAuthorization();
+  const { can, organizationId } = useAuthorization();
   const canRead = can(CAPABILITIES.TICKET_READ);
   const canWrite = can(CAPABILITIES.TICKET_WRITE);
 
-  const [sessions, setSessions] = useState<StaffHandoffSession[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
-  const [actions, setActions] = useState<Record<number, StaffBusinessAction[]>>({});
-  const [actionsLoading, setActionsLoading] = useState<Record<number, boolean>>({});
-  const [busy, setBusy] = useState<number | null>(null);
+  const [workbench, setWorkbench] = useState<PilotWorkbenchState>(() =>
+    emptyPilotWorkbench(organizationId),
+  );
+
+  // Tenant-guarded state writes: every async operation captures the
+  // organizationId when the request starts and routes every post-await
+  // mutation through this setter, so a stale completion from a previous tenant
+  // becomes a no-op instead of writing across the boundary.
+  const setForOrganization = useCallback(
+    (
+      requestOrganizationId: number,
+      updater: (prev: PilotWorkbenchState) => PilotWorkbenchState,
+    ) => {
+      setWorkbench(patchForOrganization(requestOrganizationId, updater));
+    },
+    [],
+  );
+
+  const [summaryWindow, setSummaryWindow] = useState<SummaryWindow>("24h");
+  // Mirrors the active window so in-flight summary completions can compare
+  // against it at resolve time (a 24h response must never replace a 7d one).
+  const summaryWindowRef = useRef<SummaryWindow>("24h");
+
+  // Render-time tenant gate. React effects run after render, so we do not rely
+  // on the reset effect alone: the workbench displayed for the active
+  // organization is derived here, guaranteeing that Org A's summary/sessions
+  // cannot render under Org B even for a single frame. The empty copy is
+  // transient and never written back — stored state changes only through the
+  // guarded setters above.
+  const visibleWorkbench = visiblePilotWorkbench(workbench, organizationId);
 
   const loadSessions = useCallback(async () => {
-    setLoading(true);
+    const requestOrganizationId = organizationId;
+    setForOrganization(requestOrganizationId, (prev) => ({
+      ...prev,
+      loading: true,
+    }));
     try {
       const result = await fetchHandoffSessions();
-      setSessions(result.sessions);
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        sessions: result.sessions,
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load sessions");
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        error: err instanceof Error ? err.message : "Failed to load sessions",
+      }));
     } finally {
-      setLoading(false);
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        loading: false,
+      }));
     }
-  }, []);
+  }, [organizationId, setForOrganization]);
+
+  const loadSummary = useCallback(async () => {
+    const requestOrganizationId = organizationId;
+    const requestWindow = summaryWindow;
+    setForOrganization(requestOrganizationId, (prev) => ({
+      ...prev,
+      summaryLoading: true,
+    }));
+    try {
+      const result = await fetchPublicChatSummary(requestWindow);
+      setWorkbench(
+        applySummaryChangeFor(
+          requestOrganizationId,
+          requestWindow,
+          summaryWindowRef.current,
+          (prev) => ({ ...prev, summary: result, summaryError: "" }),
+        ),
+      );
+    } catch (err) {
+      setWorkbench(
+        applySummaryChangeFor(
+          requestOrganizationId,
+          requestWindow,
+          summaryWindowRef.current,
+          (prev) => ({
+            ...prev,
+            summaryError:
+              err instanceof Error
+                ? err.message
+                : "Failed to load pilot summary",
+          }),
+        ),
+      );
+    } finally {
+      setWorkbench(
+        applySummaryChangeFor(
+          requestOrganizationId,
+          requestWindow,
+          summaryWindowRef.current,
+          (prev) => ({ ...prev, summaryLoading: false }),
+        ),
+      );
+    }
+  }, [summaryWindow, organizationId, setForOrganization]);
+
+  // Tenant gate: the active organization is a hard boundary. When it changes,
+  // the previous tenant's summary/queue/actions/errors are cleared BEFORE the
+  // new tenant's data is requested, so org A's summary is never rendered as
+  // "last good data" while org B is loading. Same-org renders are a no-op.
+  useEffect(() => {
+    setWorkbench((prev) =>
+      pilotWorkbenchForOrganization(prev, organizationId),
+    );
+  }, [organizationId]);
 
   useEffect(() => {
     if (!canRead) return;
-    /* eslint-disable react-hooks/set-state-in-effect */
     void loadSessions();
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [canRead, loadSessions]);
+    void loadSummary();
+  }, [organizationId, canRead, loadSessions, loadSummary]);
+
+  const selectSummaryWindow = (next: SummaryWindow) => {
+    if (next === summaryWindow) return;
+    // Update the ref synchronously so an in-flight summary completion for the
+    // previous window is rejected as soon as the user switches (not after the
+    // next effect runs post-render).
+    summaryWindowRef.current = next;
+    setForOrganization(organizationId, (prev) => ({
+      ...prev,
+      summary: null,
+      summaryError: "",
+    }));
+    setSummaryWindow(next);
+  };
 
   const toggleActions = async (sessionId: number) => {
-    const next = !expanded[sessionId];
-    setExpanded((prev) => ({ ...prev, [sessionId]: next }));
-    if (next && !actions[sessionId]) {
-      setActionsLoading((prev) => ({ ...prev, [sessionId]: true }));
+    const requestOrganizationId = organizationId;
+    const next = !visibleWorkbench.expanded[sessionId];
+    setForOrganization(requestOrganizationId, (prev) => ({
+      ...prev,
+      expanded: { ...prev.expanded, [sessionId]: next },
+    }));
+    if (next && !visibleWorkbench.actions[sessionId]) {
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        actionsLoading: { ...prev.actionsLoading, [sessionId]: true },
+      }));
       try {
         const result = await fetchHandoffBusinessActions(sessionId);
-        setActions((prev) => ({ ...prev, [sessionId]: result.actions }));
+        setForOrganization(requestOrganizationId, (prev) => ({
+          ...prev,
+          actions: { ...prev.actions, [sessionId]: result.actions },
+        }));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load actions");
+        setForOrganization(requestOrganizationId, (prev) => ({
+          ...prev,
+          error: err instanceof Error ? err.message : "Failed to load actions",
+        }));
       } finally {
-        setActionsLoading((prev) => ({ ...prev, [sessionId]: false }));
+        setForOrganization(requestOrganizationId, (prev) => ({
+          ...prev,
+          actionsLoading: { ...prev.actionsLoading, [sessionId]: false },
+        }));
       }
     }
   };
@@ -131,7 +269,11 @@ export default function PublicChatPage() {
     sessionId: number,
     action: "assign" | "release"
   ) => {
-    setBusy(sessionId);
+    const requestOrganizationId = organizationId;
+    setForOrganization(requestOrganizationId, (prev) => ({
+      ...prev,
+      busy: sessionId,
+    }));
     try {
       if (action === "assign") {
         await assignHandoffSession(sessionId);
@@ -140,14 +282,24 @@ export default function PublicChatPage() {
       }
       await loadSessions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Assignment failed");
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        error: err instanceof Error ? err.message : "Assignment failed",
+      }));
     } finally {
-      setBusy(null);
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        busy: null,
+      }));
     }
   };
 
-  const awaiting = sessions.filter((s) => s.status === "human_requested").length;
-  const assigned = sessions.filter((s) => s.status === "human_assigned").length;
+  const awaiting = visibleWorkbench.sessions.filter(
+    (s) => s.status === "human_requested",
+  ).length;
+  const assigned = visibleWorkbench.sessions.filter(
+    (s) => s.status === "human_assigned",
+  ).length;
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
@@ -164,22 +316,29 @@ export default function PublicChatPage() {
             </div>
             <button
               onClick={() => void loadSessions()}
-              disabled={loading}
+              disabled={visibleWorkbench.loading}
               className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-violet-300 hover:text-violet-600 disabled:opacity-50"
               aria-label="Refresh"
             >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-4 w-4 ${visibleWorkbench.loading ? "animate-spin" : ""}`}
+              />
             </button>
           </div>
         </header>
 
         <div className="mx-auto max-w-[1450px] px-6 pb-16 pt-[112px] lg:px-10">
-          {error && (
+          {visibleWorkbench.error && (
             <div className="mb-5 flex items-start gap-3 rounded-[18px] border border-red-200 bg-red-50/80 p-4 text-sm text-red-700">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
-              {error}
+              {visibleWorkbench.error}
               <button
-                onClick={() => setError("")}
+                onClick={() =>
+                  setForOrganization(organizationId, (prev) => ({
+                    ...prev,
+                    error: "",
+                  }))
+                }
                 className="ml-auto text-xs underline"
               >
                 Dismiss
@@ -194,6 +353,15 @@ export default function PublicChatPage() {
             </div>
           ) : (
             <>
+              <PilotSummaryPanel
+                summary={visibleWorkbench.summary}
+                loading={visibleWorkbench.summaryLoading}
+                error={visibleWorkbench.summaryError}
+                window={summaryWindow}
+                onSelectWindow={selectSummaryWindow}
+                onRefresh={() => void loadSummary()}
+              />
+
               <div className="mb-6 grid gap-4 sm:grid-cols-3">
                 <div className="app-panel rounded-[20px] p-5">
                   <div className="flex items-center gap-3">
@@ -243,11 +411,11 @@ export default function PublicChatPage() {
               </div>
 
               <div className="app-panel overflow-hidden rounded-[20px]">
-                {loading && sessions.length === 0 ? (
+                {visibleWorkbench.loading && visibleWorkbench.sessions.length === 0 ? (
                   <div className="flex h-64 items-center justify-center">
                     <LoaderCircle className="h-7 w-7 animate-spin text-violet-500" />
                   </div>
-                ) : sessions.length === 0 ? (
+                ) : visibleWorkbench.sessions.length === 0 ? (
                   <div className="flex h-64 flex-col items-center justify-center text-slate-500">
                     <CheckCircle2 className="mb-3 h-10 w-10 text-slate-300" />
                     <p>No sessions are currently awaiting handoff.</p>
@@ -265,16 +433,16 @@ export default function PublicChatPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {sessions.map((session) => (
+                      {visibleWorkbench.sessions.map((session) => (
                         <Pair
                           key={session.session_id}
                           session={session}
-                          expanded={Boolean(expanded[session.session_id])}
-                          actions={actions[session.session_id]}
+                          expanded={Boolean(visibleWorkbench.expanded[session.session_id])}
+                          actions={visibleWorkbench.actions[session.session_id]}
                           actionsLoading={Boolean(
-                            actionsLoading[session.session_id]
+                            visibleWorkbench.actionsLoading[session.session_id]
                           )}
-                          busy={busy === session.session_id}
+                          busy={visibleWorkbench.busy === session.session_id}
                           canWrite={canWrite}
                           onToggleActions={() => void toggleActions(session.session_id)}
                           onAssign={() => void runAssignment(session.session_id, "assign")}
@@ -296,6 +464,245 @@ export default function PublicChatPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function formatCost(value: number) {
+  if (value <= 0) return "$0";
+  return `$${value.toFixed(3)}`;
+}
+
+function formatCount(value: number) {
+  return value.toLocaleString("en-US");
+}
+
+function pilotBadge(
+  active: boolean,
+  label: string,
+  onLabel: string,
+  offLabel: string,
+) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+        active
+          ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border border-amber-200 bg-amber-50 text-amber-700"
+      }`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${
+          active ? "bg-emerald-500" : "bg-amber-500"
+        }`}
+      />
+      {label}: {active ? onLabel : offLabel}
+    </span>
+  );
+}
+
+function summaryTile(
+  icon: ReactNode,
+  label: string,
+  value: string,
+  tone: "neutral" | "warn" = "neutral",
+) {
+  return (
+    <div className="rounded-[16px] border border-slate-200 bg-white p-4">
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-500">
+          {icon}
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+            {label}
+          </p>
+          <p
+            className={`editorial-number text-2xl font-medium tracking-[-0.045em] ${
+              tone === "warn" ? "text-red-600" : "text-slate-950"
+            }`}
+          >
+            {value}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PilotSummaryPanel({
+  summary,
+  loading,
+  error,
+  window,
+  onSelectWindow,
+  onRefresh,
+}: {
+  summary: PublicChatPilotSummary | null;
+  loading: boolean;
+  error: string;
+  window: SummaryWindow;
+  onSelectWindow: (window: SummaryWindow) => void;
+  onRefresh: () => void;
+}) {
+  const empty = summary === null;
+  const safetyHit =
+    (summary?.safety.public_chat_integration_jobs ?? 0) > 0 ||
+    (summary?.safety.autonomous_public_chat_executions ?? 0) > 0;
+
+  return (
+    <div className="app-panel mb-6 rounded-[20px] p-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 text-violet-500">
+            <Activity className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#7160ff]">
+              Live Pilot
+            </p>
+            <h2 className="text-xl font-medium tracking-[-0.03em] text-slate-950">
+              Pilot Operations
+            </h2>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-full border border-slate-200 bg-white p-0.5">
+            {SUMMARY_WINDOWS.map((option) => (
+              <button
+                key={option}
+                onClick={() => onSelectWindow(option)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  option === window
+                    ? "bg-violet-50 text-violet-700"
+                    : "text-slate-500 hover:text-violet-600"
+                }`}
+              >
+                {option === "24h" ? "24 hours" : "7 days"}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            aria-label="Refresh pilot summary"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-violet-300 hover:text-violet-600 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-4 flex items-start gap-3 rounded-[14px] border border-red-200 bg-red-50/80 p-3 text-sm text-red-700">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            {error}
+            {summary ? " Showing the last successful summary." : ""}
+          </span>
+        </div>
+      )}
+
+      {empty && loading ? (
+        <div className="mt-4 flex h-40 items-center justify-center">
+          <LoaderCircle className="h-7 w-7 animate-spin text-violet-500" />
+        </div>
+      ) : empty ? (
+        <div className="mt-4 flex h-40 flex-col items-center justify-center text-slate-500">
+          <AlertTriangle className="mb-3 h-10 w-10 text-slate-300" />
+          <p>Could not load the pilot summary.</p>
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {pilotBadge(
+              summary.config.widget_enabled,
+              "Widget",
+              "Live",
+              "Disabled",
+            )}
+            {pilotBadge(
+              summary.config.grounded_auto_reply_enabled,
+              "Grounded answers",
+              "Enabled",
+              "Disabled",
+            )}
+            {pilotBadge(
+              summary.queue_health.health === "normal",
+              "Queue",
+              "Healthy",
+              "Needs attention",
+            )}
+            <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500">
+              Tenant #{summary.tenant_id} · {window} window
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {summaryTile(
+              <MessageSquareText className="h-4 w-4" />,
+              "Sessions",
+              formatCount(summary.window_summary.sessions_created),
+            )}
+            {summaryTile(
+              <User className="h-4 w-4" />,
+              "Customer messages",
+              formatCount(summary.window_summary.customer_messages),
+            )}
+            {summaryTile(
+              <CheckCircle2 className="h-4 w-4" />,
+              "Grounded AI answers",
+              formatCount(summary.window_summary.grounded_public_auto_replies),
+            )}
+            {summaryTile(
+              <Activity className="h-4 w-4" />,
+              "Sessions closed",
+              formatCount(summary.window_summary.sessions_closed),
+            )}
+            {summaryTile(
+              <MessageSquareText className="h-4 w-4" />,
+              "Awaiting staff",
+              formatCount(summary.queue.human_requested),
+            )}
+            {summaryTile(
+              <User className="h-4 w-4" />,
+              "Assigned",
+              formatCount(summary.queue.human_assigned),
+            )}
+            {summaryTile(
+              <AlertTriangle className="h-4 w-4" />,
+              "RAG errors",
+              formatCount(summary.rag.rag_errors),
+              summary.rag.rag_errors > 0 ? "warn" : "neutral",
+            )}
+            {summaryTile(
+              <Activity className="h-4 w-4" />,
+              "AI cost",
+              formatCost(summary.rag.estimated_ai_cost_usd),
+            )}
+          </div>
+
+          {safetyHit && (
+            <div className="mt-4 flex items-start gap-3 rounded-[14px] border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Integration jobs or autonomous executions attributable to public
+                chat were detected in this window. Review before proceeding.
+              </span>
+            </div>
+          )}
+
+          <p className="mt-4 text-xs text-slate-400">
+            Read-only aggregates over durable rows; refreshing never writes.
+            Queue counts and the waiting signal cover only live sessions
+            (expired sessions are excluded), and the attention threshold is an
+            operator signal, not an SLA. RAG rows recorded before Phase 1P.7
+            carry the shared rag_answer label and are excluded; latency averages
+            successful rows only, and AI cost is a lower bound because failed
+            requests without token usage cannot be costed exactly.
+          </p>
+        </>
+      )}
+    </div>
   );
 }
 

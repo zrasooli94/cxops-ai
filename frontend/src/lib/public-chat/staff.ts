@@ -1,4 +1,5 @@
 import type {
+  PublicChatPilotSummary,
   StaffBusinessActionsResponse,
   StaffHandoffSession,
   StaffHandoffSessionsResponse,
@@ -84,4 +85,28 @@ export async function fetchHandoffBusinessActions(
     { cache: "no-store" },
   );
   return parseStaffJson<StaffBusinessActionsResponse>(response);
+}
+
+// Live-pilot operations summary (Phase 1P.7).
+//
+// The backend summary endpoint accepts exactly two windows; anything else is
+// rejected with 422, so the client never proposes one.
+
+export const SUMMARY_WINDOWS = ["24h", "7d"] as const;
+
+export type SummaryWindow = (typeof SUMMARY_WINDOWS)[number];
+
+export function isSummaryWindow(value: string): value is SummaryWindow {
+  return (SUMMARY_WINDOWS as readonly string[]).includes(value);
+}
+
+export async function fetchPublicChatSummary(
+  window: SummaryWindow,
+  fetcher: typeof fetch = fetch,
+): Promise<PublicChatPilotSummary> {
+  const response = await fetcher(
+    `/api/backend/staff/public-chat/summary?window=${encodeURIComponent(window)}`,
+    { cache: "no-store" },
+  );
+  return parseStaffJson<PublicChatPilotSummary>(response);
 }

@@ -68,6 +68,7 @@ class RAGService:
         organization_id: int,
         question: str,
         top_k: int | None = None,
+        feature: str = "rag_answer",
     ) -> dict:
 
         organization_id = RAGService._require_organization_id(organization_id)
@@ -109,6 +110,7 @@ class RAGService:
                 best_similarity=None,
                 sources=[],
                 latency_ms=latency_ms,
+                feature=feature,
             )
 
             return {
@@ -149,6 +151,7 @@ class RAGService:
                 best_similarity=best_similarity,
                 sources=[],
                 latency_ms=latency_ms,
+                feature=feature,
             )
 
             return {
@@ -324,6 +327,7 @@ KNOWLEDGE BASE CONTEXT:
                 input_tokens=input_tokens,
                 output_tokens=(output_tokens),
                 total_tokens=total_tokens,
+                feature=feature,
             )
 
             return {
@@ -355,6 +359,7 @@ KNOWLEDGE BASE CONTEXT:
             input_tokens=input_tokens,
             output_tokens=(output_tokens),
             total_tokens=total_tokens,
+            feature=feature,
         )
 
         return {

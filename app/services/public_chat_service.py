@@ -37,6 +37,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -45,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.agent_run import AgentRun
+from app.models.ai_request_log import AIRequestLog
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
@@ -101,6 +103,11 @@ LOCAL_DEMO_HANDOFF_REPLY = (
 # completes there is nothing to escalate to staff, so the widget shows the
 # fixed fallback instead of a handoff. Every other action is handoff-only.
 SAFE_AUTOREPLY_ACTIONS = frozenset({"no_action", "internal_note"})
+
+# Bounded placeholder stored in the durable RAG failure marker. The synthetic
+# error row never duplicates the customer's raw question text, so operators see
+# a readable marker instead of customer PII landing in an observability row.
+RAG_FAILURE_PLACEHOLDER_QUESTION = "[public-chat grounded auto-reply: RAG failed]"
 
 # Sessions that are with a human. Follow-up messages in these states go
 # directly into the human conversation — never back through the AI workflow.
@@ -540,6 +547,7 @@ class PublicChatService:
             db,
             organization_id=organization_id,
             question=question,
+            feature="public_chat",
         )
 
         eligible, reason = public_answer_eligible(rag_result)
@@ -563,6 +571,42 @@ class PublicChatService:
             retrieval_count=int(rag_result.get("retrieval_count") or 0),
             best_similarity=rag_result.get("best_similarity"),
             source_ids=source_ids,
+        )
+
+    @staticmethod
+    async def _record_rag_failure(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+    ) -> None:
+        """Persist a durable, bounded observability row for a failed RAG attempt.
+
+        The RAG failure path in ``send_message`` rolls the attempt's transaction
+        back before failing closed to handoff (so a retrieval/model error can
+        never surface as a 500). This marker re-records the failed attempt with
+        ``feature='public_chat'`` and ``status='error'`` so the pilot summary
+        can count real RAG failures instead of always reporting zero. It stores
+        a bounded placeholder — never the customer's raw question text — and no
+        model output, error trace, or customer identity is retained. The row is
+        committed with the handoff reply that follows.
+        """
+        db.add(
+            AIRequestLog(
+                organization_id=organization_id,
+                request_id=uuid4().hex,
+                feature="public_chat",
+                model=settings.chat_model,
+                status="error",
+                question=RAG_FAILURE_PLACEHOLDER_QUESTION,
+                answer=None,
+                grounded=False,
+                llm_called=False,
+                retrieval_count=0,
+                best_similarity=None,
+                sources=[],
+                latency_ms=0.0,
+                error_message="public_chat_grounded_auto_reply_failed",
+            )
         )
 
     @staticmethod
@@ -815,6 +859,10 @@ class PublicChatService:
                 await db.refresh(inbound)
                 await db.refresh(session)
                 await db.refresh(conversation)
+                await cls._record_rag_failure(
+                    db,
+                    organization_id=organization_id,
+                )
                 grounded_reply = None
 
         if grounded_reply is not None:

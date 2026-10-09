@@ -20,9 +20,11 @@ PUBLIC_CHAT_MODULES = [
     "app/api/routes/public_chat.py",
     "app/services/public_chat_service.py",
     "app/services/public_chat_staff_service.py",
+    "app/services/public_chat_summary_service.py",
     "app/services/tenant_config_service.py",
     "app/tenant_onboarding/planner.py",
     "scripts/onboard_tenant.py",
+    "scripts/check_public_chat_pilot.py",
     "scripts/smoke_public_chat.py",
     "scripts/validate_production_config.py",
 ]

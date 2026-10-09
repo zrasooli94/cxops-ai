@@ -4,17 +4,25 @@ Unlike the widget routes (which are intentionally auth-free), these endpoints
 require a control-center principal, resolve the tenant from memberships, and
 are capability-gated. Assignment/release never trust a client-supplied tenant:
 the session is always resolved by id + the tenant derived from the principal.
+
+Phase 1P.7 adds the read-only live-pilot summary endpoint on the same
+capability boundary (TICKET_READ). Like the rest of the surface it derives the
+tenant solely from the authenticated principal, and its response carries no
+customer message text, tokens, widget keys, or PII.
 """
 
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
 from app.schemas.staff_public_chat import (
+    PublicChatPilotSummaryResponse,
+    PublicChatWindow,
     StaffBusinessActionsResponse,
     StaffBusinessActionSummary,
     StaffHandoffSessionsResponse,
@@ -24,6 +32,10 @@ from app.services.public_chat_staff_service import (
     PublicChatStaffAssignmentError,
     PublicChatStaffService,
     PublicChatStaffSessionNotFoundError,
+)
+from app.services.public_chat_summary_service import (
+    WINDOW_TO_HOURS,
+    PublicChatSummaryService,
 )
 
 router = APIRouter(
@@ -58,6 +70,37 @@ def _staff_error(exc: Exception) -> None:
             detail=str(exc),
         ) from exc
     raise exc
+
+
+@router.get(
+    "/summary",
+    response_model=PublicChatPilotSummaryResponse,
+)
+async def public_chat_pilot_summary(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _authz: HandoffReadAuthz,
+    window: str = Query(default="24h", pattern="^(24h|7d)$"),
+):
+    """Read-only live-pilot health summary for the principal's tenant.
+
+    The tenant is always the resolved ``CurrentTenant``; a client-supplied
+    organization id is never accepted. The ``window`` is a closed set
+    (``24h`` / ``7d``); anything else is rejected by request validation. The
+    response is bounded aggregates only — no customer message text, tokens,
+    widget keys, or PII.
+    """
+    result = await PublicChatSummaryService.summary(
+        db,
+        organization_id=tenant.organization_id,
+        window_hours=WINDOW_TO_HOURS[window],
+    )
+    return PublicChatPilotSummaryResponse(
+        tenant_id=tenant.organization_id,
+        window=cast(PublicChatWindow, window),
+        generated_at=datetime.now(UTC),
+        **result,
+    )
 
 
 @router.get(

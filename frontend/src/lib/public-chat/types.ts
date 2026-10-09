@@ -94,3 +94,49 @@ export interface StaffBusinessAction {
 export interface StaffBusinessActionsResponse {
   actions: StaffBusinessAction[];
 }
+
+// Live-pilot operations summary types (Phase 1P.7).
+//
+// Mirrors app/schemas/staff_public_chat.py. These are bounded aggregates only:
+// never session tokens, widget keys, customer message text, or any PII.
+
+export interface PublicChatPilotSummary {
+  tenant_id: number;
+  window: "24h" | "7d";
+  generated_at: string;
+  config: {
+    widget_enabled: boolean;
+    grounded_auto_reply_enabled: boolean;
+    theme_token: string | null;
+    allowed_origin_count: number;
+  };
+  queue: {
+    human_requested: number;
+    human_assigned: number;
+    ai_active: number;
+    active_total: number;
+  };
+  queue_health: {
+    health: "normal" | "attention";
+    oldest_waiting_since: string | null;
+    oldest_waiting_minutes: number | null;
+  };
+  window_summary: {
+    sessions_created: number;
+    customer_messages: number;
+    sessions_closed: number;
+    grounded_public_auto_replies: number;
+  };
+  rag: {
+    rag_requests: number;
+    rag_grounded: number;
+    rag_errors: number;
+    avg_rag_latency_ms: number;
+    avg_best_similarity: number | null;
+    estimated_ai_cost_usd: number;
+  };
+  safety: {
+    public_chat_integration_jobs: number;
+    autonomous_public_chat_executions: number;
+  };
+}
