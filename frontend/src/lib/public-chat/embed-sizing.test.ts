@@ -32,6 +32,10 @@ const loaderSource = readFileSync(
   join(FRONTEND_ROOT, "public", "embed", "loader.js"),
   "utf8",
 );
+const globalsSource = readFileSync(
+  join(FRONTEND_ROOT, "src", "app", "globals.css"),
+  "utf8",
+);
 
 const LOADER_ORIGIN = "https://app.cxops.example";
 const WIDGET_KEY = "k".repeat(32);
@@ -222,6 +226,57 @@ describe("authored widget chrome (open animation + placeholder)", () => {
   });
 });
 
+describe("transparent embed frame (visual hotfix)", () => {
+  it("keeps the embed document's html/body/main backgrounds transparent", () => {
+    const rules = embedSource.slice(
+      embedSource.indexOf("const EMBED_STYLE_RULES"),
+      embedSource.indexOf("`;", embedSource.indexOf("const EMBED_STYLE_RULES")) + 2,
+    );
+    assert.ok(
+      rules.includes("html,\nbody {\n  background: transparent !important;\n}"),
+      "html/body must be forced transparent inside the embed document",
+    );
+    assert.ok(
+      rules.includes("body {\n  min-height: 0;\n}"),
+      "the embed body must not stretch to the 100vh global rule",
+    );
+    assert.ok(
+      rules.includes("main {\n  background: transparent !important;\n}"),
+      "the embed page's main wrapper must be transparent",
+    );
+    assert.ok(
+      rules.includes("background: transparent !important"),
+    );
+  });
+
+  it("renders the embed chrome styles in every widget state", () => {
+    assert.ok(
+      embedSource.includes(
+        "const embedStyles = <style>{EMBED_STYLE_RULES}</style>;",
+      ),
+      "the authored sheet must be the single source of the embed chrome",
+    );
+    assert.ok(
+      (embedSource.split("{embedStyles}").length - 1) >= 3,
+      "launcher, closed, and panel branches must each apply the sheet",
+    );
+  });
+
+  it("isolates the transparency to the embed document, never CXOps pages", () => {
+    assert.ok(
+      !globalsSource.includes("background: transparent"),
+      "globals.css must keep the CXOps/control-center page background",
+    );
+    // The only transparency override in the embed lives in the authored style
+    // constant, which /chat/embed alone renders.
+    const styleConstant = embedSource.slice(
+      embedSource.indexOf("const EMBED_STYLE_RULES"),
+      embedSource.indexOf("`;", embedSource.indexOf("const EMBED_STYLE_RULES")) + 2,
+    );
+    assert.ok(styleConstant.includes("transparent"));
+  });
+});
+
 describe("loader.js iframe sizing", () => {
   it("expands a default-width 380x540 open-panel request to the margin-adjusted size", () => {
     const stub = bootLoader({ innerWidth: 1400, innerHeight: 1000 });
@@ -333,6 +388,43 @@ describe("loader.js iframe sizing", () => {
     });
     assert.equal(stub.iframe.style.width, "96px");
     assert.equal(stub.iframe.style.height, "96px");
+  });
+
+  it("renders the embed frame transparent without weakening sandbox or margins", () => {
+    const stub = bootLoader({ innerWidth: 1400, innerHeight: 1000 });
+    assert.equal(
+      stub.iframe.style.background,
+      "transparent",
+      "the iframe background must be transparent so the host site shows through",
+    );
+    assert.equal(
+      stub.iframe.attributes["allowtransparency"],
+      "true",
+      "the legacy allowtransparency attribute keeps old browsers transparent",
+    );
+    assert.equal(
+      stub.iframe.attributes["sandbox"],
+      "allow-scripts allow-forms allow-same-origin",
+      "the sandbox must stay exactly as before",
+    );
+    // Sizing margins are unchanged: the frame still starts at 96x96 and still
+    // expands by the 40px breathing room for both authored widths.
+    assert.equal(stub.iframe.style.width, "96px");
+    assert.equal(stub.iframe.style.height, "96px");
+    resize(stub, LOADER_ORIGIN, {
+      type: "cxops-embed:resize",
+      width: 380,
+      height: 540,
+    });
+    assert.equal(stub.iframe.style.width, "420px");
+    assert.equal(stub.iframe.style.height, "580px");
+    resize(stub, LOADER_ORIGIN, {
+      type: "cxops-embed:resize",
+      width: 400,
+      height: 540,
+    });
+    assert.equal(stub.iframe.style.width, "440px");
+    assert.equal(stub.iframe.style.height, "580px");
   });
 
   it("frames the embed from the loader's own origin under a sandbox", () => {

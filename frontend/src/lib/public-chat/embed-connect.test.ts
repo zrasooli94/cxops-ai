@@ -184,7 +184,7 @@ describe("config prefetch before any click", () => {
     assert.notEqual(launcher, -1);
     assert.ok(
       embedSource
-        .slice(launcher, launcher + 320)
+        .slice(launcher, launcher + 500)
         .includes("<LauncherButton\n          theme={theme}"),
       "the pre-click launcher must render with the resolved theme",
     );

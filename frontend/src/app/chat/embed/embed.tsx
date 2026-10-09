@@ -98,6 +98,21 @@ const EMBED_STYLE_RULES = `
 .cxops-chat-input::placeholder {
   color: var(--cxops-chat-placeholder, #64748b);
 }
+/* Visual hotfix (Phase 1P.6): the embed runs in an iframe the loader sizes
+   ~40px larger than the panel so the 20px breathing room and shadow are
+   preserved. Keep that document's html/body/main transparent so the host
+   site stays visible behind the panel; this component is rendered only by
+   /chat/embed, so the rules never reach normal CXOps/control-center pages. */
+html,
+body {
+  background: transparent !important;
+}
+body {
+  min-height: 0;
+}
+main {
+  background: transparent !important;
+}
 @media (prefers-reduced-motion: reduce) {
   .cxops-chat-spinner,
   .cxops-chat-panel { animation: none; }
@@ -617,6 +632,11 @@ export function PublicChatWidget({
     };
   }, [clearPoll]);
 
+  // The authored chrome styles must apply to the /chat/embed document in every
+  // widget state — launcher and closed render a div, not the panel section —
+  // so the transparent-frame rules reach html/body even before a click.
+  const embedStyles = <style>{EMBED_STYLE_RULES}</style>;
+
   if (state === "launcher") {
     return (
       <div
@@ -627,6 +647,7 @@ export function PublicChatWidget({
           zIndex: 9990,
         }}
       >
+        {embedStyles}
         <LauncherButton
           theme={theme}
           onClick={() => void open()}
@@ -646,6 +667,7 @@ export function PublicChatWidget({
           zIndex: 9990,
         }}
       >
+        {embedStyles}
         <LauncherButton
           theme={theme}
           onClick={() => setState("launcher")}
@@ -693,7 +715,7 @@ export function PublicChatWidget({
         } as CSSProperties
       }
     >
-      <style>{EMBED_STYLE_RULES}</style>
+      {embedStyles}
 
       <header
         style={{

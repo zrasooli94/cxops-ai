@@ -31,6 +31,11 @@
   iframe.style.height = "96px";
   iframe.style.border = "none";
   iframe.style.zIndex = "9999";
+  iframe.style.background = "transparent";
+  iframe.setAttribute(
+    "allowtransparency",
+    "true"
+  );
 
   document.body.appendChild(iframe);
 
