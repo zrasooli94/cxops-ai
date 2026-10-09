@@ -989,10 +989,13 @@ async def test_state_returns_bounded_public_history(db, client, org_scope, monke
     assert body["status"] == "human_requested"
     assert "expires_at" in body
     messages = body["messages"]
-    assert len(messages) == 4
+    # m-a was answered while the session was still ai_active (inbound + one
+    # handoff reply); m-b arrived after the handoff, so Phase 1P.6 records it
+    # for the human without running the AI workflow and without an outbound.
+    assert len(messages) == 3
     bodies = [m["body"] for m in messages]
     assert bodies.count("SECRET reviewer-only context.") == 0
-    assert bodies.count(HANDOFF_REPLY) == 2
+    assert bodies.count(HANDOFF_REPLY) == 1
     assert "first question" in bodies
     assert "second question" in bodies
     assert all("secret" not in m["body"].lower() for m in messages)
@@ -1784,3 +1787,344 @@ async def test_grounded_auto_reply_records_audit_event_and_never_approves_run(
         select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
     )
     assert jobs.scalars().all() == []
+
+
+# ----------------------------------------------------------------------
+# Phase 1P.6 — handed-off customers keep the composer (fail-safe, no AI)
+# ----------------------------------------------------------------------
+
+
+async def _establish_handoff(
+    db,
+    client,
+    org: Organization,
+    key: str,
+    monkeypatch,
+    *,
+    status: str,
+) -> str:
+    """Reach ``status`` realistically: a trigger message that hands off, then
+    (for ``human_assigned``) a staff assignment via the session row."""
+    _stub_agent(monkeypatch, _ai_decision(draft="Ignored."))
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "trigger", "text": "I need help with my order."},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "human_requested"
+    assert response.json()["handoff"] is True
+
+    if status == "human_assigned":
+        row = (
+            await db.execute(
+                select(PublicChatSession).where(
+                    PublicChatSession.token_hash == hash_digest(token)
+                )
+            )
+        ).scalar_one()
+        row.status = "human_assigned"
+        await db.commit()
+
+    return token
+
+
+def _guard_analyze_never_runs(monkeypatch):
+    async def _boom(*_args, **_kwargs):
+        raise AssertionError(
+            "AgentWorkflowService.analyze must not run for handed-off messages"
+        )
+
+    monkeypatch.setattr(agent_workflow_service, "analyze", _boom)
+
+
+@pytest.mark.asyncio
+async def test_handed_off_followup_human_requested_is_recorded_without_ai(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    token = await _establish_handoff(
+        db, client, org, key, monkeypatch, status="human_requested"
+    )
+    _guard_analyze_never_runs(monkeypatch)
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "f-1",
+            "text": "Actually, please wait — I found my receipt.",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] is None
+    assert body["handoff"] is True
+    assert body["status"] == "human_requested"
+    assert rag_calls == []
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert sum(1 for m in messages if m.direction == "inbound") == 2
+    outbound = [m for m in messages if m.direction == "outbound"]
+    assert len(outbound) == 1  # only the original handoff reply, never a new one
+    follow_up = [
+        m
+        for m in messages
+        if m.direction == "inbound" and m.body == "Actually, please wait — I found my receipt."
+    ]
+    assert len(follow_up) == 1
+    assert follow_up[0].organization_id == org.id
+
+    runs = (
+        await db.execute(
+            select(AgentRun).where(AgentRun.organization_id == org.id)
+        )
+    ).scalars().all()
+    assert len(runs) == 1, "a handed-off follow-up must not create an AgentRun"
+
+    jobs = await db.execute(
+        select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+    )
+    assert jobs.scalars().all() == []
+
+    session_row = (
+        await db.execute(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
+        )
+    ).scalar_one()
+    assert session_row.status == "human_requested"
+
+
+@pytest.mark.asyncio
+async def test_handed_off_followup_human_assigned_stays_assigned(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    token = await _establish_handoff(
+        db, client, org, key, monkeypatch, status="human_assigned"
+    )
+    _guard_analyze_never_runs(monkeypatch)
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "f-2",
+            "text": "Thanks for picking this up.",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["reply"] is None
+    assert body["handoff"] is False, "human_assigned must never be downgraded"
+    assert body["status"] == "human_assigned"
+    assert rag_calls == []
+
+    runs = (
+        await db.execute(
+            select(AgentRun).where(AgentRun.organization_id == org.id)
+        )
+    ).scalars().all()
+    assert len(runs) == 1
+
+    session_row = (
+        await db.execute(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
+        )
+    ).scalar_one()
+    assert session_row.status == "human_assigned"
+
+
+@pytest.mark.asyncio
+async def test_handed_off_customer_can_send_multiple_messages(
+    db, client, org_scope, monkeypatch
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    token = await _establish_handoff(
+        db, client, org, key, monkeypatch, status="human_requested"
+    )
+    _guard_analyze_never_runs(monkeypatch)
+
+    for index in range(3):
+        response = await client.post(
+            "/public/chat/messages",
+            json={
+                "client_message_id": f"multi-{index}",
+                "text": f"Follow-up number {index}.",
+            },
+            headers=_origin_headers(token=token),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["reply"] is None
+        assert response.json()["status"] == "human_requested"
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert sum(1 for m in messages if m.direction == "inbound") == 4
+    assert sum(1 for m in messages if m.direction == "outbound") == 1
+
+    runs = (
+        await db.execute(
+            select(AgentRun).where(AgentRun.organization_id == org.id)
+        )
+    ).scalars().all()
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize("status", ["human_requested", "human_assigned"])
+@pytest.mark.asyncio
+async def test_handed_off_followup_duplicate_is_idempotent(
+    db, client, org_scope, monkeypatch, status
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    token = await _establish_handoff(
+        db, client, org, key, monkeypatch, status=status
+    )
+    _guard_analyze_never_runs(monkeypatch)
+    rag_calls = _stub_rag(monkeypatch, _rag_result())
+
+    payload = {
+        "client_message_id": "dup-1",
+        "text": "This is a duplicate-able follow-up.",
+    }
+    headers = _origin_headers(token=token)
+
+    first = await client.post("/public/chat/messages", json=payload, headers=headers)
+    second = await client.post("/public/chat/messages", json=payload, headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert first.json()["reply"] is None
+    assert first.json()["message_id"] > 0
+    assert first.json()["status"] == status
+    assert first.json()["handoff"] == (status == "human_requested")
+    assert rag_calls == []
+
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert sum(1 for m in messages if m.direction == "inbound") == 2
+
+
+@pytest.mark.asyncio
+async def test_handed_off_followup_preserves_tenant_isolation(
+    db, client, org_scope, monkeypatch
+):
+    first_org = await org_scope()
+    second_org = await org_scope()
+    _, first_key = await _make_widget_config(db, first_org)
+    _, second_key = await _make_widget_config(db, second_org)
+    await _create_session(client, second_key)  # org B already holds its own chat
+
+    first_token = await _establish_handoff(
+        db,
+        client,
+        first_org,
+        first_key,
+        monkeypatch,
+        status="human_requested",
+    )
+    _guard_analyze_never_runs(monkeypatch)
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "iso-1",
+            "text": "A follow-up that must only land in my tenant.",
+        },
+        headers=_origin_headers(token=first_token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["reply"] is None
+
+    first_conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == first_org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    first_messages = (
+        await ConversationMessageRepository.list_for_conversation_for_tenant(
+            db,
+            conversation_id=first_conversation.id,
+            organization_id=first_org.id,
+        )
+    )
+    follow_ups = [
+        m
+        for m in first_messages
+        if m.direction == "inbound"
+        and m.body == "A follow-up that must only land in my tenant."
+    ]
+    assert len(follow_ups) == 1
+    assert follow_ups[0].organization_id == first_org.id
+
+    second_conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == second_org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    second_messages = (
+        await ConversationMessageRepository.list_for_conversation_for_tenant(
+            db,
+            conversation_id=second_conversation.id,
+            organization_id=second_org.id,
+        )
+    )
+    assert second_messages == []
+
+    second_runs = (
+        await db.execute(
+            select(AgentRun).where(AgentRun.organization_id == second_org.id)
+        )
+    ).scalars().all()
+    assert second_runs == []

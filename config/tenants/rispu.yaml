@@ -66,7 +66,7 @@ public_chat:
     - https://www.rispu.com
   # Opaque token rendered from a closed set of known mappings. Free-form CSS or
   # arbitrary markup is deliberately not supported.
-  theme_token: default
+  theme_token: rispu
   max_message_length: 2000
   max_messages_per_minute: 12
   session_ttl_hours: 24

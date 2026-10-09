@@ -78,7 +78,9 @@ def test_rispu_manifest_loads_as_the_live_pilot() -> None:
     # auto-replies; every other tenant defaults to off.
     assert manifest.public_chat.grounded_auto_reply_enabled is True
     assert manifest.public_chat.allowed_origins == RISPU_ORIGINS
-    assert manifest.public_chat.theme_token == "default"
+    # Phase 1P.6: RISPU runs the authored dark charcoal/gold palette, selected
+    # by the opaque token "rispu" and rendered from a closed frontend allowlist.
+    assert manifest.public_chat.theme_token == "rispu"
     assert manifest.public_chat.max_message_length == 2000
     assert manifest.public_chat.max_messages_per_minute == 12
     assert manifest.public_chat.session_ttl_hours == 24

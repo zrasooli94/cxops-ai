@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 
 import {
   CHAT_SESSION_STORAGE_KEY,
@@ -17,8 +23,12 @@ import type {
   PublicChatConfigResponse,
   PublicChatMessageRead,
 } from "@/lib/public-chat/types";
+import {
+  resolveTheme,
+  type PublicChatTheme,
+} from "@/lib/public-chat/theme";
 
-// Client widget for the public web-chat embed (Phase 1P.1).
+// Client widget for the public web-chat embed (Phase 1P.1, hardened 1P.6).
 //
 // The widget mirrors backend state transitions: launcher -> connecting ->
 // ai_active; ai_active may move to human_requested (handoff) after a message
@@ -26,10 +36,22 @@ import type {
 // (human_assigned) or return it to the queue (back to human_requested); the
 // session ends in error or closed.
 //
+// Phase 1P.6: the first click opens the panel immediately — the connect work
+// starts behind a composing/session request while the panel is already being
+// shown in the connecting state, and the widest expansion message is posted to
+// the parent loader with no config round-trip in front of it. A single-flight
+// ref means the launcher cannot be double-clicked into two sessions. The tenant
+// config is also prefetched (GET-only, best-effort, never session-creating) on
+// mount so a RISPU theme is already resolved before the first click. Once a
+// session is handed off to a human the composer stays enabled: follow-up
+// messages go straight to the human conversation and the backend runs no AI.
+//
 // Security: the embedding origin is derived from document.referrer and sent in
 // X-Embedding-Origin for server-side allow-listing. Every tenant-supplied
 // string (display_name, welcome_message, replies) is rendered as a plain text
-// node — never as HTML.
+// node — never as HTML. The theme is resolved from a closed allowlist: the
+// tenant's opaque theme_token can only ever select one of two authored
+// palettes, so no tenant input becomes CSS or markup.
 
 type WidgetState =
   | "launcher"
@@ -45,8 +67,145 @@ const POLL_INTERVAL_MS = 20_000;
 const WELCOME_FALLBACK =
   "Welcome to CXOps support.";
 
+// Authored animations for the widget's own chrome. Closed constants, never
+// tenant-controlled; the reduced-motion media query disables them.
+const EMBED_STYLE_RULES = `
+@keyframes cxops-chat-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes cxops-chat-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.cxops-chat-spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(128, 128, 128, 0.25);
+  border-top-color: currentColor;
+  animation: cxops-chat-spin 0.8s linear infinite;
+  flex: none;
+}
+.cxops-chat-panel {
+  animation: cxops-chat-panel-in 200ms ease-out;
+}
+.cxops-chat-input::placeholder {
+  color: var(--cxops-chat-placeholder, #64748b);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cxops-chat-spinner,
+  .cxops-chat-panel { animation: none; }
+}
+`;
+
 function clientMessageId(): string {
   return crypto.randomUUID().replaceAll("-", "");
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    );
+    const update = () => setReduced(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return reduced;
+}
+
+function LauncherButton({
+  theme,
+  onClick,
+  ariaLabel,
+}: {
+  theme: PublicChatTheme;
+  onClick: () => void;
+  ariaLabel: string;
+}) {
+  const reducedMotion = usePrefersReducedMotion();
+  const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
+
+  const transform = reducedMotion
+    ? undefined
+    : pressed
+      ? "scale(0.94)"
+      : hovered
+        ? "scale(1.06)"
+        : undefined;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={ariaLabel}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setPressed(false);
+      }}
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      style={{
+        width: "56px",
+        height: "56px",
+        borderRadius: "50%",
+        border:
+          theme.launcher.borderWidth > 0
+            ? `${theme.launcher.borderWidth}px solid ${theme.launcher.border}`
+            : "none",
+        background: theme.launcher.background,
+        color: theme.launcher.foreground,
+        cursor: "pointer",
+        boxShadow: "0 6px 16px rgba(0, 0, 0, 0.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        transform,
+        transition: reducedMotion
+          ? "none"
+          : "transform 180ms ease, opacity 180ms ease",
+        opacity: pressed ? 0.85 : 1,
+      }}
+    >
+      {theme.launcher.glyph === "svg" ? (
+        <svg
+          width="26"
+          height="26"
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M4 5.5h16a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H11l-4.25 3.2a.6.6 0 0 1-.95-.48V17.6H4A1.5 1.5 0 0 1 2.5 16V7A1.5 1.5 0 0 1 4 5.5Z"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinejoin="round"
+          />
+          <circle cx="8" cy="11" r="1" fill="currentColor" />
+          <circle cx="12" cy="11" r="1" fill="currentColor" />
+          <circle cx="16" cy="11" r="1" fill="currentColor" />
+        </svg>
+      ) : (
+        <span
+          aria-hidden="true"
+          style={{ fontSize: "24px", lineHeight: 1 }}
+        >
+          💬
+        </span>
+      )}
+    </button>
+  );
 }
 
 export function PublicChatWidget({
@@ -66,6 +225,8 @@ export function PublicChatWidget({
   const [sending, setSending] = useState(false);
   const [errorMessage, setErrorMessage] =
     useState<string | null>(null);
+  const [composerFocused, setComposerFocused] =
+    useState(false);
 
   const embeddingOriginRef =
     useRef<string | null>(null);
@@ -73,6 +234,15 @@ export function PublicChatWidget({
     useRef<string | null>(null);
   const pollRef =
     useRef<ReturnType<typeof setInterval> | null>(null);
+  const connectInflightRef =
+    useRef(false);
+
+  const theme = resolveTheme(config?.theme_token);
+
+  const composerEnabled =
+    state === "ai_active" ||
+    state === "human_requested" ||
+    state === "human_assigned";
 
   const clearPoll = useCallback(() => {
     if (pollRef.current !== null) {
@@ -128,41 +298,91 @@ export function PublicChatWidget({
     }
   }, []);
 
-  const connect = useCallback(async () => {
+  const readStoredSession = useCallback((): string | null => {
+    try {
+      return window.sessionStorage.getItem(
+        CHAT_SESSION_STORAGE_KEY,
+      );
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Bounded, best-effort public-config prefetch started when the widget
+  // mounts, so a tenant theme (e.g. RISPU) is resolved before the customer
+  // ever clicks the launcher. It only ever GETs public config — it never
+  // creates a session — and the shared promise dedupes concurrent callers so
+  // open() does not issue a second GET while the prefetch is in flight.
+  const configPrefetchRef =
+    useRef<Promise<PublicChatConfigResponse> | null>(null);
+
+  const getPublicConfig = useCallback(
+    (): Promise<PublicChatConfigResponse> => {
+      if (configPrefetchRef.current === null) {
+        configPrefetchRef.current =
+          fetchPublicChatConfig(widgetKey).finally(() => {
+            configPrefetchRef.current = null;
+          });
+      }
+      return configPrefetchRef.current;
+    },
+    [widgetKey],
+  );
+
+  // The whole connect flow lives behind one button, so the panel opens in the
+  // connecting state synchronously on the first click. A single-flight ref
+  // makes rapid double-clicks collapse into the same work instead of creating
+  // two server sessions. open() never awaits a config request before
+  // expanding the panel: a session is still only created after the click.
+  const open = useCallback(async () => {
+    if (connectInflightRef.current) {
+      return;
+    }
+    connectInflightRef.current = true;
     setErrorMessage(null);
     setState("connecting");
 
-    let token = sessionTokenRef.current;
-    let loadedState: WidgetState | null = null;
+    try {
+      let token = sessionTokenRef.current;
+      let resumed: WidgetState | null = null;
 
-    const storedToken = (() => {
-      try {
-        return window.sessionStorage.getItem(
-          CHAT_SESSION_STORAGE_KEY,
-        );
-      } catch {
-        return null;
+      const storedToken =
+        !token ? readStoredSession() : null;
+
+      if (!token && storedToken) {
+        // Resume: load the session state and the tenant config at the same
+        // time; neither waits on the other. When the mount prefetch has
+        // already resolved, reuse that authored config instead of issuing a
+        // second public-config GET.
+        const statePromise = loadState(storedToken);
+        const configPromise = config
+          ? Promise.resolve(config)
+          : getPublicConfig();
+        const [stateResult, configResult] =
+          await Promise.allSettled([
+            statePromise,
+            configPromise,
+          ]);
+        if (stateResult.status === "fulfilled") {
+          token = storedToken;
+          resumed = stateResult.value;
+        } else {
+          discardSession();
+        }
+        if (configResult.status === "fulfilled") {
+          setConfig(configResult.value);
+        }
       }
-    })();
 
-    if (!token && storedToken) {
-      try {
-        loadedState =
-          await loadState(storedToken);
-        token = storedToken;
-      } catch {
-        discardSession();
-      }
-    }
-
-    if (!token) {
-      try {
+      if (!token) {
+        // Fresh session. createPublicChatSession returns the config, so there
+        // is no separate, redundant config request to open the panel.
         const created =
           await createPublicChatSession(
             widgetKey,
             embeddingOriginRef.current,
           );
-        setConfig((previous) => previous ?? created.config);
+        setConfig(created.config);
         token = created.session.token;
         persistSession(token);
         const welcome: PublicChatMessageRead = {
@@ -174,50 +394,31 @@ export function PublicChatWidget({
           sent_at: null,
         };
         setMessages([welcome]);
-      } catch (error) {
-        setErrorMessage(
-          error instanceof PublicChatApiError
-            ? error.message
-            : "Unable to reach the support channel.",
-        );
-        setState("error");
-        return;
       }
-    }
 
-    if (token) {
-      setSessionToken(token);
-      if (loadedState !== null) {
-        setState(loadedState);
-      } else {
-        setState("ai_active");
+      if (token) {
+        setSessionToken(token);
+        setState(resumed ?? "ai_active");
       }
+    } catch (error) {
+      setErrorMessage(
+        error instanceof PublicChatApiError
+          ? error.message
+          : "Unable to reach the support channel.",
+      );
+      setState("error");
+    } finally {
+      connectInflightRef.current = false;
     }
   }, [
+    config,
     discardSession,
+    getPublicConfig,
     loadState,
     persistSession,
+    readStoredSession,
     widgetKey,
   ]);
-
-  const open = useCallback(async () => {
-    if (!config) {
-      try {
-        const resolved =
-          await fetchPublicChatConfig(widgetKey);
-        setConfig(resolved);
-      } catch (error) {
-        setErrorMessage(
-          error instanceof PublicChatApiError
-            ? error.message
-            : "Unable to reach the support channel.",
-        );
-        setState("error");
-        return;
-      }
-    }
-    await connect();
-  }, [config, connect, widgetKey]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -259,10 +460,13 @@ export function PublicChatWidget({
             },
           ]);
         }
-        if (result.handoff) {
-          setState("human_requested");
-        } else if (result.status === "human_assigned") {
+        if (result.status === "human_assigned") {
           setState("human_assigned");
+        } else if (
+          result.handoff ||
+          result.status === "human_requested"
+        ) {
+          setState("human_requested");
         } else {
           setState("ai_active");
         }
@@ -339,6 +543,26 @@ export function PublicChatWidget({
   }, []);
 
   useEffect(() => {
+    // Best-effort theme prefetch, bounded to a single GET via getPublicConfig.
+    // It never creates a session and never gates the launcher: on failure the
+    // widget keeps the default theme, and open() can still create a session
+    // normally and receive authoritative config from the response.
+    let cancelled = false;
+    getPublicConfig()
+      .then((resolved) => {
+        if (!cancelled) {
+          setConfig((previous) => previous ?? resolved);
+        }
+      })
+      .catch(() => {
+        // The prefetch is an optimization, not a gate.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [getPublicConfig]);
+
+  useEffect(() => {
     sessionTokenRef.current = sessionToken;
   }, [sessionToken]);
 
@@ -372,8 +596,10 @@ export function PublicChatWidget({
     // this iframe's own viewport: inside the iframe, window.inner* reports the
     // iframe's viewport (the loader creates it at 96x96), so deriving the
     // panel size from it produces a tiny panel on open. The parent loader
-    // clamps against the real page viewport instead.
-    const width = isPanel ? 380 : 56;
+    // clamps against the real page viewport instead. The logical width comes
+    // from the authored theme (380 default / 400 rispu), never a shared
+    // constant, so default tenants keep their original dimensions.
+    const width = isPanel ? theme.panel.width : 56;
     const height = isPanel ? 540 : 56;
     window.parent.postMessage(
       {
@@ -383,7 +609,7 @@ export function PublicChatWidget({
       },
       "*",
     );
-  }, [state]);
+  }, [state, theme]);
 
   useEffect(() => {
     return () => {
@@ -401,25 +627,11 @@ export function PublicChatWidget({
           zIndex: 9990,
         }}
       >
-        <button
-          type="button"
-          onClick={open}
-          aria-label="Open support chat"
-          style={{
-            width: "56px",
-            height: "56px",
-            borderRadius: "50%",
-            border: "none",
-            background: "#0f766e",
-            color: "#ffffff",
-            fontSize: "24px",
-            cursor: "pointer",
-            boxShadow:
-              "0 4px 12px rgba(0, 0, 0, 0.25)",
-          }}
-        >
-          <span aria-hidden="true">💬</span>
-        </button>
+        <LauncherButton
+          theme={theme}
+          onClick={() => void open()}
+          ariaLabel="Open support chat"
+        />
       </div>
     );
   }
@@ -434,25 +646,11 @@ export function PublicChatWidget({
           zIndex: 9990,
         }}
       >
-        <button
-          type="button"
+        <LauncherButton
+          theme={theme}
           onClick={() => setState("launcher")}
-          aria-label="Reopen support chat"
-          style={{
-            width: "56px",
-            height: "56px",
-            borderRadius: "50%",
-            border: "none",
-            background: "#0f766e",
-            color: "#ffffff",
-            fontSize: "24px",
-            cursor: "pointer",
-            boxShadow:
-              "0 4px 12px rgba(0, 0, 0, 0.25)",
-          }}
-        >
-          <span aria-hidden="true">💬</span>
-        </button>
+          ariaLabel="Reopen support chat"
+        />
       </div>
     );
   }
@@ -469,45 +667,71 @@ export function PublicChatWidget({
       role="dialog"
       aria-modal="true"
       aria-labelledby="cxops-chat-title"
-      style={{
-        position: "fixed",
-        right: "20px",
-        bottom: "20px",
-        zIndex: 9990,
-        width: "min(380px, calc(100vw - 24px))",
-        height: "min(540px, calc(100vh - 24px))",
-        display: "flex",
-        flexDirection: "column",
-        borderRadius: "12px",
-        border: "1px solid #e2e8f0",
-        background: "#ffffff",
-        boxShadow:
-          "0 8px 24px rgba(0, 0, 0, 0.2)",
-        overflow: "hidden",
-        fontFamily:
-          "var(--font-geist-sans, system-ui, sans-serif)",
-      }}
+      className="cxops-chat-panel"
+      style={
+        {
+          position: "fixed",
+          right: "20px",
+          bottom: "20px",
+          zIndex: 9990,
+          width: `min(${theme.panel.width}px, calc(100vw - 24px))`,
+          height: "min(540px, calc(100vh - 24px))",
+          display: "flex",
+          flexDirection: "column",
+          borderRadius: `${theme.panel.radius}px`,
+          border: `1px solid ${theme.panel.border}`,
+          background: theme.panel.background,
+          boxShadow: theme.panel.shadow,
+          overflow: "hidden",
+          fontFamily:
+            "var(--font-geist-sans, system-ui, sans-serif)",
+          // Author-only CSS variable: the closed palette supplies the
+          // composer placeholder color; the ::placeholder rule lives in
+          // EMBED_STYLE_RULES. Tenants can never inject CSS here.
+          "--cxops-chat-placeholder":
+            theme.composer.placeholder,
+        } as CSSProperties
+      }
     >
+      <style>{EMBED_STYLE_RULES}</style>
+
       <header
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          gap: "12px",
           padding: "12px 16px",
-          background: "#0f766e",
-          color: "#ffffff",
+          background: theme.header.background,
+          color: theme.header.foreground,
         }}
       >
-        <h2
-          id="cxops-chat-title"
-          style={{
-            margin: 0,
-            fontSize: "15px",
-            fontWeight: 600,
-          }}
-        >
-          {panelTitle}
-        </h2>
+        <div style={{ minWidth: 0 }}>
+          <h2
+            id="cxops-chat-title"
+            style={{
+              margin: 0,
+              fontSize: "15px",
+              fontWeight: 600,
+            }}
+          >
+            {panelTitle}
+          </h2>
+          {theme.header.subtitle && (
+            <p
+              style={{
+                margin: "2px 0 0",
+                fontSize: "12px",
+                color: theme.header.subtitleForeground,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {theme.header.subtitle}
+            </p>
+          )}
+        </div>
         <button
           type="button"
           onClick={closeChat}
@@ -515,15 +739,45 @@ export function PublicChatWidget({
           style={{
             border: "none",
             background: "transparent",
-            color: "#ffffff",
+            color: theme.header.foreground,
             fontSize: "20px",
             cursor: "pointer",
             lineHeight: 1,
+            flex: "none",
           }}
         >
           <span aria-hidden="true">✕</span>
         </button>
       </header>
+
+      {(state === "human_requested" ||
+        state === "human_assigned") && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            padding: "8px 16px 0",
+          }}
+        >
+          <p
+            role="status"
+            style={{
+              margin: 0,
+              padding: "4px 12px",
+              borderRadius: "999px",
+              background: theme.statusChip.background,
+              color: theme.statusChip.foreground,
+              border: `1px solid ${theme.statusChip.border}`,
+              fontSize: "12px",
+              fontWeight: 500,
+            }}
+          >
+            {state === "human_assigned"
+              ? "An agent is reviewing this conversation"
+              : "Sent for human review"}
+          </p>
+        </div>
+      )}
 
       <ul
         role="log"
@@ -537,9 +791,31 @@ export function PublicChatWidget({
           listStyle: "none",
           display: "flex",
           flexDirection: "column",
+          justifyContent: state === "connecting"
+            ? "center"
+            : undefined,
           gap: "8px",
         }}
       >
+        {state === "connecting" && messages.length === 0 && (
+          <li
+            role="status"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "10px",
+              color: theme.text.secondary,
+              fontSize: "13px",
+            }}
+          >
+            <span
+              className="cxops-chat-spinner"
+              aria-hidden="true"
+            />
+            Connecting to support…
+          </li>
+        )}
         {messages.map((message, index) => {
           const isInbound =
             message.direction === "inbound";
@@ -552,13 +828,16 @@ export function PublicChatWidget({
                   : "flex-end",
                 maxWidth: "85%",
                 padding: "8px 12px",
-                borderRadius: "12px",
+                borderRadius: `${theme.bubble.radius}px`,
                 background: isInbound
-                  ? "#f1f5f9"
-                  : "#0f766e",
+                  ? theme.bubble.inboundBackground
+                  : theme.bubble.outboundBackground,
                 color: isInbound
-                  ? "#0f172a"
-                  : "#ffffff",
+                  ? theme.bubble.inboundForeground
+                  : theme.bubble.outboundForeground,
+                border: isInbound
+                  ? "none"
+                  : `1px solid ${theme.bubble.outboundBorder}`,
                 fontSize: "14px",
                 lineHeight: 1.4,
                 whiteSpace: "pre-wrap",
@@ -573,7 +852,7 @@ export function PublicChatWidget({
           <li
             style={{
               alignSelf: "flex-start",
-              color: "#64748b",
+              color: theme.text.secondary,
               fontSize: "13px",
               fontStyle: "italic",
             }}
@@ -583,49 +862,38 @@ export function PublicChatWidget({
         )}
       </ul>
 
-      {state === "human_requested" && (
-        <p
-          style={{
-            margin: 0,
-            padding: "8px 16px",
-            background: "#fef3c7",
-            color: "#78350f",
-            fontSize: "13px",
-          }}
-        >
-          A support team member will review your request.
-          Closing this window does not cancel it.
-        </p>
-      )}
-
-      {state === "human_assigned" && (
-        <p
-          style={{
-            margin: 0,
-            padding: "8px 16px",
-            background: "#eff6ff",
-            color: "#1e40af",
-            fontSize: "13px",
-          }}
-        >
-          A support team member has joined this
-          conversation and will respond here shortly.
-        </p>
-      )}
-
       {errorMessage && (
-        <p
-          role="alert"
+        <div
           style={{
-            margin: 0,
             padding: "8px 16px",
             background: "#fee2e2",
             color: "#7f1d1d",
             fontSize: "13px",
           }}
         >
-          {errorMessage}
-        </p>
+          <p role="alert" style={{ margin: 0 }}>
+            {errorMessage}
+          </p>
+          {state === "error" && (
+            <button
+              type="button"
+              onClick={() => void open()}
+              style={{
+                marginTop: "8px",
+                padding: "6px 12px",
+                borderRadius: "8px",
+                border: "1px solid #fca5a5",
+                background: "#ffffff",
+                color: "#7f1d1d",
+                fontSize: "13px",
+                cursor: "pointer",
+                fontWeight: 600,
+              }}
+            >
+              Try again
+            </button>
+          )}
+        </div>
       )}
 
       <footer
@@ -634,8 +902,8 @@ export function PublicChatWidget({
           flexDirection: "column",
           gap: "8px",
           padding: "12px 16px",
-          borderTop: "1px solid #e2e8f0",
-          background: "#f8fafc",
+          borderTop: `1px solid ${theme.panel.border}`,
+          background: theme.composer.background,
         }}
       >
         <div
@@ -658,38 +926,53 @@ export function PublicChatWidget({
           </label>
           <input
             id="cxops-chat-input"
+            className="cxops-chat-input"
             type="text"
             value={input}
             onChange={(event) =>
               setInput(event.target.value)
             }
+            onFocus={() => setComposerFocused(true)}
+            onBlur={() => setComposerFocused(false)}
             onKeyDown={(event) => {
               if (
                 event.key === "Enter" &&
                 !event.shiftKey
               ) {
                 event.preventDefault();
-                void sendMessage(input);
+                if (composerEnabled) {
+                  void sendMessage(input);
+                }
               }
             }}
             maxLength={config?.max_message_length ?? 4000}
-            disabled={state !== "ai_active" || sending}
+            disabled={!composerEnabled || sending}
             placeholder="Type your message…"
             autoComplete="off"
             style={{
               flex: 1,
               padding: "8px 12px",
               borderRadius: "8px",
-              border: "1px solid #cbd5e1",
+              border: `1px solid ${
+                composerFocused
+                  ? theme.composer.focusBorder
+                  : theme.composer.border
+              }`,
+              background: "transparent",
+              color: theme.composer.foreground,
               fontSize: "14px",
               minWidth: 0,
+              outline: "none",
+              boxShadow: composerFocused
+                ? `0 0 0 3px ${theme.composer.focusBorder}22`
+                : undefined,
             }}
           />
           <button
             type="button"
             onClick={() => void sendMessage(input)}
             disabled={
-              state !== "ai_active" ||
+              !composerEnabled ||
               sending ||
               !input.trim()
             }
@@ -698,8 +981,8 @@ export function PublicChatWidget({
               padding: "8px 14px",
               borderRadius: "8px",
               border: "none",
-              background: "#0f766e",
-              color: "#ffffff",
+              background: theme.composer.sendBackground,
+              color: theme.composer.sendForeground,
               fontSize: "14px",
               cursor: "pointer",
               fontWeight: 600,
@@ -717,9 +1000,9 @@ export function PublicChatWidget({
             style={{
               padding: "8px 12px",
               borderRadius: "8px",
-              border: "1px solid #cbd5e1",
-              background: "#ffffff",
-              color: "#0f172a",
+              border: `1px solid ${theme.composer.border}`,
+              background: "transparent",
+              color: theme.text.primary,
               fontSize: "13px",
               cursor: "pointer",
             }}
