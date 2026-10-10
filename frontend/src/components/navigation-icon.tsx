@@ -9,6 +9,7 @@ import {
   Gauge,
   Inbox,
   Layers,
+  MessagesSquare,
   Route,
   ShieldCheck,
   SlidersHorizontal,
@@ -35,6 +36,7 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   car: Car,
   "sliders-horizontal": SlidersHorizontal,
   flask: FlaskConical,
+  "messages-square": MessagesSquare,
 };
 
 export default function NavigationIcon({

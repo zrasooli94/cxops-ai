@@ -6,6 +6,7 @@ import {
   fetchHandoffBusinessActions,
   fetchHandoffSessions,
   releaseHandoffSession,
+  resolveHandoffSession,
 } from "./staff.ts";
 import { PublicChatApiError } from "./client.ts";
 import type {
@@ -134,6 +135,44 @@ describe("releaseHandoffSession", () => {
     assert.equal(calls[0]?.init?.method, "POST");
     assert.equal(result.status, "human_requested");
     assert.equal(result.assigned_to_subject, null);
+  });
+});
+
+describe("resolveHandoffSession", () => {
+  it("posts to the resolve endpoint and returns the closed session", async () => {
+    const calls: Array<{
+      url: RequestInfo | URL;
+      init: RequestInit | undefined;
+    }> = [];
+    const fetcher = recordingFetcher(
+      calls,
+      jsonResponse({ ...SESSION, status: "closed" }),
+    );
+
+    const result = await resolveHandoffSession(12, fetcher);
+
+    assert.equal(
+      String(calls[0]?.url),
+      "/api/backend/staff/public-chat/sessions/12/resolve",
+    );
+    assert.equal(calls[0]?.init?.method, "POST");
+    assert.equal(result.status, "closed");
+  });
+
+  it("throws PublicChatApiError with the detail on 404", async () => {
+    const fetcher = recordingFetcher(
+      [],
+      jsonResponse({ detail: "Session not found." }, 404),
+    );
+
+    await assert.rejects(
+      resolveHandoffSession(12, fetcher),
+      (error) => {
+        assert.ok(error instanceof PublicChatApiError);
+        assert.equal(error.status, 404);
+        return true;
+      },
+    );
   });
 });
 

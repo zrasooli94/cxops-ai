@@ -8,7 +8,9 @@ the session is always resolved by id + the tenant derived from the principal.
 Phase 1P.7 adds the read-only live-pilot summary endpoint on the same
 capability boundary (TICKET_READ). Like the rest of the surface it derives the
 tenant solely from the authenticated principal, and its response carries no
-customer message text, tokens, widget keys, or PII.
+customer message text, tokens, widget keys, or PII. The staff resolve endpoint
+(TICKET_WRITE) closes a live session, solving the linked ticket and closing the
+linked conversation in a single transaction.
 """
 
 from datetime import UTC, datetime
@@ -162,6 +164,38 @@ async def release_session(
     """Return an assigned session to the handoff queue."""
     try:
         result = await PublicChatStaffService.release(
+            db,
+            session_id=session_id,
+            organization_id=tenant.organization_id,
+        )
+    except (
+        PublicChatStaffSessionNotFoundError,
+        PublicChatStaffAssignmentError,
+    ) as exc:
+        _staff_error(exc)
+    return StaffHandoffSessionSummary(**result)
+
+
+@router.post(
+    "/sessions/{session_id}/resolve",
+    response_model=StaffHandoffSessionSummary,
+)
+async def resolve_session(
+    session_id: int,
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _authz: HandoffWriteAuthz,
+):
+    """Close a live handoff session, solving its ticket and conversation.
+
+    Resolving an already-closed session is an idempotent reconciliation: it
+    repairs a drifted linked ticket/conversation and a missing SLA milestone,
+    then returns the stable closed summary. Nothing is deleted: messages, the
+    ticket, the conversation, agent runs, audit trail, and RAG logs are all
+    preserved.
+    """
+    try:
+        result = await PublicChatStaffService.resolve(
             db,
             session_id=session_id,
             organization_id=tenant.organization_id,

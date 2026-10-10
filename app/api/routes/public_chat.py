@@ -25,7 +25,6 @@ from app.core.metrics import (
     record_public_chat_message,
     record_public_chat_rejection,
     record_public_chat_session,
-    record_public_chat_session_closed,
 )
 from app.schemas.public_chat import (
     PublicChatCloseResponse,
@@ -326,7 +325,10 @@ async def close_public_chat_session(
     session_token: Payload,
 ):
     try:
-        session = await public_chat_service.verify_session(db, session_token)
+        session = await public_chat_service.verify_session_for_close(
+            db,
+            session_token,
+        )
         result = await public_chat_service.close_session(db, session)
     except (
         PublicChatSessionNotFoundError,
@@ -335,12 +337,8 @@ async def close_public_chat_session(
     ) as exc:
         PublicChatRouteErrors.raise_checked(exc)
 
-    record_public_chat_session_closed(closed_by="customer")
-    log.info(
-        "public_chat_session_closed",
-        organization_id=session.organization_id,
-        session_id=session.id,
-        closed_by="customer",
-    )
-
+    # The close metric and log are emitted by the shared resolution lifecycle
+    # only when this request actually transitions the session to closed, so a
+    # retried "End conversation" on an already-closed session converges without
+    # double-counting the audit signal.
     return PublicChatCloseResponse(**result)

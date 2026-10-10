@@ -1,10 +1,12 @@
-"""Staff-facing public-chat handoff orchestration (Phase 1P.2).
+"""Staff-facing public-chat handoff orchestration (Phase 1P.2/1P.7).
 
 The widget routes stay auth-free; these staff operations live on authenticated,
 tenant-scoped endpoints guarded by ``RequireCapability``. Assignment moves a
 ``human_requested`` session to ``human_assigned`` (recording the principal
-subject), release returns it to the queue. Every lookup is scoped by the
-tenant resolved from the authenticated principal — never from a client id.
+subject), release returns it to the queue, resolve closes a live session and
+its linked ticket + conversation in one atomic transition. Every lookup is
+scoped by the tenant resolved from the authenticated principal — never from a
+client id.
 """
 
 from __future__ import annotations
@@ -14,12 +16,21 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.core.metrics import record_public_chat_handoff
+from app.core.metrics import (
+    record_public_chat_handoff,
+)
 from app.models.public_chat import PublicChatSession
 from app.repositories.business_action_repository import BusinessActionRepository
 from app.repositories.public_chat_repository import PublicChatRepository
+from app.services.public_chat_resolution import PublicChatResolutionService
 
 log = get_logger(__name__)
+
+RESOLVABLE_STATUSES: tuple[str, ...] = (
+    "ai_active",
+    "human_requested",
+    "human_assigned",
+)
 
 
 class PublicChatStaffError(Exception):
@@ -172,6 +183,50 @@ class PublicChatStaffService:
         )
         record_public_chat_handoff(outcome="released")
         return cls._session_summary(released)
+
+    @classmethod
+    async def resolve(
+        cls,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        organization_id: int,
+    ) -> dict:
+        """Close a handoff session and its linked ticket + conversation.
+
+        The transition is the shared public-chat resolution lifecycle: the
+        session moves to ``closed`` (``closed_at`` recorded), the ticket to
+        ``solved``, and the conversation to ``closed`` in one atomic,
+        tenant-scoped transaction, then the SLA layer re-records the resolution
+        milestone. The assignment trail (``assigned_to_subject``/``assigned_at``)
+        is preserved for audit. The close metric and log are emitted only when
+        this request actually performs the transition.
+
+        Resolving an already-closed session is an idempotent reconciliation
+        (not an unconditional no-op): it repairs legacy/reopened drift in the
+        linked ticket/conversation and a missing SLA milestone if a previous
+        attempt failed, so a retried resolve converges and never double-fires
+        side effects.
+        """
+        session = await PublicChatRepository.get_session_by_id_for_tenant(
+            db,
+            session_id,
+            organization_id,
+        )
+        if session is None:
+            raise PublicChatStaffSessionNotFoundError("Session not found.")
+        if session.status != "closed" and session.status not in RESOLVABLE_STATUSES:
+            raise PublicChatStaffAssignmentError(
+                "Only an active session can be resolved."
+            )
+        result = await PublicChatResolutionService.close_lifecycle(
+            db,
+            session=session,
+            organization_id=organization_id,
+            when=datetime.now(UTC),
+            closed_by="staff",
+        )
+        return cls._session_summary(result.session)
 
     @staticmethod
     async def list_business_actions(

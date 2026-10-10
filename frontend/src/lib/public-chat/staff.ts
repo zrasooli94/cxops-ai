@@ -14,7 +14,7 @@ import {
 // Reached exclusively through the authenticated control-center proxy at
 // /api/backend/... which forwards the nhost session and active-organization
 // selection. These endpoints are capability-gated on the backend
-// (TICKET_READ for listing, TICKET_WRITE for assign/release), so no
+// (TICKET_READ for listing, TICKET_WRITE for assign/release/resolve), so no
 // authorization header is sent here.
 
 async function parseStaffJson<T>(
@@ -71,6 +71,17 @@ export async function releaseHandoffSession(
 ): Promise<StaffHandoffSession> {
   const response = await fetcher(
     `/api/backend/staff/public-chat/sessions/${sessionId}/release`,
+    { method: "POST", cache: "no-store" },
+  );
+  return parseStaffJson<StaffHandoffSession>(response);
+}
+
+export async function resolveHandoffSession(
+  sessionId: number,
+  fetcher: typeof fetch = fetch,
+): Promise<StaffHandoffSession> {
+  const response = await fetcher(
+    `/api/backend/staff/public-chat/sessions/${sessionId}/resolve`,
     { method: "POST", cache: "no-store" },
   );
   return parseStaffJson<StaffHandoffSession>(response);

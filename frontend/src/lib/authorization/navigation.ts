@@ -26,7 +26,8 @@ export type NavigationIconName =
   | "route"
   | "car"
   | "sliders-horizontal"
-  | "flask";
+  | "flask"
+  | "messages-square";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -35,6 +36,7 @@ export type ControlCenterRoute =
   | "/tickets"
   | "/tickets/new"
   | "/inbox"
+  | "/public-chat"
   | "/agent"
   | "/approvals"
   | "/knowledge"
@@ -62,6 +64,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/tickets": CAPABILITIES.TICKET_READ,
   "/tickets/new": CAPABILITIES.TICKET_WRITE,
   "/inbox": CAPABILITIES.TICKET_READ,
+  "/public-chat": CAPABILITIES.TICKET_READ,
   "/agent": CAPABILITIES.AGENT_RUN,
   "/approvals": CAPABILITIES.AGENT_RUN,
   "/knowledge": CAPABILITIES.KNOWLEDGE_READ,
@@ -170,6 +173,13 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Unified conversation inbox",
     icon: "inbox",
     requiredCapability: ROUTE_REQUIREMENTS["/inbox"],
+  },
+  {
+    href: "/public-chat",
+    label: "Public Chat",
+    description: "Live web-chat pilot operations",
+    icon: "messages-square",
+    requiredCapability: ROUTE_REQUIREMENTS["/public-chat"],
   },
   {
     href: "/agent",

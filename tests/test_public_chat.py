@@ -44,6 +44,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from prometheus_client import generate_latest
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -55,8 +56,10 @@ os.environ["AUTH_JWT_AUDIENCE"] = "test-public-chat-audience"
 os.environ["AUTH_DEV_MODE"] = "False"
 os.environ["ENVIRONMENT"] = "development"
 
+import app.services.public_chat_resolution as public_chat_resolution_module
 from app.core.config import reset_settings_cache, settings
 from app.core.database import AsyncSessionLocal
+from app.core.metrics import PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL
 from app.main import app
 from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
@@ -90,6 +93,7 @@ from app.services.public_chat_service import (
     public_chat_service,
 )
 from app.services.rag_service import rag_service
+from app.services.ticket_sla_service import TicketSLAService
 
 ALLOWED_ORIGIN = "https://widget.example.test"
 X_ORIGIN = "X-Embedding-Origin"
@@ -286,6 +290,55 @@ async def _create_session(client, key: str, *, origin: str | None = ALLOWED_ORIG
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _closed_total_for(closed_by: str) -> int:
+    """Current value of the close counter for one bounded actor label."""
+    total = 0.0
+    prefix = f'cxops_public_chat_sessions_closed_total{{closed_by="{closed_by}"}}'
+    text = generate_latest(PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL).decode()
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            total += float(line.rsplit(" ", 1)[-1])
+    return int(total)
+
+
+async def _widget_close(client, token: str):
+    return await client.post(
+        "/public/chat/sessions/close",
+        headers=_origin_headers(token=token),
+    )
+
+
+class _RecordingLogger:
+    """Captures structured log events for once-per-transition assertions.
+
+    The shared resolution service emits through a structlog bound logger that
+    writes to stderr via PrintLoggerFactory, so stdlib log capture cannot see it
+    and ``sys.stderr`` is bound at import time (``capsys`` cannot reach it).
+    Swapping the module-level ``log`` attribute for this recorder is the same
+    seam the emission code uses and the lightest practical capture.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def info(self, event: str, **kwargs) -> None:
+        self.events.append((event, kwargs))
+
+
+async def _widget_close_or_raise(client, token: str):
+    """POST close, tolerating a debug-mode re-raise from the ASGI app.
+
+    In development the app runs with ``debug=True``, so an unhandled exception
+    inside a route propagates out of Starlette and is re-raised by the test
+    client instead of serializing as a 500. ``None`` means the request did not
+    produce an HTTP response (the server raised).
+    """
+    try:
+        return await _widget_close(client, token)
+    except Exception:  # noqa: BLE001 -- ASGI debug re-raise boundary
+        return None
 
 
 def _ai_decision(
@@ -1047,8 +1100,316 @@ async def test_request_human_is_idempotent_and_close_terminates(db, client, org_
     human_after_close = await client.post("/public/chat/sessions/human", headers=headers)
     assert human_after_close.status_code == 409
 
-    close_again = await client.post("/public/chat/sessions/close", headers=headers)
-    assert close_again.status_code == 409
+    # A retried "End conversation" resolves the already-closed session
+    # idempotently instead of surfacing as a conflict: the close endpoint is
+    # the one surface allowed to verify a closed session by its bearer token,
+    # and it emits no second close metric or log.
+    close_again = await _widget_close(client, token)
+    assert close_again.status_code == 200, close_again.text
+    assert close_again.json()["status"] == "closed"
+
+
+# ----------------------------------------------------------------------
+# Close lifecycle shared with staff Resolve (Phase 1P.7.1)
+# ----------------------------------------------------------------------
+
+
+async def _widget_session_rows(
+    db,
+    token: str,
+) -> tuple[PublicChatSession, Ticket, Conversation]:
+    session_row = (
+        await db.execute(
+            select(PublicChatSession)
+            .where(PublicChatSession.token_hash == hash_digest(token))
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    ticket = (
+        await db.execute(
+            select(Ticket)
+            .where(Ticket.id == session_row.ticket_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    conversation = (
+        await db.execute(
+            select(Conversation)
+            .where(Conversation.id == session_row.conversation_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    return session_row, ticket, conversation
+
+
+@pytest.mark.asyncio
+async def test_close_closes_session_ticket_and_conversation_and_records_resolved_at(
+    db,
+    client,
+    org_scope,
+    monkeypatch,
+):
+    """Customer End runs the same lifecycle as staff Resolve: session closed +
+    closed_at, ticket solved + resolved_at, conversation closed, history kept."""
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    _stub_agent(monkeypatch, _ai_decision(draft="ok"))
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+    headers = _origin_headers(token=token)
+
+    sent = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "m-close-1", "text": "I need help."},
+        headers=headers,
+    )
+    assert sent.status_code == 200, sent.text
+
+    close = await _widget_close(client, token)
+    assert close.status_code == 200, close.text
+    assert close.json()["status"] == "closed"
+
+    session_row, ticket, conversation = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    assert session_row.closed_at is not None
+    assert ticket.status == "solved"
+    assert ticket.resolved_at is not None
+    assert conversation.status == "closed"
+
+    # History is preserved: the customer message and the reply both survive.
+    bodies = [
+        message.body
+        for message in (
+            await db.execute(
+                select(ConversationMessage).where(
+                    ConversationMessage.conversation_id == conversation.id
+                )
+            )
+        ).scalars()
+    ]
+    assert "I need help." in bodies
+    assert HANDOFF_REPLY in bodies
+
+
+@pytest.mark.asyncio
+async def test_close_retry_on_already_closed_is_idempotent_without_duplicate_metric(
+    db,
+    client,
+    org_scope,
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    before = _closed_total_for("customer")
+
+    first = await _widget_close(client, token)
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "closed"
+
+    session_row, ticket, _ = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    assert ticket.resolved_at is not None
+    resolved_after_first = ticket.resolved_at
+    assert _closed_total_for("customer") == before + 1
+
+    second = await _widget_close(client, token)
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "closed"
+
+    session_row, ticket, _ = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    assert ticket.status == "solved"
+    assert ticket.resolved_at == resolved_after_first
+    # No second non-closed -> closed transition, so no second metric.
+    assert _closed_total_for("customer") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_close_sla_failure_after_core_commit_then_retry_repairs_resolved_at(
+    db,
+    client,
+    org_scope,
+    monkeypatch,
+):
+    """A failed SLA follow-up is audited once; the retry repairs resolved_at.
+
+    The atomic core commit (session + ticket + conversation) succeeds, then the
+    close audit signal (metric + ``public_chat_session_closed`` log) is emitted,
+    then the SLA follow-up fails. The first request therefore errors, but the
+    close is already audited exactly once. The retry sees an already-closed
+    session whose linked ticket still has ``resolved_at IS NULL`` and repairs
+    the milestone -- without a second close signal and without touching
+    ``closed_at``.
+    """
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    before = _closed_total_for("customer")
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(public_chat_resolution_module, "log", recorder)
+
+    async def _fail_resolution(*_args, **_kwargs):
+        raise RuntimeError("SLA follow-up failed after core commit")
+
+    # The atomic core commit succeeds but the SLA follow-up that records
+    # resolved_at fails after the close signal was emitted.
+    with monkeypatch.context() as mp:
+        mp.setattr(TicketSLAService, "record_resolution", _fail_resolution)
+        first = await _widget_close_or_raise(client, token)
+    # The request errors (500 or a debug re-raise) once SLA recording fails.
+    assert first is None or first.status_code >= 500
+
+    session_row, ticket, conversation = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    assert session_row.closed_at is not None
+    assert ticket.status == "solved"
+    assert ticket.resolved_at is None
+    assert conversation.status == "closed"
+    # Exactly one close audit signal, emitted despite the SLA failure.
+    assert _closed_total_for("customer") == before + 1
+    closed_events = [
+        e for e in recorder.events if e[0] == "public_chat_session_closed"
+    ]
+    assert len(closed_events) == 1
+    assert closed_events[0][1].get("closed_by") == "customer"
+
+    original_closed_at = session_row.closed_at
+
+    # The retry sees an already-closed session whose linked ticket has
+    # resolved_at IS NULL and repairs the missing milestone, without emitting a
+    # second close signal or rewriting closed_at.
+    second = await _widget_close(client, token)
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "closed"
+
+    session_row, ticket, _ = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    assert session_row.closed_at == original_closed_at
+    assert ticket.status == "solved"
+    assert ticket.resolved_at is not None
+    assert _closed_total_for("customer") == before + 1
+    assert (
+        len([e for e in recorder.events if e[0] == "public_chat_session_closed"])
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_missing_or_invalid_session_token(client, org_scope):
+    org = await org_scope()
+
+    missing = await client.post(
+        "/public/chat/sessions/close",
+        headers=_origin_headers(origin=ALLOWED_ORIGIN),
+    )
+    assert missing.status_code == 401
+
+    invalid = await client.post(
+        "/public/chat/sessions/close",
+        headers=_origin_headers(token="not-a-real-session-token"),
+    )
+    assert invalid.status_code == 401
+    assert org.id > 0
+
+
+@pytest.mark.asyncio
+async def test_close_reconciles_drifting_already_closed_session_with_valid_token(
+    db,
+    client,
+    org_scope,
+):
+    """A customer retry reconciles a closed session whose links drifted.
+
+    Phase 1P.7.1 legacy drift leaves a session ``closed`` while its linked
+    ticket is open and its linked conversation is open. A retried "End
+    conversation" with the still-valid bearer token must repair that drift
+    through the application: ticket -> solved (+ resolved_at), conversation ->
+    closed -- without a close metric, without rewriting ``closed_at``.
+    """
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    # Manufacture the documented drift: closed session, open ticket + conv.
+    session_row, ticket, conversation = await _widget_session_rows(db, token)
+    original_closed_at = datetime.now(UTC) - timedelta(hours=2)
+    session_row.status = "closed"
+    session_row.closed_at = original_closed_at
+    ticket.status = "open"
+    ticket.resolved_at = None
+    conversation.status = "open"
+    await db.commit()
+
+    session_row, ticket, conversation = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    assert ticket.status == "open"
+    assert conversation.status == "open"
+
+    before = _closed_total_for("customer")
+
+    close = await _widget_close(client, token)
+    assert close.status_code == 200, close.text
+    assert close.json()["status"] == "closed"
+
+    session_row, ticket, conversation = await _widget_session_rows(db, token)
+    assert session_row.status == "closed"
+    # closed_at is preserved: a repair is not a (re)close.
+    assert session_row.closed_at == original_closed_at
+    assert ticket.status == "solved"
+    assert ticket.resolved_at is not None
+    assert conversation.status == "closed"
+    # A legacy repair is NOT a close transition: no close metric.
+    assert _closed_total_for("customer") == before
+
+
+@pytest.mark.asyncio
+async def test_close_emits_single_structured_log_per_transition(
+    db,
+    client,
+    org_scope,
+    monkeypatch,
+):
+    """The close audit log follows the same once-per-transition contract.
+
+    The first close (non-closed -> closed) records one
+    ``public_chat_session_closed`` event with bounded identifiers. A retried
+    close on the already-closed session reconciles without recording a second
+    event.
+    """
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(public_chat_resolution_module, "log", recorder)
+
+    first = await _widget_close(client, token)
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "closed"
+
+    second = await _widget_close(client, token)
+    assert second.status_code == 200, second.text
+
+    closed_events = [
+        e for e in recorder.events if e[0] == "public_chat_session_closed"
+    ]
+    assert len(closed_events) == 1
+    _, fields = closed_events[0]
+    assert fields.get("closed_by") == "customer"
+    assert fields.get("session_id") is not None
+    assert fields.get("organization_id") is not None
+    assert fields.get("ticket_id") is not None
 
 
 # ----------------------------------------------------------------------

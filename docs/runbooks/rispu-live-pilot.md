@@ -163,3 +163,22 @@ After the smoke run completes, the pilot summary should show exactly one new
 `session_created` and one `session_closed` (the smoke session was closed and its
 rows are durable). The smoke transcript never prints the widget key, the session
 token, or message bodies.
+
+---
+
+## 8. Phase 1P.7.1 legacy drift
+
+Sessions closed **before Phase 1P.7.1** may be left drifting: the
+`public_chat_sessions.status` is `closed`, but the linked `tickets` row is still
+`new`/`open`/`pending` and/or the linked `conversations` row is still `open`.
+
+- **Do not delete** these sessions, tickets, or conversations.
+- **Do not run ad-hoc destructive SQL** against production. There is no
+  "just fix it in the database" path here.
+- **Reconcile them after the fixed lifecycle is deployed** (Phase 1P.7.1): the
+  close endpoint and staff Resolve now share one lifecycle that closes the
+  linked ticket and conversation at close time. Existing drifted rows are not
+  repaired automatically; reconcile them through the application to bring the
+  linked ticket and conversation to `closed`/`solved` with history preserved.
+  If a drifted row cannot be reconciled through the application, open an
+  incident review before touching it.

@@ -58,6 +58,21 @@ describe("capability-driven navigation", () => {
     );
   });
 
+  it("public chat destination is shown only with ticket.read", () => {
+    assert.equal(visibleHrefs([]).includes("/public-chat"), false);
+    assert.equal(
+      visibleHrefs([CAPABILITIES.AGENT_RUN]).includes("/public-chat"),
+      false,
+    );
+    assert.equal(
+      visibleHrefs([CAPABILITIES.CUSTOMER_READ]).includes("/public-chat"),
+      false,
+    );
+    assert.ok(
+      visibleHrefs([CAPABILITIES.TICKET_READ]).includes("/public-chat"),
+    );
+  });
+
   it("transformation destination is shown only with ticket.read", () => {
     assert.equal(visibleHrefs([]).includes("/transformation"), false);
     assert.equal(
@@ -161,6 +176,7 @@ describe("capability-driven navigation", () => {
       "/transformation",
       "/automotive-pilot",
       "/inbox",
+      "/public-chat",
       "/knowledge",
     ]);
   });
@@ -256,6 +272,7 @@ describe("capability-driven navigation", () => {
       "/transformation",
       "/automotive-pilot",
       "/inbox",
+      "/public-chat",
     ]);
   });
 
@@ -278,6 +295,7 @@ describe("control-center route requirements", () => {
     ["/tickets", CAPABILITIES.TICKET_READ],
     ["/tickets/new", CAPABILITIES.TICKET_WRITE],
     ["/inbox", CAPABILITIES.TICKET_READ],
+    ["/public-chat", CAPABILITIES.TICKET_READ],
     ["/agent", CAPABILITIES.AGENT_RUN],
     ["/approvals", CAPABILITIES.AGENT_RUN],
     ["/knowledge", CAPABILITIES.KNOWLEDGE_READ],

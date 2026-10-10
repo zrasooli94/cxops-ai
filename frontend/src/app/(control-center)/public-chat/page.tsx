@@ -26,6 +26,7 @@ import {
   fetchHandoffSessions,
   fetchPublicChatSummary,
   releaseHandoffSession,
+  resolveHandoffSession,
   type SummaryWindow,
 } from "@/lib/public-chat/staff";
 import type {
@@ -106,6 +107,11 @@ export default function PublicChatPage() {
   const [workbench, setWorkbench] = useState<PilotWorkbenchState>(() =>
     emptyPilotWorkbench(organizationId),
   );
+
+  // Session awaiting the staff resolve confirmation. Cleared on tenant change
+  // and on resolve completion/cancel so a dialog can never outlive its tenant.
+  const [resolveTarget, setResolveTarget] =
+    useState<StaffHandoffSession | null>(null);
 
   // Tenant-guarded state writes: every async operation captures the
   // organizationId when the request starts and routes every post-await
@@ -211,6 +217,7 @@ export default function PublicChatPage() {
     setWorkbench((prev) =>
       pilotWorkbenchForOrganization(prev, organizationId),
     );
+    setResolveTarget(null);
   }, [organizationId]);
 
   useEffect(() => {
@@ -285,6 +292,37 @@ export default function PublicChatPage() {
       setForOrganization(requestOrganizationId, (prev) => ({
         ...prev,
         error: err instanceof Error ? err.message : "Assignment failed",
+      }));
+    } finally {
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        busy: null,
+      }));
+    }
+  };
+
+  const runResolve = async (session: StaffHandoffSession) => {
+    const requestOrganizationId = organizationId;
+    setResolveTarget(null);
+    setForOrganization(requestOrganizationId, (prev) => ({
+      ...prev,
+      busy: session.session_id,
+    }));
+    try {
+      await resolveHandoffSession(session.session_id);
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        sessions: prev.sessions.filter(
+          (s) => s.session_id !== session.session_id,
+        ),
+      }));
+      void loadSummary();
+    } catch (err) {
+      // The resolved session stays visible so the operator sees exactly what
+      // failed; a retry is possible from the same row.
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        error: err instanceof Error ? err.message : "Failed to resolve session",
       }));
     } finally {
       setForOrganization(requestOrganizationId, (prev) => ({
@@ -447,6 +485,7 @@ export default function PublicChatPage() {
                           onToggleActions={() => void toggleActions(session.session_id)}
                           onAssign={() => void runAssignment(session.session_id, "assign")}
                           onRelease={() => void runAssignment(session.session_id, "release")}
+                          onResolve={() => setResolveTarget(session)}
                         />
                       ))}
                     </tbody>
@@ -457,8 +496,56 @@ export default function PublicChatPage() {
               <p className="mt-4 text-xs text-slate-400">
                 Sessions appear here when a customer requests a human handoff
                 from the chat widget. Assigning takes the session and its
-                business actions into your queue.
+                business actions into your queue; resolving closes the chat and
+                marks the linked ticket solved.
               </p>
+
+              {resolveTarget && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="resolve-dialog-title"
+                >
+                  <div className="w-full max-w-md rounded-[20px] border border-slate-200 bg-white p-6 shadow-xl">
+                    <h2
+                      id="resolve-dialog-title"
+                      className="text-lg font-medium tracking-[-0.02em] text-slate-950"
+                    >
+                      Resolve this conversation?
+                    </h2>
+                    <p className="mt-2 text-sm text-slate-600">
+                      The chat will be closed and the linked ticket marked
+                      solved.
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Messages and history will be preserved.
+                    </p>
+                    <div className="mt-6 flex justify-end gap-3">
+                      <button
+                        onClick={() => setResolveTarget(null)}
+                        disabled={
+                          visibleWorkbench.busy === resolveTarget.session_id
+                        }
+                        className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => void runResolve(resolveTarget)}
+                        disabled={
+                          visibleWorkbench.busy === resolveTarget.session_id
+                        }
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {visibleWorkbench.busy === resolveTarget.session_id
+                          ? "Working…"
+                          : "Resolve"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -716,6 +803,7 @@ function Pair({
   onToggleActions,
   onAssign,
   onRelease,
+  onResolve,
 }: {
   session: StaffHandoffSession;
   expanded: boolean;
@@ -726,6 +814,7 @@ function Pair({
   onToggleActions: () => void;
   onAssign: () => void;
   onRelease: () => void;
+  onResolve: () => void;
 }) {
   const isAssigned = session.status === "human_assigned";
 
@@ -769,23 +858,32 @@ function Pair({
         </td>
         <td className="px-5 py-4">
           {canWrite ? (
-            isAssigned ? (
+            <div className="flex items-center gap-2">
+              {isAssigned ? (
+                <button
+                  onClick={onRelease}
+                  disabled={busy}
+                  className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-slate-600 border border-slate-200 hover:border-blue-300 hover:text-blue-600 disabled:opacity-50"
+                >
+                  {busy ? "Working…" : "Release"}
+                </button>
+              ) : (
+                <button
+                  onClick={onAssign}
+                  disabled={busy}
+                  className="rounded-lg bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-600 hover:bg-violet-100 disabled:opacity-50"
+                >
+                  {busy ? "Working…" : "Assign to me"}
+                </button>
+              )}
               <button
-                onClick={onRelease}
+                onClick={onResolve}
                 disabled={busy}
-                className="rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-slate-600 border border-slate-200 hover:border-blue-300 hover:text-blue-600 disabled:opacity-50"
+                className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
               >
-                {busy ? "Working…" : "Release"}
+                {busy ? "Working…" : "Resolve"}
               </button>
-            ) : (
-              <button
-                onClick={onAssign}
-                disabled={busy}
-                className="rounded-lg bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-600 hover:bg-violet-100 disabled:opacity-50"
-              >
-                {busy ? "Working…" : "Assign to me"}
-              </button>
-            )
+            </div>
           ) : (
             <span className="text-xs text-slate-400">Read only</span>
           )}

@@ -62,6 +62,7 @@ from app.services.agent_workflow_service import agent_workflow_service
 from app.services.business_integration_service import BusinessIntegrationService
 from app.services.conversation_ingestion_service import ConversationIngestionService
 from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
+from app.services.public_chat_resolution import PublicChatResolutionService
 from app.services.rag_reliability import public_answer_eligible
 from app.services.rag_service import rag_service
 from app.services.ticket_routing_service import TicketRoutingService
@@ -299,6 +300,31 @@ class PublicChatService:
             raise PublicChatSessionExpiredError("Session expired.")
         if session.status == "closed":
             raise PublicChatSessionClosedError("Session closed.")
+        return session
+
+    @staticmethod
+    async def verify_session_for_close(
+        db: AsyncSession,
+        session_token: str,
+    ) -> PublicChatSession:
+        """Resolve a session from its token for the close lifecycle only.
+
+        Unlike :meth:`verify_session`, a closed session is accepted: an
+        "End conversation" retry must resolve the already-closed session and
+        converge idempotently instead of surfacing as a conflict. Expired and
+        unknown tokens are still rejected exactly like every other session
+        operation. This relaxed resolution is intentionally scoped to the close
+        endpoint — message send, state, and human-request verification keep
+        rejecting closed sessions.
+        """
+        session = await PublicChatRepository.get_session_by_token_hash(
+            db,
+            token_hash=hash_digest(session_token),
+        )
+        if session is None:
+            raise PublicChatSessionNotFoundError("Session not found.")
+        if session.is_expired:
+            raise PublicChatSessionExpiredError("Session expired.")
         return session
 
     @classmethod
@@ -960,19 +986,31 @@ class PublicChatService:
             "reply": await cls.handoff_reply_for(db, session.organization_id),
         }
 
-    @staticmethod
+    @classmethod
     async def close_session(
+        cls,
         db: AsyncSession,
         session: PublicChatSession,
     ) -> dict:
-        if session.status != "closed":
-            session = await PublicChatRepository.update_session_for_tenant(
-                db,
-                session=session,
-                changes={"status": "closed", "closed_at": datetime.now(UTC)},
-                organization_id=session.organization_id,
-            )
-        return {"status": session.status}
+        """Close the session through the shared resolution lifecycle.
+
+        The session moves to ``closed`` (``closed_at`` recorded), the linked
+        ticket to ``solved``, and the linked conversation to ``closed`` in one
+        atomic transition exactly like a staff resolve, then the SLA milestone
+        is reconciled. An already-closed session is an idempotent
+        reconciliation: it repairs any drifted linked ticket/conversation and
+        missing SLA milestone, so a retried "End conversation" converges against
+        the same lifecycle. The close metric/log are emitted only when this
+        request actually performs the transition.
+        """
+        result = await PublicChatResolutionService.close_lifecycle(
+            db,
+            session=session,
+            organization_id=session.organization_id,
+            when=datetime.now(UTC),
+            closed_by="customer",
+        )
+        return {"status": result.session.status}
 
 
 public_chat_service = PublicChatService()
