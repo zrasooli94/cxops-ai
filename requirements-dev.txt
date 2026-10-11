@@ -2,5 +2,5 @@ pytest
 pytest-asyncio
 pytest-cov
 respx
-ruff
+ruff==0.16.10
 mypy
