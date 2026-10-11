@@ -1,9 +1,10 @@
 """Shared public-chat resolution lifecycle (Phase 1P.7.1).
 
-Both the staff Resolve action and the customer widget "End conversation" run
-the same close lifecycle: the session moves to ``closed`` (``closed_at``
-recorded), the linked ticket to ``solved``, and the linked conversation to
-``closed`` in one atomic, tenant-scoped transaction via
+Three entry points run the same close lifecycle: the staff Resolve action, the
+customer widget "End conversation", and the expired-session finalizer (Phase
+1P.7.3). In every case the session moves to ``closed`` (``closed_at`` recorded),
+the linked ticket to ``solved``, and the linked conversation to ``closed`` in one
+atomic, tenant-scoped transaction via
 ``PublicChatRepository.resolve_session_for_tenant``, then the SLA layer
 re-records the resolution milestone. Nothing is deleted; conversation history
 is preserved.
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +50,16 @@ from app.services.ticket_sla_service import (
 )
 
 log = get_logger(__name__)
+
+# The close audit signal (metric + log) carries only a bounded lifecycle label.
+# Widening this set widens Prometheus label cardinality and could leak an
+# arbitrary value, so it is a closed, reviewed set: staff Resolve, the customer
+# "End conversation" action, and the expired-session finalizer. Never place a
+# tenant, session, or customer value here.
+PublicChatCloseActor = Literal["customer", "staff", "expiry"]
+PUBLIC_CHAT_CLOSE_ACTORS: frozenset[str] = frozenset(
+    {"customer", "staff", "expiry"}
+)
 
 
 @dataclass(frozen=True)
@@ -75,14 +87,21 @@ class PublicChatResolutionService:
         session: PublicChatSession,
         organization_id: int,
         when: datetime,
-        closed_by: str,
+        closed_by: PublicChatCloseActor,
     ) -> PublicChatResolution:
         """Close a tenant-scoped session plus its ticket and conversation.
 
         ``closed_by`` is the bounded actor label for the metric and the log
-        (``"staff"`` or ``"customer"``) — never a principal subject or any
-        customer value.
+        (``"customer"``, ``"staff"``, or ``"expiry"``) - never a principal
+        subject or any customer value. The value is validated against
+        :data:`PUBLIC_CHAT_CLOSE_ACTORS` before any work so an arbitrary string
+        can never become an unbounded Prometheus label.
         """
+        if closed_by not in PUBLIC_CHAT_CLOSE_ACTORS:
+            raise ValueError(
+                f"closed_by must be one of {sorted(PUBLIC_CHAT_CLOSE_ACTORS)}"
+            )
+
         transitioned = False
         if session.status != "closed":
             resolved = await PublicChatRepository.resolve_session_for_tenant(

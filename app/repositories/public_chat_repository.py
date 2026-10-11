@@ -86,6 +86,33 @@ class PublicChatRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_session_for_update_for_tenant(
+        db: AsyncSession,
+        session_id: int,
+        organization_id: int,
+    ) -> PublicChatSession | None:
+        """Tenant-scoped ``SELECT ... FOR UPDATE`` read of one live session.
+
+        Used by the expiry finalizer immediately before it mutates a session:
+        the row lock is held by the enclosing transaction until it ends, so once
+        a caller observes the row under this lock no concurrent writer can change
+        its status/expiry before the finalizer's own commit. ``populate_existing=
+        True`` forces the ORM to overwrite any identity-map copy loaded by the
+        earlier candidate scan. Tenant scoping stays in the WHERE clause, so a
+        foreign-tenant id is indistinguishable from a missing one.
+        """
+        result = await db.execute(
+            select(PublicChatSession)
+            .where(
+                PublicChatSession.id == session_id,
+                PublicChatSession.organization_id == organization_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def update_session_for_tenant(
         db: AsyncSession,
         session: PublicChatSession,
