@@ -242,6 +242,19 @@ def test_the_worker_command_is_bounded(workflow_lines: list[str]) -> None:
     )
 
 
+def test_expired_public_chat_finalization_is_not_enabled_yet(
+    workflow_lines: list[str],
+) -> None:
+    """Phase 1P.7.3B ships the opt-in switch disabled.
+
+    Enabling scheduled expiry in production is a separate, reviewed change; a
+    flag slipped into the scheduled command would start closing real customer
+    sessions every five minutes.
+    """
+    assert not any("--finalize-expired-public-chat" in line for line in workflow_lines)
+    assert not any("--expiry-batch-size" in line for line in workflow_lines)
+
+
 def test_the_job_timeout_is_a_backstop(workflow_lines: list[str]) -> None:
     """Six minutes, behind the application's own 240-second deadline.
 
