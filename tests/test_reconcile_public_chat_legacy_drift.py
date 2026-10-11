@@ -35,12 +35,12 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from prometheus_client import generate_latest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, event, func, select, update
 
 os.environ["ENVIRONMENT"] = "development"
 
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, engine
 from app.core.metrics import PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL
 from app.models.agent_run import AgentRun
 from app.models.base import Base
@@ -632,6 +632,9 @@ async def test_apply_skips_session_that_changed_state(db, org_scope, monkeypatch
     case = await _make_session(
         db, org, session_status="ai_active", ticket_status="open"
     )
+    session_id = case["session"].id
+    ticket_id = case["ticket"].id
+    conversation_id = case["conversation"].id
 
     async def _stale_snapshot(db_, *, tenant_external_id, organization_id):
         return tool.DriftSnapshot(
@@ -640,9 +643,9 @@ async def test_apply_skips_session_that_changed_state(db, org_scope, monkeypatch
             closed_sessions_checked=1,
             drifted=[
                 tool.DriftedSession(
-                    session_id=case["session"].id,
-                    ticket_id=case["ticket"].id,
-                    conversation_id=case["conversation"].id,
+                    session_id=session_id,
+                    ticket_id=ticket_id,
+                    conversation_id=conversation_id,
                     ticket_status="open",
                     conversation_status="open",
                     resolved_at_present=False,
@@ -657,12 +660,135 @@ async def test_apply_skips_session_that_changed_state(db, org_scope, monkeypatch
     )
 
     assert result.applied == 0
-    assert result.skipped_state_changed == [case["session"].id]
+    assert result.skipped_state_changed == [session_id]
 
-    session = await _fresh_row(db, PublicChatSession, case["session"].id)
-    ticket = await _fresh_row(db, Ticket, case["ticket"].id)
+    session = await _fresh_row(db, PublicChatSession, session_id)
+    ticket = await _fresh_row(db, Ticket, ticket_id)
     assert session.status == "ai_active"
     assert ticket.status == "open"
+
+
+@pytest.mark.asyncio
+async def test_apply_uses_for_update_locked_reread(db, org_scope):
+    """Apply must re-read the session tenant-scoped under SELECT ... FOR UPDATE."""
+    org = await org_scope()
+    await _make_session(db, org, ticket_status="open", conversation_status="open")
+
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        result = await tool.run_apply(
+            db, tenant_external_id=org.external_id, organization_id=org.id
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+
+    assert result.applied == 1
+
+    locked = [
+        statement
+        for statement in statements
+        if "FOR UPDATE" in statement.upper() and "public_chat_sessions" in statement
+    ]
+    assert locked, "apply must lock the session row with SELECT ... FOR UPDATE"
+    assert all("organization_id" in statement for statement in locked)
+    assert any("public_chat_sessions.id" in statement for statement in locked)
+
+
+@pytest.mark.asyncio
+async def test_locked_reread_refreshes_stale_identity_map(db, org_scope):
+    """A stale identity-map copy must not hide a concurrent status change."""
+    org = await org_scope()
+    case = await _make_session(db, org, ticket_status="open")
+    session_id = case["session"].id
+
+    # Prime db's identity map with the still-closed row, exactly as the
+    # candidate snapshot would.
+    primed = (
+        await db.execute(
+            select(PublicChatSession).where(PublicChatSession.id == session_id)
+        )
+    ).scalar_one()
+    assert primed.status == "closed"
+
+    # A concurrent writer flips the row out of "closed" and commits.
+    async with AsyncSessionLocal() as other:
+        await other.execute(
+            update(PublicChatSession)
+            .where(PublicChatSession.id == session_id)
+            .values(status="human_requested")
+        )
+        await other.commit()
+
+    reread = await tool.get_locked_session_for_tenant(db, session_id, org.id)
+    try:
+        assert reread is not None
+        # populate_existing overwrote the stale closed copy with the new value;
+        # without it the identity map would hand back ``closed`` and the repair
+        # would wrongly proceed.
+        assert reread.status == "human_requested"
+        assert reread is primed
+    finally:
+        await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_apply_skip_releases_locking_transaction(db, org_scope, monkeypatch):
+    """The skip path must roll back so the FOR UPDATE lock is released."""
+    org = await org_scope()
+    case = await _make_session(
+        db, org, session_status="ai_active", ticket_status="open"
+    )
+    session_id = case["session"].id
+    ticket_id = case["ticket"].id
+    conversation_id = case["conversation"].id
+
+    async def _stale_snapshot(db_, *, tenant_external_id, organization_id):
+        return tool.DriftSnapshot(
+            tenant_external_id=tenant_external_id,
+            organization_id=organization_id,
+            closed_sessions_checked=1,
+            drifted=[
+                tool.DriftedSession(
+                    session_id=session_id,
+                    ticket_id=ticket_id,
+                    conversation_id=conversation_id,
+                    ticket_status="open",
+                    conversation_status="open",
+                    resolved_at_present=False,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(tool, "collect_drift_snapshot", _stale_snapshot)
+
+    result = await tool.run_apply(
+        db, tenant_external_id=org.external_id, organization_id=org.id
+    )
+
+    assert result.applied == 0
+    assert result.skipped_state_changed == [session_id]
+    # The skip rolled the locking transaction back rather than leaving it open.
+    assert db.in_transaction() is False
+
+    # A second session can now take the row lock immediately; if the skip path
+    # had leaked the lock this NOWAIT probe would raise instead of succeeding.
+    async with AsyncSessionLocal() as probe:
+        await probe.execute(
+            select(PublicChatSession)
+            .where(PublicChatSession.id == session_id)
+            .with_for_update(nowait=True)
+        )
+        await probe.rollback()
+
+    ticket = await _fresh_row(db, Ticket, ticket_id)
+    session = await _fresh_row(db, PublicChatSession, session_id)
+    assert ticket.status == "open"
+    assert session.status == "ai_active"
 
 
 # ----------------------------------------------------------------------

@@ -21,9 +21,14 @@ tenant is resolved from ``Organization.external_id`` - never from a numeric id
 the operator types by hand - so the report scope is unambiguous.
 
 Repair path (apply):
-  - every drifted closed session is re-read tenant-scoped immediately before it
-    is changed, and is defensively re-asserted to still be ``closed``; a session
-    that changed state in the meantime is skipped and reported, never mutated;
+  - every drifted closed session is re-read tenant-scoped under
+    ``SELECT ... FOR UPDATE`` (with ``populate_existing``) immediately before it
+    is changed, and is defensively re-asserted to still be ``closed`` while that
+    row lock is held; a session that changed state in the meantime is skipped
+    (releasing the lock) and reported, never mutated;
+  - the row lock is held across the shared lifecycle call, so no concurrent
+    writer can flip the session out of ``closed`` between the check and the
+    repair's commit;
   - the repair calls the EXISTING shared lifecycle
     ``PublicChatResolutionService.close_lifecycle`` - the script contains no
     lifecycle SQL of its own. Because the session is already ``closed`` the
@@ -65,7 +70,6 @@ from app.models.conversation import Conversation
 from app.models.organization import Organization
 from app.models.public_chat import PublicChatSession
 from app.models.ticket import Ticket
-from app.repositories.public_chat_repository import PublicChatRepository
 from app.services.public_chat_resolution import PublicChatResolutionService
 from app.services.ticket_sla_service import RESOLVED_TICKET_STATUSES
 
@@ -249,6 +253,35 @@ def render_apply_result(result: ApplyResult) -> str:
     return "\n".join(lines)
 
 
+async def get_locked_session_for_tenant(
+    db: AsyncSession,
+    session_id: int,
+    organization_id: int,
+) -> PublicChatSession | None:
+    """Tenant-scoped ``SELECT ... FOR UPDATE`` re-read of one session.
+
+    This is the apply path's race guard. The row lock is held by the enclosing
+    transaction until that transaction ends - the shared lifecycle's own commit
+    when a session is repaired, or the explicit ``rollback`` on the skip path -
+    so once a caller observes ``closed`` here, no other transaction can change
+    this session's state before the repair commits.
+
+    ``populate_existing=True`` forces the ORM to overwrite any identity-map copy
+    loaded by the earlier candidate snapshot, so a concurrent status change
+    cannot be hidden by a stale in-session object.
+    """
+    result = await db.execute(
+        select(PublicChatSession)
+        .where(
+            PublicChatSession.id == session_id,
+            PublicChatSession.organization_id == organization_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
 async def run_apply(
     db: AsyncSession,
     *,
@@ -257,11 +290,14 @@ async def run_apply(
 ) -> ApplyResult:
     """Repair every drifted closed session through the shared lifecycle.
 
-    Each session is re-read tenant-scoped immediately before the repair and is
-    defensively re-asserted to still be ``closed``; a session whose status
-    changed is skipped and reported. The repair delegates to
-    ``PublicChatResolutionService.close_lifecycle`` - this function contains no
-    lifecycle SQL. The lifecycle owns its own commits (a single atomic,
+    Each session is re-read tenant-scoped under ``SELECT ... FOR UPDATE``
+    immediately before the repair and is defensively re-asserted to still be
+    ``closed`` while that row lock is held; a session whose status changed is
+    skipped (releasing the lock) and reported. The lock is held across the
+    shared lifecycle call so no concurrent writer can flip the session out of
+    ``closed`` between the check and the repair's commit. The repair delegates
+    to ``PublicChatResolutionService.close_lifecycle`` - this function contains
+    no lifecycle SQL. The lifecycle owns its own commits (a single atomic,
     tenant-scoped core transaction per session, then the SLA milestone), so the
     loop is intentionally not wrapped in one outer transaction.
     """
@@ -276,16 +312,19 @@ async def run_apply(
     when = datetime.now(UTC)
 
     for drifted in snapshot.drifted:
-        # Defensive, tenant-scoped re-read: never mutate a session on the
-        # strength of a possibly-stale snapshot.
-        session = await PublicChatRepository.get_session_by_id_for_tenant(
+        # Tenant-scoped row lock: re-read under FOR UPDATE and keep the lock
+        # while the shared lifecycle repairs the session, so a concurrent writer
+        # cannot change its state between the check and the repair's commit.
+        # populate_existing defeats a stale identity-map copy from the snapshot.
+        session = await get_locked_session_for_tenant(
             db,
             drifted.session_id,
             organization_id,
         )
         if session is None or session.status != CLOSED_STATUS:
-            # State changed (or the row left the tenant scope) between the scan
-            # and the repair. Skip it; a later run will re-evaluate it.
+            # The row left the tenant scope or is no longer closed. Release the
+            # read lock we just acquired and skip; a later run re-evaluates it.
+            await db.rollback()
             skipped_state_changed.append(drifted.session_id)
             continue
 
