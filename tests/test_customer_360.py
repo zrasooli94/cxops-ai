@@ -117,6 +117,25 @@ def make_client():
     return _make
 
 
+# Search terms the tests below query for. Fixture values must only ever match
+# them on purpose.
+SEARCH_TERMS = ("ada", "alpha2", "ext-10001", "10001", "%", "_")
+
+# Unique-per-run suffix alphabet: no digits and no "a"/"d", so a random suffix
+# can never spell "ada", "10001", or any other search term above. (The previous
+# hex suffix could contain "ada" and made the partial-name search flaky.)
+_SUFFIX_ALPHABET = "bcfghjkmnpqrstvwxyz"
+
+
+def _safe_suffix(length: int = 10) -> str:
+    value = uuid.uuid4().int
+    chars = []
+    for _ in range(length):
+        value, index = divmod(value, len(_SUFFIX_ALPHABET))
+        chars.append(_SUFFIX_ALPHABET[index])
+    return "".join(chars)
+
+
 @pytest_asyncio.fixture
 async def db():
     async with AsyncSessionLocal() as session:
@@ -165,9 +184,9 @@ async def tenant360(db):
     )
     await db.commit()
 
-    unique_alpha = f"alpha1{uuid.uuid4().hex[:8]}@example.com"
-    unique_alpha2 = f"alpha2{uuid.uuid4().hex[:8]}@example.com"
-    unique_beta = f"beta{uuid.uuid4().hex[:8]}@example.com"
+    unique_alpha = f"alpha1{_safe_suffix()}@example.com"
+    unique_alpha2 = f"alpha2{_safe_suffix()}@example.com"
+    unique_beta = f"beta{_safe_suffix()}@example.com"
 
     cust_a = Customer(
         name="Ada Alpha Customer",
@@ -938,3 +957,40 @@ def json_dumps(value) -> str:
     import json
 
     return json.dumps(value)
+
+
+# ===================================================================
+# Fixture determinism + partial-search semantics (regression)
+# ===================================================================
+def test_random_suffixes_can_never_spell_a_search_term():
+    """The fixture's per-run uniqueness must not leak into search results."""
+    for _ in range(20000):
+        suffix = _safe_suffix()
+        for prefix in ("alpha1", "alpha2", "beta"):
+            value = f"{prefix}{suffix}@example.com"
+            for term in SEARCH_TERMS:
+                if term == "alpha2" and prefix == "alpha2":
+                    continue
+                assert term not in value.lower(), (term, value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("term", "expected_total"),
+    [
+        ("ADA", 1),  # case-insensitive, name match only
+        ("da al", 1),  # partial across a word boundary
+        ("alpha", 2),  # both tenant-A customers (names and emails)
+        ("bob alpha", 1),
+        ("zzzz-no-such-customer", 0),
+        ("beta", 0),  # only tenant B has a "Beta" customer: isolation holds
+    ],
+)
+async def test_partial_search_positive_and_negative(
+    make_client, tenant360, term, expected_total
+):
+    async with make_client() as client:
+        r = await client.get("/customers", headers=_h_alpha(), params={"search": term})
+    assert r.status_code == 200
+    _, total = _envelope(r.json())
+    assert total == expected_total
