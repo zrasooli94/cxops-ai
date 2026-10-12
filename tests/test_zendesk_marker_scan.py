@@ -400,3 +400,42 @@ async def test_agent_marker_check_is_complete_and_fails_closed(monkeypatch) -> N
             None, zendesk_ticket_id=1, run_id=run_id, organization_id=1, not_before=BOUNDARY
         )
 
+
+
+@pytest.mark.asyncio
+async def test_private_note_quoting_the_marker_is_not_proof_of_delivery(
+    db, org_scope, zendesk
+):
+    """An internal note that quotes the reply marker must not make the reply
+    count as sent: the public reply is still delivered, exactly once."""
+    org_id = await org_scope()
+    case = await harness._zendesk_reply(db, org_id)
+    note = zendesk._append(
+        case["zendesk_ticket_id"], f"internal: see CXOps Reply Ref: {case['token']}",
+        datetime.now(UTC) + timedelta(seconds=5),
+    )
+    note["public"] = False
+
+    await harness._run_job(db, case["job_id"])
+
+    assert zendesk.sends == 1
+    public_markers = [
+        c for c in zendesk.comments[case["zendesk_ticket_id"]]
+        if case["token"] in c["body"] and c.get("public") is True
+    ]
+    assert len(public_markers) == 1
+    message = await harness._fresh(ConversationMessage, case["message_id"])
+    assert message.delivery_status == "sent"
+    assert message.external_message_id == str(public_markers[0]["id"])
+
+
+@pytest.mark.asyncio
+async def test_public_only_unit_semantics() -> None:
+    thread = _thread(3, newer_total=10)
+    thread[2]["public"] = False
+    with_private = PageSource(thread)
+    result = await find_marker(with_private, marker=MARKER, not_before=BOUNDARY, public_only=True)
+    assert not result.found and result.conclusion == "exhausted"
+    thread[2]["public"] = True
+    result = await find_marker(PageSource(thread), marker=MARKER, not_before=BOUNDARY, public_only=True)
+    assert result.found

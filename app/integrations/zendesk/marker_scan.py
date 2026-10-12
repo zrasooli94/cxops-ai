@@ -111,8 +111,14 @@ async def find_marker(
     marker: str,
     not_before: datetime,
     max_pages: int = MARKER_SCAN_MAX_PAGES,
+    public_only: bool = False,
 ) -> MarkerScanResult:
-    """Search newest-first pages for ``marker``. See the module docstring."""
+    """Search newest-first pages for ``marker``. See the module docstring.
+
+    ``public_only``: only a PUBLIC comment counts as the marker. A customer
+    reply is always written public, so a private note that merely quotes the
+    marker (e.g. an agent pasting it) must not be mistaken for delivery.
+    """
     cursor: str | None = None
     seen_cursors: set[str] = set()
     for page in range(1, max_pages + 1):
@@ -127,7 +133,11 @@ async def find_marker(
             if not isinstance(comment, dict):
                 raise MarkerScanInconclusive("malformed_comment", pages=page)
             body = comment.get("body")
-            if isinstance(body, str) and marker in body:
+            if (
+                isinstance(body, str)
+                and marker in body
+                and (not public_only or comment.get("public") is True)
+            ):
                 comment_id = comment.get("id")
                 return MarkerScanResult(
                     found=True,

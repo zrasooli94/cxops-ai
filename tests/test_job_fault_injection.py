@@ -208,7 +208,8 @@ class FakeZendesk:
                 raise fake.fail_send
             fake.sends += 1
             fake._clock = max(fake._clock, datetime.now(UTC)) + timedelta(seconds=1)
-            fake._append(int(ticket_id), comment or "", fake._clock)
+            created = fake._append(int(ticket_id), comment or "", fake._clock)
+            created["public"] = bool(kwargs.get("public", False))
             return {}
 
         monkeypatch.setattr(ZendeskClient, "get_ticket_comments", get_ticket_comments)

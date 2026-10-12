@@ -1469,6 +1469,7 @@ async def test_delivery_service_zendesk_recovers_existing_marker(
             "comments": [
                 {
                     "id": "comment-999",
+                    "public": True,
                     "body": f"Zendesk recovery reply.\n\nCXOps Reply Ref: {marker_token}",
                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
@@ -2305,6 +2306,7 @@ async def test_zendesk_delivery_sends_once_when_marker_absent(
             "comments": [
                 {
                     "id": captured["comment_id"],
+                    "public": True,
                     "body": "Zendesk once reply.\n\nCXOps Reply Ref: unknown",
                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }

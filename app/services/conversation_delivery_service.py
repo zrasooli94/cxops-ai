@@ -261,7 +261,9 @@ class ZendeskConversationDeliveryAdapter:
             )
 
         try:
-            result = await find_marker(fetch_page, marker=marker, not_before=not_before)
+            result = await find_marker(
+                fetch_page, marker=marker, not_before=not_before, public_only=True
+            )
         except MarkerScanInconclusive as exc:
             log.warning(
                 "zendesk_marker_scan_inconclusive",
