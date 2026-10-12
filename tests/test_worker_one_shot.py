@@ -501,12 +501,12 @@ def _install_process_fakes(
         "retry_metric": [],
     }
 
-    async def _execute(*, db: FakeSession, job: SimpleNamespace) -> None:
+    async def _execute(*, db: FakeSession, job: SimpleNamespace) -> Any:
         seen["executed"].append(job.id)
         # Positional on purpose: the canned fakes below are written in the
         # same shape the real ``execute`` is, and keyword names would be a
         # second thing to keep in sync for no benefit.
-        await execute(db, job)
+        return await execute(db, job)
 
     async def _get_by_id(*, db: FakeSession, job_id: int) -> Any:
         if fresh_status is None:
@@ -585,12 +585,48 @@ async def test_shared_processing_leaves_a_job_execute_already_failed(
     ``failed`` row with ``completed`` -- re-completing it would hide the
     failure from every downstream report.
     """
-    seen = _install_process_fakes(monkeypatch, execute=_ok, fresh_status="failed")
+    async def _settled_failed(_db: FakeSession, _job: SimpleNamespace) -> str:
+        return worker.EXECUTE_TERMINAL_FAILED
 
-    await worker.process_claimed_job(FakeSession(), make_job(7))
+    seen = _install_process_fakes(
+        monkeypatch, execute=_settled_failed, fresh_status="failed"
+    )
+
+    result = await worker.process_claimed_job(FakeSession(), make_job(7))
 
     assert seen["completed"] == []
     assert seen["failure_metric"] == ["integration.test"]
+    assert result.outcome == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_job_failed_by_someone_else_is_reported_as_claim_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """execute() did not settle the job, yet it is now failed: another worker
+    owns that outcome. Never count it as ours, never complete it."""
+    seen = _install_process_fakes(monkeypatch, execute=_ok, fresh_status="failed")
+
+    result = await worker.process_claimed_job(FakeSession(), make_job(7))
+
+    assert seen["completed"] == []
+    assert seen["failure_metric"] == []
+    assert result.outcome == "claim_lost"
+
+
+@pytest.mark.asyncio
+async def test_execute_reporting_a_lost_claim_is_never_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _lost(_db: FakeSession, _job: SimpleNamespace) -> str:
+        return worker.EXECUTE_CLAIM_LOST
+
+    seen = _install_process_fakes(monkeypatch, execute=_lost)
+
+    result = await worker.process_claimed_job(FakeSession(), make_job(7))
+
+    assert seen["completed"] == []
+    assert result.outcome == "claim_lost"
 
 
 @pytest.mark.asyncio

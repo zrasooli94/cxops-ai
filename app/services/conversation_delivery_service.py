@@ -32,6 +32,8 @@ DELIVERY_ERROR_TARGET_UNAVAILABLE = "target_unavailable"
 DELIVERY_ERROR_PROVIDER_REJECTED = "provider_rejected"
 DELIVERY_ERROR_CONFIGURATION_UNAVAILABLE = "configuration_unavailable"
 DELIVERY_ERROR_UNSUPPORTED = "unsupported"
+# Another worker currently holds this reply's delivery lease (retry later).
+DELIVERY_ERROR_DELIVERY_IN_PROGRESS = "delivery_in_progress"
 
 # Provider marker prefix used for Zendesk exactly-once delivery recovery.
 # This text is intentionally customer-visible so humans can correlate replies.

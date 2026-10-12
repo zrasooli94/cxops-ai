@@ -320,28 +320,31 @@ async def test_f12_cross_tenant_payload_is_terminal_and_isolated(db, org_scope, 
 
 
 @pytest.mark.asyncio
-async def test_f01_message_deleted_before_failure_reload_does_not_crash(
+async def test_f01_message_deleted_during_delivery_does_not_crash(
     db, org_scope, zendesk, monkeypatch
 ):
-    """PR #3 path: after the rollback the message is re-loaded tenant-scoped.
-    If it vanished meanwhile, the job is still failed and nothing crashes."""
+    """The message row is deleted by another session while delivery runs. The
+    failure branch writes nothing for it, still fails the job, and never
+    crashes or calls the provider."""
+    from app.services.conversation_delivery_service import ConversationDeliveryService
+
     org_id = await org_scope()
-    case = await _zendesk_reply(db, org_id, external_id="not-a-number")
-    original = ConversationMessageRepository.get_by_id_for_tenant
-    calls = {"n": 0}
+    case = await _zendesk_reply(db, org_id)
+    original = ConversationDeliveryService.deliver
 
-    async def _gone_on_reload(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] >= 3:  # execute's lookup, deliver's lookup, then the reload
-            return None
-        return await original(*args, **kwargs)
+    async def _delete_message_then_deliver(self, *args, **kwargs):
+        async with AsyncSessionLocal() as other:
+            await other.execute(
+                delete(ConversationMessage).where(ConversationMessage.id == case["message_id"])
+            )
+            await other.commit()
+        return await original(self, *args, **kwargs)
 
-    monkeypatch.setattr(
-        ConversationMessageRepository, "get_by_id_for_tenant", staticmethod(_gone_on_reload)
-    )
-    await _run_job(db, case["job_id"])
+    monkeypatch.setattr(ConversationDeliveryService, "deliver", _delete_message_then_deliver)
+    job = await _claim_specific(db, case["job_id"])
+    result = await worker.process_claimed_job(db, job)
 
-    assert calls["n"] >= 3
+    assert result.outcome == "failed"
     assert (await _fresh(IntegrationJob, case["job_id"])).status == "failed"
     assert zendesk.sends == 0
 

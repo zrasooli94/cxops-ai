@@ -28,14 +28,17 @@ from app.services.agent_execution_service import (
     agent_execution_service,
 )
 from app.services.conversation_delivery_service import (
+    DELIVERY_ERROR_DELIVERY_IN_PROGRESS,
     DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
     ConversationDeliveryError,
     ConversationDeliveryService,
+    ConversationDeliveryTransientError,
 )
 from app.services.conversation_reply_service import (
     JOB_TYPE_CONVERSATION_REPLY,
     ConversationReplyService,
 )
+from app.services.delivery_lease import reply_delivery_lease
 from app.services.service_escalation_service import (
     ServiceEscalationService,
 )
@@ -53,6 +56,12 @@ from app.services.zendesk_webhook_service import (
 
 class AgentExecutionQueueBlockedError(Exception):
     pass
+
+
+# What ``IntegrationJobService.execute`` reports when a handler already wrote the
+# job's terminal state itself (the worker must not complete it afterwards).
+EXECUTE_TERMINAL_FAILED = "terminal_failed"
+EXECUTE_CLAIM_LOST = "claim_lost"
 
 
 class PermanentJobError(ValueError):
@@ -194,7 +203,13 @@ class IntegrationJobService:
     async def execute(
         db: AsyncSession,
         job: IntegrationJob,
-    ) -> None:
+    ) -> str | None:
+        """Run one claimed job.
+
+        Returns ``None`` normally (the worker completes the job), or
+        ``EXECUTE_TERMINAL_FAILED`` / ``EXECUTE_CLAIM_LOST`` when a handler has
+        already settled the job's state itself.
+        """
         # Zendesk webhook event
         if job.job_type == IntegrationJobService.ZENDESK_TICKET_EVENT:
             payload = job.payload
@@ -211,7 +226,7 @@ class IntegrationJobService:
                 organization_id=job.organization_id,
             )
 
-            return
+            return None
 
         # Approved agent execution
         if job.job_type == IntegrationJobService.AGENT_EXECUTION:
@@ -232,7 +247,7 @@ class IntegrationJobService:
                 organization_id=organization_id,
             )
 
-            return
+            return None
 
         # Human reply delivery
         if job.job_type == IntegrationJobService.CONVERSATION_REPLY:
@@ -259,63 +274,69 @@ class IntegrationJobService:
             # it ``sending``. Pre-marking it here overwrote ``sent`` and defeated
             # that guard, leaving the provider marker scan as the only
             # duplicate-send protection on a re-run.
-            try:
-                await ConversationDeliveryService().deliver(
-                    db=db,
-                    message_id=message_id,
-                    organization_id=organization_id,
-                )
-
-            except ConversationDeliveryError as exc:
-                # Non-retryable delivery failure (configuration, unsupported
-                # provider, invalid target). Mark the job and message failed
-                # now rather than exhausting retries.
-                await db.rollback()
-
-                # rollback() expires every instance loaded in this session
-                # (expire_on_commit=False only covers commit). Reading an
-                # attribute of the pre-rollback ``job``/``message`` would be an
-                # implicit sync refresh, which an AsyncSession rejects with
-                # MissingGreenlet - turning this non-retryable failure into a
-                # retryable one. Re-load both explicitly with awaited queries;
-                # the message stays tenant-scoped.
-                failed_job = await IntegrationJobRepository.get_by_id_unscoped(
-                    db,
-                    job_id,
-                )
-                # Fenced like the worker's own terminal writes: a job that was
-                # recovered and re-claimed meanwhile belongs to the new claim.
-                if failed_job is not None and (
-                    claimed_at is None
-                    or (
-                        failed_job.status == "processing"
-                        and failed_job.locked_at == claimed_at
+            # One worker per reply at a time (see app/services/delivery_lease.py):
+            # a worker whose claim was recovered may still be running, and two
+            # concurrent deliveries would both miss each other's marker.
+            async with reply_delivery_lease(message_id) as leased:
+                if not leased:
+                    raise ConversationDeliveryTransientError(
+                        DELIVERY_ERROR_DELIVERY_IN_PROGRESS,
+                        "Another worker is delivering this reply",
                     )
-                ):
-                    failed_job.status = "failed"
-                    failed_job.locked_at = None
-                    failed_job.last_error = str(exc)[:4000]
+                try:
+                    await ConversationDeliveryService().deliver(
+                        db=db,
+                        message_id=message_id,
+                        organization_id=organization_id,
+                    )
 
-                failed_message = await ConversationMessageRepository.get_by_id_for_tenant(
-                    db,
-                    message_id=message_id,
-                    organization_id=organization_id,
-                )
-                if failed_message is not None:
-                    await ConversationMessageRepository.update_for_tenant(
+                except ConversationDeliveryError as exc:
+                    # Non-retryable delivery failure (configuration, unsupported
+                    # provider, invalid target). Mark the job and message failed
+                    # now rather than exhausting retries.
+                    await db.rollback()
+
+                    # rollback() expires every instance loaded in this session
+                    # (expire_on_commit=False only covers commit), so nothing from
+                    # before it is read again: every write below is a single
+                    # awaited statement keyed by the captured ids.
+                    #
+                    # Fenced: the job is failed only if this worker still holds the
+                    # claim, in ONE conditional UPDATE whose row lock lasts until
+                    # the commit below. If the claim was lost to a newer worker,
+                    # this worker writes nothing - neither the job nor the message.
+                    claim_held = await IntegrationJobRepository.fail_claimed(
                         db,
-                        message=failed_message,
+                        job_id=job_id,
+                        claimed_at=claimed_at,
+                        error_message=str(exc),
+                    )
+                    if not claim_held:
+                        still_exists = await IntegrationJobRepository.get_by_id_unscoped(
+                            db,
+                            job_id,
+                        )
+                        if still_exists is not None:
+                            await db.rollback()
+                            return EXECUTE_CLAIM_LOST
+                        # The job row vanished: nobody owns it, so recording the
+                        # message failure cannot conflict with another worker.
+
+                    await ConversationMessageRepository.update_unless_sent_for_tenant(
+                        db,
+                        message_id=message_id,
+                        organization_id=organization_id,
                         changes={
                             "delivery_status": "failed",
                             "delivery_error_code": exc.error_code,
                         },
-                        organization_id=organization_id,
                     )
 
-                await db.commit()
-                return
+                    await db.commit()
+                    return EXECUTE_TERMINAL_FAILED
 
-            return
+
+            return None
 
         # SLA escalation transition job
         if job.job_type == IntegrationJobService.SLA_ESCALATION:
@@ -341,7 +362,7 @@ class IntegrationJobService:
                 organization_id=organization_id,
             )
             if ticket is None:
-                return
+                return None
 
             # Revalidation: stale jobs are no-ops.
             current_cycle = ticket.resolution_sla_cycle if milestone == "resolution" else 0
@@ -351,7 +372,7 @@ class IntegrationJobService:
                 else ticket.resolution_due_at
             )
             if current_cycle != expected_cycle or current_due_at != expected_due_at:
-                return
+                return None
 
             # A milestone that completed after this job was enqueued is stale:
             # completion re-evaluated the escalation via ensure_transition, which
@@ -359,7 +380,7 @@ class IntegrationJobService:
             if (milestone == "first_response" and ticket.first_response_at is not None) or (
                 milestone == "resolution" and ticket.resolved_at is not None
             ):
-                return
+                return None
 
             current_state = (
                 TicketSLAService.first_response_state(ticket, now=datetime.now(UTC))
@@ -371,7 +392,7 @@ class IntegrationJobService:
                 "breached": "breached",
             }
             if current_state != expected_state_map.get(expected_stage):
-                return
+                return None
 
             escalation = await ServiceEscalationService.ensure_transition(
                 db,
@@ -395,7 +416,7 @@ class IntegrationJobService:
                         organization_id=organization_id,
                     )
 
-            return
+            return None
 
         # Durable AI evaluation job
         if job.job_type == IntegrationJobService.AI_EVALUATION:
@@ -440,7 +461,7 @@ class IntegrationJobService:
                     f"ai.evaluation run {evaluation_run_id} failed: {type(exc).__name__}"
                 ) from exc
 
-            return
+            return None
 
         raise PermanentJobError(f"Unknown job type: {job.job_type}")
 

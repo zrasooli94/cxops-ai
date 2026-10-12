@@ -33,6 +33,8 @@ from app.repositories.integration_job_repository import (
     IntegrationJobRepository,
 )
 from app.services.integration_job_service import (
+    EXECUTE_CLAIM_LOST,
+    EXECUTE_TERMINAL_FAILED,
     IntegrationJobService,
     PermanentJobError,
 )
@@ -229,19 +231,51 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> JobResul
     )
 
     try:
-        await IntegrationJobService.execute(
+        execution = await IntegrationJobService.execute(
             db=db,
             job=job,
         )
 
-        # execute() may have already marked the job terminal for
-        # non-retryable failures (e.g. conversation.reply). Only mark
-        # completed if the job is still in processing.
-        fresh_job = await IntegrationJobRepository.get_by_id_unscoped(
-            db=db,
-            job_id=job_id,
+        # execute() may have settled the job itself (non-retryable failure),
+        # or found that this worker no longer owns it. Otherwise the job is
+        # completed - fenced, so a lost claim is reported, never applied.
+        fresh_job = (
+            None
+            if execution == EXECUTE_CLAIM_LOST
+            else await IntegrationJobRepository.get_by_id_unscoped(
+                db=db,
+                job_id=job_id,
+            )
         )
-        if fresh_job is not None and fresh_job.status == "processing":
+        if execution == EXECUTE_CLAIM_LOST:
+            outcome = JOB_OUTCOME_CLAIM_LOST
+            log.warning("job_claim_lost", job_id=job_id, job_type=job_type)
+
+        elif fresh_job is None:
+            # The row vanished while this worker held it: never report that as
+            # a completion.
+            outcome = JOB_OUTCOME_CLAIM_LOST
+            log.warning("job_vanished", job_id=job_id, job_type=job_type)
+
+        elif fresh_job.status == "failed" and (
+            execution == EXECUTE_TERMINAL_FAILED or claimed_at is None
+        ):
+            outcome = JOB_OUTCOME_FAILED
+            error_category = "non_retryable"
+            record_integration_job_failure(
+                job_type=job_type,
+            )
+            bind_context(
+                outcome="failed", error_category="non_retryable"
+            )
+            log.error(
+                "job_failed",
+                job_id=job_id,
+                job_type=job_type,
+                error=fresh_job.last_error,
+            )
+
+        elif fresh_job.status == "processing":
             completed = await IntegrationJobRepository.mark_completed(
                 db=db,
                 job_id=job_id,
@@ -258,27 +292,11 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> JobResul
 
                 log.info("job_completed", job_id=job_id, job_type=job_type)
 
-        elif fresh_job is not None and fresh_job.status == "failed":
-            outcome = JOB_OUTCOME_FAILED
-            error_category = "non_retryable"
-            record_integration_job_failure(
-                job_type=job_type,
-            )
-            bind_context(
-                outcome="failed", error_category="non_retryable"
-            )
-            log.error(
-                "job_failed",
-                job_id=job_id,
-                job_type=job_type,
-                error=fresh_job.last_error,
-            )
-
-        elif fresh_job is None:
-            # The row vanished while this worker held it: never report that as
-            # a completion.
+        else:
+            # Completed, retried, or failed by another worker: not ours.
             outcome = JOB_OUTCOME_CLAIM_LOST
-            log.warning("job_vanished", job_id=job_id, job_type=job_type)
+            await db.rollback()
+            log.warning("job_claim_lost", job_id=job_id, job_type=job_type)
 
     except Exception as exc:  # noqa: BLE001
         await db.rollback()

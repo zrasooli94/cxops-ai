@@ -377,30 +377,29 @@ class ConversationReplyService:
         Called by the integration job service when a delivery job fails. This
         is intentionally non-raising: the job's own status already reflects the
         retry/failed decision.
+
+        The write is a conditional UPDATE (``delivery_status <> 'sent'``), so a
+        reply delivered by another worker between this failure and this sync is
+        never overwritten.
         """
         message = await ConversationMessageRepository.get_by_id_for_tenant(
             db,
             message_id=message_id,
             organization_id=organization_id,
         )
-        if message is None:
-            return
-
-        if message.delivery_status == DELIVERY_STATUS_SENT:
+        if message is None or message.delivery_status == DELIVERY_STATUS_SENT:
             return
 
         changes: dict = {
             "delivery_error_code": error_code,
+            "delivery_status": (
+                DELIVERY_STATUS_RETRYING if will_retry else DELIVERY_STATUS_FAILED
+            ),
         }
-        if will_retry:
-            changes["delivery_status"] = DELIVERY_STATUS_RETRYING
-        else:
-            changes["delivery_status"] = DELIVERY_STATUS_FAILED
-
-        await ConversationMessageRepository.update_for_tenant(
+        await ConversationMessageRepository.update_unless_sent_for_tenant(
             db,
-            message=message,
-            changes=changes,
+            message_id=message_id,
             organization_id=organization_id,
+            changes=changes,
         )
         await db.commit()
