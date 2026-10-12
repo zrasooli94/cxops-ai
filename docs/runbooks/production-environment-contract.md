@@ -12,10 +12,10 @@ Six services, each with one job:
 | --- | --- | --- | --- |
 | Frontend | **Vercel** | Next.js: public widget, staff Control Center, same-origin BFF | build: `npm run build` |
 | API | **Render** (Singapore) | FastAPI/uvicorn | `scripts/start_render_api.sh` |
-| **Pilot worker** | **GitHub Actions** | Scheduled one-shot integration-job consumer, every 5 minutes | `python -m scripts.worker --once --max-jobs 25 --max-seconds 240` |
+| **Pilot worker** | **GitHub Actions** | Scheduled one-shot integration-job consumer, configured every 5 minutes (best-effort; see the caveat below) | `python -m scripts.worker --once --max-jobs 25 --max-seconds 240 --finalize-expired-public-chat --expiry-batch-size 50` |
 | Worker (upgrade path) | **Render** (Singapore) | Always-on integration-job consumer, no published port | `scripts/start_render_worker.sh` |
 | Auth | **Nhost** | Staff identity; JWKS issuer | — |
-| Database | **Neon** (Singapore) | PostgreSQL + `pgvector`, at Alembic head `1p4a0001` | — |
+| Database | **Neon** (Singapore) | PostgreSQL + `pgvector`, at Alembic head `1p5a0001` | — |
 
 `scripts/start_render.sh` remains as a compatibility shim that delegates to
 `scripts/start_render_api.sh`, because an existing Render service still points
@@ -129,9 +129,11 @@ The pilot's *only* background worker is a scheduled one-shot run, defined in
 - **Every 5 minutes** (`cron: "*/5 * * * *"`), on the default branch.
 - Runs `python scripts/preflight_production_env.py` first; a failed preflight
   fails the job and the worker never runs.
-- Runs `python -m scripts.worker --once --max-jobs 25 --max-seconds 240`: one
-  SLA escalation scan, then jobs until the queue is empty or a bound is hit,
-  then exit. It never sleeps waiting for work, never starts the Prometheus
+- Runs `python -m scripts.worker --once --max-jobs 25 --max-seconds 240
+  --finalize-expired-public-chat --expiry-batch-size 50`: one SLA escalation
+  scan, then jobs until the queue is empty or a bound is hit, then one bounded
+  expired public-chat finalization pass (at most 50 sessions, under the same
+  deadline), then exit. It never sleeps waiting for work, never starts the Prometheus
   metrics listener, and never touches the deployed API.
 - Is bounded at the application level to 240 seconds, inside the 5-minute
   interval, so two scheduled runs do not overlap by design. A 6-minute job
@@ -153,18 +155,25 @@ Everything the always-on Render worker needs is present here, and `Settings`
 validates process-wide, so a missing value is a crash and the run fails — never
 a silently degraded run.
 
-**Expected-delivery caveat.** GitHub schedules runs with best effort; a run can
-start minutes late or be delayed by runner availability. That is acceptable for
-pilot traffic (the SLA scanner escalates on the next tick, and the next run is
-always coming) but it is why this worker is *not* the real-time mechanism: it
-is the pilot worker, and the upgrade path below is the always-on mechanism.
+**Expected-delivery caveat (measured).** GitHub documents scheduled events as
+best-effort: they can be delayed under load and some may be dropped. Measured
+from 2026-10-07T16:34Z to 2026-10-12T16:18Z, this workflow ran on **22 of 1437**
+five-minute windows (1.53 %), with a median gap of 5.3 hours and a longest gap
+of 7.4 hours; every run that did start succeeded. Re-measure with
+`scripts/audit_workflow_schedule.py` (read-only). The schedule therefore cannot
+be relied on for timely delivery; see
+`docs/reviews/phase1p8-worker-reliability-review.md` for the alternatives
+analysis. It is the pilot worker, not a real-time mechanism.
 
 **The upgrade path is a process change, not a data model change.** The job
 model, atomic row-locked claiming, retry/failure semantics, metrics, and SLA
 advisory locking are identical between the two workers because they are the
 same `scripts/worker.py`. Moving to continuous processing means pointing a
 Render Background Worker at `scripts/start_render_worker.sh` and stopping the
-schedule — no migration, and no re-architecting of the queue. Until then,
+schedule — no migration, and no re-architecting of the queue. **One exception:**
+expired public-chat finalization runs only in `--once` mode today. The
+continuous worker would silently stop finalizing expired sessions, so a bounded
+periodic expiry pass must be added to it first. Until then,
 `scripts/start_render_worker.sh` remains supported and is deliberately not
 deleted or weakened.
 
