@@ -45,15 +45,23 @@ async def reply_delivery_lease(message_id: int) -> AsyncIterator[bool]:
     key = reply_lease_key(message_id)
     conn = await database.engine.connect()
     acquired = False
+    # Until the lock call has returned we cannot know whether the server
+    # granted it (cancellation or an error can land right after the grant).
+    # In that state the connection must NOT go back to the pool - it may hold
+    # the session-level lock - so it is invalidated instead.
+    state_known = False
     try:
         result = await conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
         acquired = bool(result.scalar())
+        state_known = True
         # End the implicit transaction; the session-level lock survives it.
         await conn.commit()
         yield acquired
     finally:
         try:
-            if acquired:
+            if not state_known:
+                await conn.invalidate()
+            elif acquired:
                 await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
                 await conn.commit()
         except BaseException:

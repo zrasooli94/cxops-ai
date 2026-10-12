@@ -377,7 +377,7 @@ async def test_concurrent_delivery_of_one_reply_sends_once(org_scope, zendesk, m
     assert zendesk.sends == 1, f"duplicate customer reply (A={a_result}, B={b_result})"
     assert zendesk.marker_count(case["zendesk_ticket_id"], case["token"]) == 1
     assert a_result == "delivered"
-    assert b_result == "ConversationDeliveryTransientError"
+    assert b_result == "JobDeferredError"
     assert (await _fresh(ConversationMessage, case["message_id"])).delivery_status == "sent"
 
 
@@ -481,3 +481,132 @@ async def test_stale_recovery_end_to_end_with_real_claims(org_scope, monkeypatch
             b_session, job_id=job_id, claimed_at=b_claim
         )
     assert done is not None and done.status == "completed" and done.attempts == 2
+
+
+# ---------------------------------------------------------------------------
+# Independent-review follow-ups (lease lifecycle, contention, stale reads)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lease_never_leaks_when_cancelled_right_after_the_grant(monkeypatch):
+    """Cancelled after the server granted the advisory lock but before the code
+    recorded it: with a POOLED engine the connection would return to the pool
+    still holding the lock, blocking that reply forever."""
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core import database
+    from app.core.config import settings
+    from app.services import delivery_lease
+
+    pooled = create_async_engine(settings.database_url, pool_size=1, max_overflow=0)
+
+    class _CancelAfterGrant:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, statement, *args, **kwargs):
+            result = await self._conn.execute(statement, *args, **kwargs)
+            if "pg_try_advisory_lock" in str(statement):
+                raise asyncio.CancelledError  # lock granted, not yet recorded
+            return result
+
+    class _EngineProxy:
+        async def connect(self):
+            return _CancelAfterGrant(await pooled.connect())
+
+    monkeypatch.setattr(database, "engine", _EngineProxy())
+    message_id = 987_654
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            async with delivery_lease.reply_delivery_lease(message_id):
+                pass
+        async with AsyncSessionLocal() as probe:
+            free = (
+                await probe.execute(
+                    sql_text("SELECT pg_try_advisory_lock(:k)"),
+                    {"k": delivery_lease.reply_lease_key(message_id)},
+                )
+            ).scalar_one()
+            if free:
+                await probe.execute(
+                    sql_text("SELECT pg_advisory_unlock(:k)"),
+                    {"k": delivery_lease.reply_lease_key(message_id)},
+                )
+            await probe.rollback()
+        assert free, "the lease leaked onto a pooled connection"
+    finally:
+        await pooled.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lease_contention_defers_without_burning_attempts(org_scope, zendesk):
+    """Another worker holds this reply's lease: the job is deferred (attempt
+    refunded, message untouched) instead of being retried into failure."""
+    from sqlalchemy import text as sql_text
+
+    from app.services import delivery_lease
+
+    org_id = await org_scope()
+    async with AsyncSessionLocal() as setup:
+        case = await _zendesk_reply(setup, org_id)
+    key = delivery_lease.reply_lease_key(case["message_id"])
+
+    async with AsyncSessionLocal() as holder:
+        assert (
+            await holder.execute(sql_text("SELECT pg_try_advisory_lock(:k)"), {"k": key})
+        ).scalar_one()
+        try:
+            for _ in range(8):  # more than max_attempts
+                async with AsyncSessionLocal() as session:
+                    job = await _claim_specific(session, case["job_id"])
+                    result = await worker.process_claimed_job(session, job)
+                assert result.outcome == "deferred"
+                async with AsyncSessionLocal() as session:
+                    await session.execute(
+                        update(IntegrationJob)
+                        .where(IntegrationJob.id == case["job_id"])
+                        .values(available_at=datetime.now(UTC))
+                    )
+                    await session.commit()
+        finally:
+            await holder.execute(sql_text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+            await holder.commit()
+
+    job = await _fresh(IntegrationJob, case["job_id"])
+    message = await _fresh(ConversationMessage, case["message_id"])
+    assert job.status == "retry" and job.attempts == 0
+    assert message.delivery_status == "queued", "the other worker owns the message state"
+    assert zendesk.sends == 0
+
+
+@pytest.mark.asyncio
+async def test_reply_sent_by_another_worker_is_seen_despite_a_stale_identity_map(
+    org_scope, zendesk
+):
+    """A's session loaded the message earlier (status 'queued'); B delivered and
+    committed 'sent'. Once A holds the lease it must re-read and send nothing."""
+    org_id = await org_scope()
+    async with AsyncSessionLocal() as setup:
+        case = await _zendesk_reply(setup, org_id)
+
+    async with AsyncSessionLocal() as a_session:
+        job = await _claim_specific(a_session, case["job_id"])
+        stale = await ConversationMessageRepository.get_by_id_for_tenant(
+            a_session, message_id=case["message_id"], organization_id=org_id
+        )
+        assert stale is not None and stale.delivery_status == "queued"
+        async with AsyncSessionLocal() as b_session:
+            await b_session.execute(
+                update(ConversationMessage)
+                .where(ConversationMessage.id == case["message_id"])
+                .values(delivery_status="sent", delivered_at=datetime.now(UTC))
+            )
+            await b_session.commit()
+        await worker.process_claimed_job(a_session, job)
+
+    assert zendesk.sends == 0, "a reply already sent by another worker was sent again"
