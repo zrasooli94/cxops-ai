@@ -274,6 +274,12 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> JobResul
                 error=fresh_job.last_error,
             )
 
+        elif fresh_job is None:
+            # The row vanished while this worker held it: never report that as
+            # a completion.
+            outcome = JOB_OUTCOME_CLAIM_LOST
+            log.warning("job_vanished", job_id=job_id, job_type=job_type)
+
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         error_category = type(exc).__name__

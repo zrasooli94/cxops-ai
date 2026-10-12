@@ -320,6 +320,63 @@ async def test_f12_cross_tenant_payload_is_terminal_and_isolated(db, org_scope, 
 
 
 @pytest.mark.asyncio
+async def test_f01_message_deleted_before_failure_reload_does_not_crash(
+    db, org_scope, zendesk, monkeypatch
+):
+    """PR #3 path: after the rollback the message is re-loaded tenant-scoped.
+    If it vanished meanwhile, the job is still failed and nothing crashes."""
+    org_id = await org_scope()
+    case = await _zendesk_reply(db, org_id, external_id="not-a-number")
+    original = ConversationMessageRepository.get_by_id_for_tenant
+    calls = {"n": 0}
+
+    async def _gone_on_reload(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] >= 3:  # execute's lookup, deliver's lookup, then the reload
+            return None
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        ConversationMessageRepository, "get_by_id_for_tenant", staticmethod(_gone_on_reload)
+    )
+    await _run_job(db, case["job_id"])
+
+    assert calls["n"] >= 3
+    assert (await _fresh(IntegrationJob, case["job_id"])).status == "failed"
+    assert zendesk.sends == 0
+
+
+@pytest.mark.asyncio
+async def test_f01_job_deleted_during_delivery_is_reported_not_completed(
+    db, org_scope, zendesk, monkeypatch
+):
+    """The job row is deleted by another session while delivery is failing.
+    The failure branch must not crash, the message is still failed, and the
+    run must not report the vanished job as completed."""
+    from app.services.conversation_delivery_service import ConversationDeliveryService
+
+    org_id = await org_scope()
+    case = await _zendesk_reply(db, org_id, external_id="not-a-number")
+    original = ConversationDeliveryService.deliver
+
+    async def _delete_job_then_deliver(self, *args, **kwargs):
+        async with AsyncSessionLocal() as other:
+            await other.execute(delete(IntegrationJob).where(IntegrationJob.id == case["job_id"]))
+            await other.commit()
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ConversationDeliveryService, "deliver", _delete_job_then_deliver)
+    job = await _claim_specific(db, case["job_id"])
+    result = await worker.process_claimed_job(db, job)
+
+    assert result.outcome == "claim_lost"
+    message = await _fresh(ConversationMessage, case["message_id"])
+    assert message.delivery_status == "failed"
+    assert message.delivery_error_code == "target_unavailable"
+    assert zendesk.sends == 0
+
+
+@pytest.mark.asyncio
 async def test_f12_job_without_tenant_binding_is_terminal(db, org_scope, zendesk):
     org_id = await org_scope()
     case = await _zendesk_reply(db, org_id)
