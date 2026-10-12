@@ -288,3 +288,164 @@ def test_classify_rules(facts, category) -> None:
 )
 def test_error_category(error, category) -> None:
     assert diag.error_category(error) == category
+
+
+# ---------------------------------------------------------------------------
+# Phase 1P.8R: consistency, completeness, sanitization, decision workflow
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_report_is_one_consistent_snapshot_under_concurrent_writes(seeded, monkeypatch):
+    """A worker marks a reply sent WHILE the diagnostic runs: the report must
+    still describe one moment (REPEATABLE READ), not a mix of two."""
+    original = diag._fetch_message
+    state = {"done": False}
+
+    async def _concurrent_write_then_fetch(session, *, message_id, organization_id):
+        if not state["done"]:
+            state["done"] = True
+            async with AsyncSessionLocal() as writer:
+                await writer.execute(
+                    text(
+                        "UPDATE conversation_messages SET delivery_status = 'sent' "
+                        "WHERE organization_id = :org"
+                    ),
+                    {"org": organization_id},
+                )
+                await writer.commit()
+        return await original(session, message_id=message_id, organization_id=organization_id)
+
+    monkeypatch.setattr(diag, "_fetch_message", _concurrent_write_then_fetch)
+    async with AsyncSessionLocal() as session:
+        try:
+            report = await diag.collect_report(session, limit=10000)
+        finally:
+            await session.rollback()
+
+    rows = {r.job_id: r for r in report.rows}
+    assert rows[seeded["verify"]].delivery_status == "retrying", "saw a later write"
+    assert rows[seeded["sent"]].delivery_status == "sent"
+
+
+@pytest.mark.asyncio
+async def test_more_rows_than_the_limit_is_reported_incomplete(seeded):
+    async with AsyncSessionLocal() as session:
+        try:
+            report = await diag.collect_report(session, limit=2)
+        finally:
+            await session.rollback()
+
+    assert report.truncated is True
+    assert len(report.rows) == 2
+    text_report = diag.render_operator_report(report, database_category="local")
+    assert "INCOMPLETE" in text_report
+    rendered = diag.render_output(
+        report.rows, database_category="local", as_json=True, truncated=True
+    )
+    assert '"complete": false' in rendered
+
+
+def test_truncated_run_exits_3(monkeypatch, capsys) -> None:
+    async def _partial(_limit):
+        return diag.DiagnosticReport(rows=[], truncated=True, snapshot_at="t")
+
+    monkeypatch.setattr(diag, "_run", _partial)
+    assert diag.main([]) == 3
+
+
+def test_driver_errors_are_reported_without_details(monkeypatch, capsys) -> None:
+    async def _boom(_limit):
+        raise OSError("could not connect to postgresql://admin:s3cret@db.internal:5432")
+
+    monkeypatch.setattr(diag, "_run", _boom)
+    assert diag.main([]) == 1
+    err = capsys.readouterr().err
+    assert "OSError" in err
+    assert "s3cret" not in err and "admin" not in err and "db.internal" not in err
+
+
+@pytest.mark.parametrize(
+    ("category", "status", "age", "action", "auto"),
+    [
+        (diag.ATTEMPTS_OVERFLOW, "failed", 1.0, diag.ACTION_LEAVE, False),
+        (diag.LEAVE_UNTOUCHED, "retry", 1.0, diag.ACTION_LEAVE, True),
+        (diag.ALREADY_SENT, "retry", 1.0, diag.ACTION_RECONCILE_COMPLETED, True),
+        (diag.TERMINAL_TARGET, "retry", 1.0, diag.ACTION_SUPERVISED_FAIL, True),
+        (diag.TERMINAL_TARGET, "failed", 1.0, diag.ACTION_SUPERVISED_FAIL, False),
+        (diag.LOCAL_REDELIVERY, "retry", 1.0, diag.ACTION_LOCAL_REDELIVER, True),
+        (diag.MANUAL_MARKER_VERIFICATION, "failed", 1.0, diag.ACTION_OPERATOR_VERIFY, False),
+        (diag.NEEDS_PROVIDER_VERIFICATION, "retry", 2.0, diag.ACTION_VERIFY_THEN_DECIDE, True),
+        (diag.NEEDS_PROVIDER_VERIFICATION, "retry", 72.0, diag.ACTION_LATE_REPLY, True),
+        (diag.NEEDS_PROVIDER_VERIFICATION, "processing", None, diag.ACTION_VERIFY_THEN_DECIDE, True),
+    ],
+)
+def test_decision_rules(category, status, age, action, auto) -> None:
+    assert diag.decide(category, status=status, age_hours=age) == (action, auto)
+
+
+def test_every_action_names_its_approval() -> None:
+    for action in (
+        diag.ACTION_LEAVE,
+        diag.ACTION_RECONCILE_COMPLETED,
+        diag.ACTION_SUPERVISED_FAIL,
+        diag.ACTION_LOCAL_REDELIVER,
+        diag.ACTION_VERIFY_THEN_DECIDE,
+        diag.ACTION_LATE_REPLY,
+        diag.ACTION_OPERATOR_VERIFY,
+    ):
+        assert diag.APPROVALS[action]
+
+
+def test_delivery_unverified_is_its_own_category() -> None:
+    base = {
+        "attempts": 1,
+        "max_attempts": 5,
+        "job_type": "conversation.reply",
+        "message_found": True,
+        "delivery_status": "failed",
+        "delivery_error_code": "delivery_unverified",
+        "provider": "zendesk",
+        "conversation_status": "open",
+        "ticket_source": "zendesk",
+        "ticket_external_id_numeric": True,
+        "has_delivery_token": True,
+        "thread_matches_ticket": True,
+    }
+    assert diag.classify(base)[0] == diag.MANUAL_MARKER_VERIFICATION
+
+
+@pytest.mark.asyncio
+async def test_late_valid_target_reply_needs_a_human_decision(seeded):
+    """A reply whose target became valid days later must not just be sent."""
+    async with AsyncSessionLocal() as session:
+        message_id = (
+            await session.execute(
+                select(IntegrationJob.payload["message_id"].as_integer()).where(
+                    IntegrationJob.id == seeded["verify"]
+                )
+            )
+        ).scalar_one()
+        await session.execute(
+            text(
+                "UPDATE conversation_messages SET created_at = now() - interval '3 days' "
+                "WHERE id = :id"
+            ),
+            {"id": message_id},
+        )
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        try:
+            report = await diag.collect_report(session, limit=10000)
+        finally:
+            await session.rollback()
+
+    row = next(r for r in report.rows if r.job_id == seeded["verify"])
+    assert row.recommended_action == diag.ACTION_LATE_REPLY
+    assert row.message_age_hours is not None and row.message_age_hours >= 72
+    assert row.auto_executes_after_deploy is True
+    summary = diag.render_operator_report(report, database_category="local")
+    assert "executed automatically" in summary
+    assert "late_reply_human_decision" in summary
+    assert BODY not in summary
