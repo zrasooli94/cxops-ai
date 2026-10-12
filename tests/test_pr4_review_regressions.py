@@ -154,7 +154,9 @@ async def test_fenced_update_rechecks_after_waiting_on_a_row_lock(org_scope):
             )
         )
         async with AsyncSessionLocal() as observer:
-            for _ in range(500):
+            # Condition-based wait; the generous bound only matters on failure
+            # (a loaded CI host can take seconds to schedule A's UPDATE).
+            for _ in range(3000):
                 waiting = (
                     await observer.execute(
                         text(
@@ -170,7 +172,7 @@ async def test_fenced_update_rechecks_after_waiting_on_a_row_lock(org_scope):
             assert waiting == "Lock", "A's fenced UPDATE should be waiting on B's row lock"
 
         await b_session.commit()
-        result = await asyncio.wait_for(a_task, 10)
+        result = await asyncio.wait_for(a_task, 30)
 
     assert result is None
     async with AsyncSessionLocal() as session:
