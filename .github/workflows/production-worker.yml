@@ -2,7 +2,9 @@
 #
 # This is the pilot's ONLY background worker. It runs a bounded one-shot pass
 # every five minutes: one SLA escalation scan, then every job the queue already
-# holds, then exit. It is not a replacement for a long-lived worker -- it is a
+# holds, then one bounded expired public-chat finalization pass (Phase
+# 1P.7.3B, at most 50 sessions, strictly after the job drain and under the same
+# 240-second deadline), then exit. It is not a replacement for a long-lived worker -- it is a
 # deliberately cheaper one, chosen because pilot traffic is bursty and a runner
 # that exists for 240 seconds costs nothing between bursts.
 #
@@ -88,4 +90,4 @@ jobs:
         run: python scripts/preflight_production_env.py
 
       - name: Run one-shot worker
-        run: python -m scripts.worker --once --max-jobs 25 --max-seconds 240
+        run: python -m scripts.worker --once --max-jobs 25 --max-seconds 240 --finalize-expired-public-chat --expiry-batch-size 50
