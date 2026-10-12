@@ -2,7 +2,6 @@ from datetime import datetime
 from typing import ClassVar, Literal
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -13,6 +12,7 @@ from app.core.metrics import (
 from app.models.service_escalation import ServiceEscalation
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
+from app.repositories.savepoint import insert_in_savepoint
 from app.repositories.service_escalation_repository import (
     ServiceEscalationRepository,
 )
@@ -227,11 +227,10 @@ class ServiceEscalationService:
                     status="open",
                     transition_version=1,
                 )
-                await ServiceEscalationRepository.add(db, escalation)
-                try:
-                    await ServiceEscalationRepository.flush(db)
-                except IntegrityError:
-                    await db.rollback()
+                collision = await insert_in_savepoint(db, escalation)
+                if collision is not None:
+                    # A concurrent worker won the race. Only the SAVEPOINT was
+                    # rolled back: the caller's ticket and pending work survive.
                     escalation = (
                         await ServiceEscalationRepository.get_for_milestone_any_status(
                             db,

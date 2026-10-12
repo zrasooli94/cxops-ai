@@ -184,34 +184,40 @@ class ConversationReplyService:
             delivered_at=None,
         )
 
-        ConversationMessageRepository.add(db, message)
-        await ConversationMessageRepository.flush(db)
-
-        # CXOps-local replies have no external target, so they skip the durable
-        # outbox entirely: the worker's exact local delivery path runs here in
-        # the same transaction as the accepted reply.
+        # Captured as plain values: the IntegrityError path below rolls back,
+        # which expires every loaded instance (MissingGreenlet on re-read).
+        conversation_pk = conversation.id
         local_fast_path = conversation.provider == "cxops"
 
-        if local_fast_path:
-            await ConversationDeliveryService().deliver(
-                db,
-                message_id=message.id,
-                organization_id=organization_id,
-            )
-        else:
-            job = IntegrationJob(
-                organization_id=organization_id,
-                dedupe_key=job_dedupe_key,
-                job_type=JOB_TYPE_CONVERSATION_REPLY,
-                payload={
-                    "message_id": message.id,
-                    "request_id": client_request_id,
-                },
-            )
-
-            IntegrationJobRepository.add(db, job)
-
+        # The INSERT can collide at the flush (not only at the commit) when a
+        # concurrent request with the same client_request_id wins the race, so
+        # the whole unit is inside the IntegrityError handling.
         try:
+            ConversationMessageRepository.add(db, message)
+            await ConversationMessageRepository.flush(db)
+
+            # CXOps-local replies have no external target, so they skip the
+            # durable outbox entirely: the worker's exact local delivery path
+            # runs here in the same transaction as the accepted reply.
+            if local_fast_path:
+                await ConversationDeliveryService().deliver(
+                    db,
+                    message_id=message.id,
+                    organization_id=organization_id,
+                )
+            else:
+                job = IntegrationJob(
+                    organization_id=organization_id,
+                    dedupe_key=job_dedupe_key,
+                    job_type=JOB_TYPE_CONVERSATION_REPLY,
+                    payload={
+                        "message_id": message.id,
+                        "request_id": client_request_id,
+                    },
+                )
+
+                IntegrationJobRepository.add(db, job)
+
             await db.commit()
         except IntegrityError:
             await db.rollback()
@@ -221,7 +227,7 @@ class ConversationReplyService:
             existing_message = (
                 await ConversationMessageRepository.get_by_dedupe_key(
                     db,
-                    conversation_id=conversation.id,
+                    conversation_id=conversation_pk,
                     organization_id=organization_id,
                     dedupe_key=dedupe_key,
                 )
@@ -377,30 +383,29 @@ class ConversationReplyService:
         Called by the integration job service when a delivery job fails. This
         is intentionally non-raising: the job's own status already reflects the
         retry/failed decision.
+
+        The write is a conditional UPDATE (``delivery_status <> 'sent'``), so a
+        reply delivered by another worker between this failure and this sync is
+        never overwritten.
         """
         message = await ConversationMessageRepository.get_by_id_for_tenant(
             db,
             message_id=message_id,
             organization_id=organization_id,
         )
-        if message is None:
-            return
-
-        if message.delivery_status == DELIVERY_STATUS_SENT:
+        if message is None or message.delivery_status == DELIVERY_STATUS_SENT:
             return
 
         changes: dict = {
             "delivery_error_code": error_code,
+            "delivery_status": (
+                DELIVERY_STATUS_RETRYING if will_retry else DELIVERY_STATUS_FAILED
+            ),
         }
-        if will_retry:
-            changes["delivery_status"] = DELIVERY_STATUS_RETRYING
-        else:
-            changes["delivery_status"] = DELIVERY_STATUS_FAILED
-
-        await ConversationMessageRepository.update_for_tenant(
+        await ConversationMessageRepository.update_unless_sent_for_tenant(
             db,
-            message=message,
-            changes=changes,
+            message_id=message_id,
             organization_id=organization_id,
+            changes=changes,
         )
         await db.commit()

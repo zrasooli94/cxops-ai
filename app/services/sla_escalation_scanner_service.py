@@ -1,13 +1,13 @@
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.integration_job import IntegrationJob
 from app.models.ticket import Ticket
 from app.repositories.integration_job_repository import IntegrationJobRepository
+from app.repositories.savepoint import insert_in_savepoint
 from app.repositories.ticket_repository import TicketRepository
 from app.services.ticket_sla_service import (
     DUE_SOON_MINUTES,
@@ -172,12 +172,12 @@ class SLAEscalationScannerService:
                     "due_at": due_at.isoformat() if due_at else None,
                 },
             )
-            IntegrationJobRepository.add(db, job)
-            try:
-                await IntegrationJobRepository.flush(db)
+            # SAVEPOINT: a dedupe collision must not roll back jobs already
+            # flushed for the other milestone, nor expire ``ticket``.
+            collision = await insert_in_savepoint(db, job)
+            if collision is None:
                 enqueued += 1
-            except IntegrityError:
-                await db.rollback()
+            else:
                 log.debug(
                     "sla_job_dedupe_race",
                     dedupe_key=dedupe_key,

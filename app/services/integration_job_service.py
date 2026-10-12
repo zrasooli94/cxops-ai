@@ -28,6 +28,7 @@ from app.services.agent_execution_service import (
     agent_execution_service,
 )
 from app.services.conversation_delivery_service import (
+    DELIVERY_ERROR_DELIVERY_IN_PROGRESS,
     DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
     ConversationDeliveryError,
     ConversationDeliveryService,
@@ -36,6 +37,7 @@ from app.services.conversation_reply_service import (
     JOB_TYPE_CONVERSATION_REPLY,
     ConversationReplyService,
 )
+from app.services.delivery_lease import reply_delivery_lease
 from app.services.service_escalation_service import (
     ServiceEscalationService,
 )
@@ -53,6 +55,33 @@ from app.services.zendesk_webhook_service import (
 
 class AgentExecutionQueueBlockedError(Exception):
     pass
+
+
+# What ``IntegrationJobService.execute`` reports when a handler already wrote the
+# job's terminal state itself (the worker must not complete it afterwards).
+EXECUTE_TERMINAL_FAILED = "terminal_failed"
+EXECUTE_CLAIM_LOST = "claim_lost"
+
+
+class JobDeferredError(Exception):
+    """Another worker is handling this unit of work right now.
+
+    Not a failure of this attempt: the worker requeues the job after a fixed
+    delay WITHOUT consuming an attempt and without touching the work item's
+    state (the other worker owns it). Retrying it like an error would burn the
+    job's attempts in seconds and mark a reply failed while it is being sent.
+    """
+
+
+class PermanentJobError(ValueError):
+    """A job that can never succeed by being retried.
+
+    Raised for structurally invalid jobs: a missing tenant binding, a payload
+    that references a row the job's tenant does not own, an unsupported type
+    or target. The worker fails such a job immediately instead of spending its
+    remaining attempts (each of which would fail identically). Subclasses
+    ``ValueError`` so existing handling of these errors keeps working.
+    """
 
 
 class IntegrationJobService:
@@ -183,13 +212,19 @@ class IntegrationJobService:
     async def execute(
         db: AsyncSession,
         job: IntegrationJob,
-    ) -> None:
+    ) -> str | None:
+        """Run one claimed job.
+
+        Returns ``None`` normally (the worker completes the job), or
+        ``EXECUTE_TERMINAL_FAILED`` / ``EXECUTE_CLAIM_LOST`` when a handler has
+        already settled the job's state itself.
+        """
         # Zendesk webhook event
         if job.job_type == IntegrationJobService.ZENDESK_TICKET_EVENT:
             payload = job.payload
 
             if job.organization_id is None:
-                raise ValueError("Zendesk webhook job is missing an organization binding")
+                raise PermanentJobError("Zendesk webhook job is missing an organization binding")
 
             await ZendeskWebhookService.process(
                 db=db,
@@ -200,7 +235,7 @@ class IntegrationJobService:
                 organization_id=job.organization_id,
             )
 
-            return
+            return None
 
         # Approved agent execution
         if job.job_type == IntegrationJobService.AGENT_EXECUTION:
@@ -213,7 +248,7 @@ class IntegrationJobService:
             organization_id = job.organization_id
 
             if organization_id is None:
-                raise ValueError("Agent execution job is missing an organization binding")
+                raise PermanentJobError("Agent execution job is missing an organization binding")
 
             await agent_execution_service.execute(
                 db=db,
@@ -221,14 +256,16 @@ class IntegrationJobService:
                 organization_id=organization_id,
             )
 
-            return
+            return None
 
         # Human reply delivery
         if job.job_type == IntegrationJobService.CONVERSATION_REPLY:
             organization_id = job.organization_id
+            job_id = job.id
+            claimed_at = job.locked_at
 
             if organization_id is None:
-                raise ValueError("Conversation reply job is missing an organization binding")
+                raise PermanentJobError("Conversation reply job is missing an organization binding")
 
             payload = job.payload
             message_id = int(payload["message_id"])
@@ -239,53 +276,83 @@ class IntegrationJobService:
                 organization_id=organization_id,
             )
             if message is None:
-                raise ValueError("Conversation reply job references a missing message")
+                raise PermanentJobError("Conversation reply job references a missing message")
 
-            await ConversationMessageRepository.update_for_tenant(
-                db,
-                message=message,
-                changes={"delivery_status": "sending"},
-                organization_id=organization_id,
-            )
+            # No "sending" pre-mark here: ``deliver`` first checks whether the
+            # message is already ``sent`` (a no-op re-run) and only then marks
+            # it ``sending``. Pre-marking it here overwrote ``sent`` and defeated
+            # that guard, leaving the provider marker scan as the only
+            # duplicate-send protection on a re-run.
+            # One worker per reply at a time (see app/services/delivery_lease.py):
+            # a worker whose claim was recovered may still be running, and two
+            # concurrent deliveries would both miss each other's marker.
+            async with reply_delivery_lease(message_id) as leased:
+                if not leased:
+                    raise JobDeferredError(
+                        f"{DELIVERY_ERROR_DELIVERY_IN_PROGRESS}: another worker "
+                        "is delivering this reply"
+                    )
+                try:
+                    await ConversationDeliveryService().deliver(
+                        db=db,
+                        message_id=message_id,
+                        organization_id=organization_id,
+                    )
 
-            try:
-                await ConversationDeliveryService().deliver(
-                    db=db,
-                    message_id=message_id,
-                    organization_id=organization_id,
-                )
+                except ConversationDeliveryError as exc:
+                    # Non-retryable delivery failure (configuration, unsupported
+                    # provider, invalid target). Mark the job and message failed
+                    # now rather than exhausting retries.
+                    await db.rollback()
 
-            except ConversationDeliveryError as exc:
-                # Non-retryable delivery failure (configuration, unsupported
-                # provider, invalid target). Mark the job and message failed
-                # now rather than exhausting retries.
-                await db.rollback()
+                    # rollback() expires every instance loaded in this session
+                    # (expire_on_commit=False only covers commit), so nothing from
+                    # before it is read again: every write below is a single
+                    # awaited statement keyed by the captured ids.
+                    #
+                    # Fenced: the job is failed only if this worker still holds the
+                    # claim, in ONE conditional UPDATE whose row lock lasts until
+                    # the commit below. If the claim was lost to a newer worker,
+                    # this worker writes nothing - neither the job nor the message.
+                    claim_held = await IntegrationJobRepository.fail_claimed(
+                        db,
+                        job_id=job_id,
+                        claimed_at=claimed_at,
+                        error_message=str(exc),
+                    )
+                    if not claim_held:
+                        still_exists = await IntegrationJobRepository.get_by_id_unscoped(
+                            db,
+                            job_id,
+                        )
+                        if still_exists is not None:
+                            await db.rollback()
+                            return EXECUTE_CLAIM_LOST
+                        # The job row vanished: nobody owns it, so recording the
+                        # message failure cannot conflict with another worker.
 
-                job.status = "failed"
-                job.locked_at = None
-                job.last_error = str(exc)[:4000]
+                    await ConversationMessageRepository.update_unless_sent_for_tenant(
+                        db,
+                        message_id=message_id,
+                        organization_id=organization_id,
+                        changes={
+                            "delivery_status": "failed",
+                            "delivery_error_code": exc.error_code,
+                        },
+                    )
 
-                await ConversationMessageRepository.update_for_tenant(
-                    db,
-                    message=message,
-                    changes={
-                        "delivery_status": "failed",
-                        "delivery_error_code": exc.error_code,
-                    },
-                    organization_id=organization_id,
-                )
+                    await db.commit()
+                    return EXECUTE_TERMINAL_FAILED
 
-                await db.commit()
-                return
 
-            return
+            return None
 
         # SLA escalation transition job
         if job.job_type == IntegrationJobService.SLA_ESCALATION:
             payload = job.payload
             organization_id = job.organization_id
             if organization_id is None:
-                raise ValueError("SLA escalation job is missing an organization binding")
+                raise PermanentJobError("SLA escalation job is missing an organization binding")
 
             ticket_id = int(payload["ticket_id"])
             milestone = str(payload["milestone"])
@@ -304,7 +371,7 @@ class IntegrationJobService:
                 organization_id=organization_id,
             )
             if ticket is None:
-                return
+                return None
 
             # Revalidation: stale jobs are no-ops.
             current_cycle = ticket.resolution_sla_cycle if milestone == "resolution" else 0
@@ -314,7 +381,7 @@ class IntegrationJobService:
                 else ticket.resolution_due_at
             )
             if current_cycle != expected_cycle or current_due_at != expected_due_at:
-                return
+                return None
 
             # A milestone that completed after this job was enqueued is stale:
             # completion re-evaluated the escalation via ensure_transition, which
@@ -322,7 +389,7 @@ class IntegrationJobService:
             if (milestone == "first_response" and ticket.first_response_at is not None) or (
                 milestone == "resolution" and ticket.resolved_at is not None
             ):
-                return
+                return None
 
             current_state = (
                 TicketSLAService.first_response_state(ticket, now=datetime.now(UTC))
@@ -334,7 +401,7 @@ class IntegrationJobService:
                 "breached": "breached",
             }
             if current_state != expected_state_map.get(expected_stage):
-                return
+                return None
 
             escalation = await ServiceEscalationService.ensure_transition(
                 db,
@@ -358,39 +425,43 @@ class IntegrationJobService:
                         organization_id=organization_id,
                     )
 
-            return
+            return None
 
         # Durable AI evaluation job
         if job.job_type == IntegrationJobService.AI_EVALUATION:
             organization_id = job.organization_id
 
             if organization_id is None:
-                raise ValueError("AI evaluation job is missing an organization binding")
+                raise PermanentJobError("AI evaluation job is missing an organization binding")
 
             payload = job.payload
             evaluation_run_id = str(payload["evaluation_run_id"])
             target_type = str(payload["target_type"])
-
-            # Imported lazily: ``agent_workflow_service`` imports this module at
-            # import time, and AIEvaluationService pulls agent_evaluation_service
-            # → agent_workflow_service, which would deadlock at module load.
-            from app.services.ai_evaluation_service import AIEvaluationService
+            if target_type not in ("rag", "agent"):
+                raise PermanentJobError(
+                    f"Unsupported AI evaluation target_type: {target_type}"
+                )
 
             try:
+                # Imported lazily: ``agent_workflow_service`` imports this
+                # module at import time, and AIEvaluationService pulls
+                # agent_evaluation_service -> agent_workflow_service, which
+                # would deadlock at module load. Inside the ``try`` so a broken
+                # dependency surfaces as a sanitized, retryable job error.
+                from app.services.ai_evaluation_service import AIEvaluationService
+
                 if target_type == "rag":
                     await AIEvaluationService.execute_existing_rag_run(
                         db=db,
                         organization_id=organization_id,
                         run_id=evaluation_run_id,
                     )
-                elif target_type == "agent":
+                else:
                     await AIEvaluationService.execute_existing_agent_run(
                         db=db,
                         organization_id=organization_id,
                         run_id=evaluation_run_id,
                     )
-                else:
-                    raise ValueError(f"Unsupported AI evaluation target_type: {target_type}")
             except Exception as exc:
                 # Job-facing errors stay type-name-only so the worker's
                 # ``last_error``/logs never echo case input or model output;
@@ -399,9 +470,9 @@ class IntegrationJobService:
                     f"ai.evaluation run {evaluation_run_id} failed: {type(exc).__name__}"
                 ) from exc
 
-            return
+            return None
 
-        raise ValueError(f"Unknown job type: {job.job_type}")
+        raise PermanentJobError(f"Unknown job type: {job.job_type}")
 
     @staticmethod
     async def handle_failure(

@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.metrics import record_human_reply_delivery
-from app.integrations.zendesk.client import ZendeskClient
+from app.integrations.zendesk.client import ZendeskAPIError, ZendeskClient
+from app.integrations.zendesk.marker_scan import (
+    MarkerScanInconclusive,
+    find_marker,
+    marker_boundary,
+)
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.ticket import Ticket
@@ -32,12 +37,24 @@ DELIVERY_ERROR_TARGET_UNAVAILABLE = "target_unavailable"
 DELIVERY_ERROR_PROVIDER_REJECTED = "provider_rejected"
 DELIVERY_ERROR_CONFIGURATION_UNAVAILABLE = "configuration_unavailable"
 DELIVERY_ERROR_UNSUPPORTED = "unsupported"
+# Another worker currently holds this reply's delivery lease (retry later).
+DELIVERY_ERROR_DELIVERY_IN_PROGRESS = "delivery_in_progress"
+# The pre-send marker scan could not prove whether the reply was already
+# delivered (e.g. the ticket gained more comments than the bounded scan covers,
+# or Zendesk returned an unusable page). Nothing is sent; an operator must check
+# the ticket for the reply marker before retrying manually.
+DELIVERY_ERROR_DELIVERY_UNVERIFIED = "delivery_unverified"
 
 # Provider marker prefix used for Zendesk exactly-once delivery recovery.
 # This text is intentionally customer-visible so humans can correlate replies.
 REPLY_MARKER_PREFIX = "CXOps Reply Ref:"
 
-MAX_ZENDESK_COMMENTS_FOR_MARKER = 50
+
+# Zendesk responses that mean "this request will never be accepted as sent":
+# bad request, forbidden, ticket gone, conflict, validation. Retrying them only
+# burns attempts. 401 is retried inside the client after a token refresh; 408,
+# 429 and 5xx are transient.
+PERMANENT_PROVIDER_REJECTION_STATUSES = frozenset({400, 403, 404, 409, 422})
 
 
 class ConversationDeliveryError(Exception):
@@ -137,11 +154,16 @@ class ZendeskConversationDeliveryAdapter:
 
         marker = _reply_marker(delivery_token)
 
+        # Fail closed: send only if the scan PROVES the marker is absent. A
+        # scan that cannot run is retryable; one that cannot reach a
+        # conclusion is terminal (operator verifies on Zendesk).
         existing_comment_id = await self._find_marker_comment(
             db,
             zendesk_ticket_id=zendesk_ticket_id,
             marker=marker,
             organization_id=organization_id,
+            not_before=marker_boundary(message.created_at),
+            fail_closed=True,
         )
 
         if existing_comment_id is not None:
@@ -179,6 +201,14 @@ class ZendeskConversationDeliveryAdapter:
             )
             if isinstance(exc, ConversationDeliveryError):
                 raise
+            if (
+                isinstance(exc, ZendeskAPIError)
+                and exc.status_code in PERMANENT_PROVIDER_REJECTION_STATUSES
+            ):
+                raise ConversationDeliveryError(
+                    DELIVERY_ERROR_PROVIDER_REJECTED,
+                    "Zendesk rejected the reply",
+                ) from exc
             raise ConversationDeliveryTransientError(
                 DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
                 "Zendesk reply request failed",
@@ -191,6 +221,7 @@ class ZendeskConversationDeliveryAdapter:
             zendesk_ticket_id=zendesk_ticket_id,
             marker=marker,
             organization_id=organization_id,
+            not_before=marker_boundary(message.created_at),
         )
 
         await self._mark_sent(
@@ -208,29 +239,58 @@ class ZendeskConversationDeliveryAdapter:
         zendesk_ticket_id: int,
         marker: str,
         organization_id: int,
+        not_before: datetime,
+        fail_closed: bool = False,
     ) -> str | None:
-        try:
-            response = await self.zendesk.get_ticket_comments(
+        """The id of the comment carrying ``marker``, or ``None`` if PROVEN absent.
+
+        A complete, bounded, newest-first cursor scan (see
+        ``app/integrations/zendesk/marker_scan.py``). With ``fail_closed=True``:
+        a provider/transport failure raises a retryable error, and an
+        inconclusive scan raises a non-retryable ``delivery_unverified`` error -
+        never "not found". Without it (post-send id lookup) failures yield
+        ``None``.
+        """
+
+        async def fetch_page(cursor: str | None) -> dict:
+            return await self.zendesk.get_ticket_comments_page(
                 db,
-                ticket_id=zendesk_ticket_id,
+                zendesk_ticket_id,
                 organization_id=organization_id,
+                cursor=cursor,
             )
-        except Exception:
+
+        try:
+            result = await find_marker(
+                fetch_page, marker=marker, not_before=not_before, public_only=True
+            )
+        except MarkerScanInconclusive as exc:
+            log.warning(
+                "zendesk_marker_scan_inconclusive",
+                zendesk_ticket_id=zendesk_ticket_id,
+                organization_id=organization_id,
+                reason=exc.reason,
+                pages=exc.pages,
+            )
+            if fail_closed:
+                raise ConversationDeliveryError(
+                    DELIVERY_ERROR_DELIVERY_UNVERIFIED,
+                    f"Reply marker scan inconclusive ({exc.reason}); not sending",
+                ) from exc
+            return None
+        except Exception as exc:
             log.exception(
                 "zendesk_marker_scan_failed",
                 zendesk_ticket_id=zendesk_ticket_id,
                 organization_id=organization_id,
             )
+            if fail_closed:
+                raise ConversationDeliveryTransientError(
+                    DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
+                    "Zendesk marker scan failed; not sending",
+                ) from exc
             return None
-
-        comments = response.get("comments") or []
-        for comment in comments[-MAX_ZENDESK_COMMENTS_FOR_MARKER:]:
-            body = str(comment.get("body", ""))
-            if marker in body:
-                comment_id = comment.get("id")
-                if comment_id is not None:
-                    return str(comment_id)
-        return None
+        return result.comment_id if result.found else None
 
     async def _mark_sent(
         self,
@@ -360,6 +420,9 @@ class ConversationDeliveryService:
                 DELIVERY_ERROR_TARGET_UNAVAILABLE,
                 "Message not found",
             )
+        # The identity map may hold a copy loaded before another worker
+        # committed "sent"; the already-sent guard below must see the database.
+        await db.refresh(message)
 
         if message.delivery_token is None:
             raise ConversationDeliveryError(

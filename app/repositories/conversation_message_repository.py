@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_message import ConversationMessage
@@ -124,6 +124,34 @@ class ConversationMessageRepository:
             setattr(message, field, value)
 
         return message
+
+    @staticmethod
+    async def update_unless_sent_for_tenant(
+        db: AsyncSession,
+        *,
+        message_id: int,
+        organization_id: int,
+        changes: dict,
+    ) -> bool:
+        """Atomically apply ``changes`` unless the message is already ``sent``.
+
+        A single conditional ``UPDATE`` (tenant-scoped, ``delivery_status <>
+        'sent'``) instead of read-check-write: a reply another worker has just
+        delivered can never be turned back into ``retrying``/``failed`` by a
+        stale read. Returns whether a row changed. Does not commit.
+        """
+        result = await db.execute(
+            update(ConversationMessage)
+            .where(
+                ConversationMessage.id == message_id,
+                ConversationMessage.organization_id == organization_id,
+                ConversationMessage.delivery_status != "sent",
+            )
+            .values(**changes)
+            .returning(ConversationMessage.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.first() is not None
 
     @staticmethod
     async def get_by_delivery_token_for_tenant(
