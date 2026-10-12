@@ -227,8 +227,14 @@ def test_a_failed_preflight_stops_the_job(workflow_lines: list[str]) -> None:
     )
 
 
+WORKER_COMMAND = (
+    "run: python -m scripts.worker --once --max-jobs 25 --max-seconds 240 "
+    "--finalize-expired-public-chat --expiry-batch-size 50"
+)
+
+
 def test_the_worker_command_is_bounded(workflow_lines: list[str]) -> None:
-    """``--once --max-jobs 25 --max-seconds 240``, spelled out.
+    """``--once --max-jobs 25 --max-seconds 240`` plus expiry, spelled out.
 
     The defaults live in ``scripts/worker.py`` too, but the workflow states
     them so the bound is visible in the one place an operator looks when a run
@@ -236,23 +242,30 @@ def test_the_worker_command_is_bounded(workflow_lines: list[str]) -> None:
     interval, which is what keeps two scheduled runs from overlapping by
     design rather than by luck.
     """
-    assert (
-        "run: python -m scripts.worker --once --max-jobs 25 --max-seconds 240"
-        in workflow_lines
+    worker_lines = [line for line in workflow_lines if "scripts.worker" in line]
+    assert worker_lines == [WORKER_COMMAND], (
+        "exactly one worker invocation, with the pinned bounds"
     )
 
 
-def test_expired_public_chat_finalization_is_not_enabled_yet(
+def test_expired_public_chat_finalization_is_enabled_with_batch_50(
     workflow_lines: list[str],
 ) -> None:
-    """Phase 1P.7.3B ships the opt-in switch disabled.
+    """Phase 1P.7.3B activation: scheduled expiry runs, bounded at 50.
 
-    Enabling scheduled expiry in production is a separate, reviewed change; a
-    flag slipped into the scheduled command would start closing real customer
-    sessions every five minutes.
+    The flag is opt-in in ``scripts/worker.py`` (disabled by default), so this
+    workflow is the one place production turns it on. Both flags must appear
+    exactly once, only on the one-shot worker command, and the batch size is
+    pinned: raising it is a reviewed change, not a drive-by edit.
     """
-    assert not any("--finalize-expired-public-chat" in line for line in workflow_lines)
-    assert not any("--expiry-batch-size" in line for line in workflow_lines)
+    tokens = WORKER_COMMAND.split()
+    assert tokens.count("--finalize-expired-public-chat") == 1
+    assert tokens.count("--expiry-batch-size") == 1
+    assert tokens[tokens.index("--expiry-batch-size") + 1] == "50"
+    assert "--once" in tokens, "expiry is a one-shot-only behavior"
+    for flag in ("--finalize-expired-public-chat", "--expiry-batch-size"):
+        carrying = [line for line in workflow_lines if flag in line]
+        assert carrying == [WORKER_COMMAND], f"{flag} must only be on the worker step"
 
 
 def test_the_job_timeout_is_a_backstop(workflow_lines: list[str]) -> None:
