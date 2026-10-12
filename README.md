@@ -489,7 +489,7 @@ AI latency, cost, reliability, agent KPIs, durable queue history, and ROI measur
 
 ### Backend
 
-- Python 3.11
+- Python 3.12 for local development; CI runs Python 3.11 (both supported)
 - FastAPI
 - Pydantic
 - SQLAlchemy
@@ -587,16 +587,35 @@ cd cxops-ai
 
 ## 2. Create Python environment
 
+Use Python 3.12 for development (CI runs 3.11; both are supported). Create the
+virtualenv with an explicit interpreter, never whatever plain `python` happens
+to be (on many machines that is Anaconda or a system Python):
+
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
+python3.12 -m venv .venv
 ```
+
+From here on, run Python through the virtualenv explicitly
+(`.venv/bin/python -m ...`) or activate it first (`source .venv/bin/activate`).
 
 ## 3. Install backend dependencies
 
 ```bash
-pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
+
+Then check the environment. The check uses only the standard library, opens
+no network connection, and never prints credentials:
+
+```bash
+.venv/bin/python scripts/check_dev_env.py --dev
+```
+
+It reports the interpreter and version, whether it is the repository `.venv`,
+what plain `python` on `PATH` resolves to, any missing modules, and the
+database target category (`local`, `neon`, `render`, `other`). A Neon
+(production) or other non-local `DATABASE_URL` is an error. Running the test
+suite with an unsupported interpreter stops immediately with the same advice.
 
 ## 4. Configure environment
 
@@ -660,16 +679,18 @@ http://localhost:3000
 
 # Testing
 
-Backend:
+Backend (always through the project interpreter, never a bare `pytest`
+that may belong to another installation):
 
 ```bash
-pytest -q
+.venv/bin/python -m pytest -q -m "not integration"
 ```
 
-Python quality:
+Python quality (Ruff is pinned to 0.16.10 in `requirements-dev.txt`):
 
 ```bash
-python -m ruff check app tests scripts alembic
+.venv/bin/python -m ruff check app tests scripts alembic
+.venv/bin/python -m mypy app
 ```
 
 Frontend:
