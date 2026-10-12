@@ -8,6 +8,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Fail fast, with an actionable message, under the wrong interpreter (e.g. an
+# Anaconda Python 3.13 without the project's dependencies) instead of an
+# obscure import error deep inside the app package.
+from scripts.check_dev_env import unsupported_python_message
+
+_unsupported = unsupported_python_message(tuple(sys.version_info[:3]))
+if _unsupported is not None:
+    import pytest as _pytest
+
+    _pytest.exit(_unsupported, returncode=4)
+
 import pytest
 import pytest_asyncio
 
