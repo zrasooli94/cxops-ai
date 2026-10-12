@@ -32,7 +32,6 @@ from app.services.conversation_delivery_service import (
     DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
     ConversationDeliveryError,
     ConversationDeliveryService,
-    ConversationDeliveryTransientError,
 )
 from app.services.conversation_reply_service import (
     JOB_TYPE_CONVERSATION_REPLY,
@@ -62,6 +61,16 @@ class AgentExecutionQueueBlockedError(Exception):
 # job's terminal state itself (the worker must not complete it afterwards).
 EXECUTE_TERMINAL_FAILED = "terminal_failed"
 EXECUTE_CLAIM_LOST = "claim_lost"
+
+
+class JobDeferredError(Exception):
+    """Another worker is handling this unit of work right now.
+
+    Not a failure of this attempt: the worker requeues the job after a fixed
+    delay WITHOUT consuming an attempt and without touching the work item's
+    state (the other worker owns it). Retrying it like an error would burn the
+    job's attempts in seconds and mark a reply failed while it is being sent.
+    """
 
 
 class PermanentJobError(ValueError):
@@ -279,9 +288,9 @@ class IntegrationJobService:
             # concurrent deliveries would both miss each other's marker.
             async with reply_delivery_lease(message_id) as leased:
                 if not leased:
-                    raise ConversationDeliveryTransientError(
-                        DELIVERY_ERROR_DELIVERY_IN_PROGRESS,
-                        "Another worker is delivering this reply",
+                    raise JobDeferredError(
+                        f"{DELIVERY_ERROR_DELIVERY_IN_PROGRESS}: another worker "
+                        "is delivering this reply"
                     )
                 try:
                     await ConversationDeliveryService().deliver(

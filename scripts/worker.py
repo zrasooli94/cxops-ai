@@ -36,6 +36,7 @@ from app.services.integration_job_service import (
     EXECUTE_CLAIM_LOST,
     EXECUTE_TERMINAL_FAILED,
     IntegrationJobService,
+    JobDeferredError,
     PermanentJobError,
 )
 from app.services.public_chat_expiry_service import (
@@ -181,6 +182,10 @@ JOB_OUTCOME_COMPLETED = "completed"
 JOB_OUTCOME_RETRY = "retry"
 JOB_OUTCOME_FAILED = "failed"
 JOB_OUTCOME_CLAIM_LOST = "claim_lost"
+JOB_OUTCOME_DEFERRED = "deferred"
+
+# Requeue delay when another worker is handling the same unit of work.
+DEFERRED_JOB_DELAY_SECONDS = 60
 
 
 class JobResult(NamedTuple):
@@ -238,7 +243,10 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> JobResul
 
         # execute() may have settled the job itself (non-retryable failure),
         # or found that this worker no longer owns it. Otherwise the job is
-        # completed - fenced, so a lost claim is reported, never applied.
+        # completed. NOTE: ``fresh_job`` comes from this session's identity map
+        # and can be stale; it only routes the outcome. Ownership is decided by
+        # the fenced UPDATE inside mark_completed / mark_failed, which is atomic
+        # in the database and rolls back this worker's writes on a lost claim.
         fresh_job = (
             None
             if execution == EXECUTE_CLAIM_LOST
@@ -297,6 +305,21 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> JobResul
             outcome = JOB_OUTCOME_CLAIM_LOST
             await db.rollback()
             log.warning("job_claim_lost", job_id=job_id, job_type=job_type)
+
+    except JobDeferredError as exc:
+        await db.rollback()
+        deferred = await IntegrationJobRepository.defer_claimed(
+            db,
+            job_id=job_id,
+            claimed_at=claimed_at,
+            delay_seconds=DEFERRED_JOB_DELAY_SECONDS,
+            reason=str(exc),
+        )
+        outcome = JOB_OUTCOME_DEFERRED if deferred is not None else JOB_OUTCOME_CLAIM_LOST
+        error_category = type(exc).__name__
+        log.warning("job_deferred", job_id=job_id, job_type=job_type)
+        unbind_context()
+        return JobResult(outcome, error_category)
 
     except Exception as exc:  # noqa: BLE001
         await db.rollback()

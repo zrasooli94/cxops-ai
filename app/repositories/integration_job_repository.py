@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.integration_job import IntegrationJob
@@ -339,6 +339,37 @@ class IntegrationJobRepository:
             await db.rollback()
             return None
 
+        await db.commit()
+        return await _reload(db, job_id)
+
+    @staticmethod
+    async def defer_claimed(
+        db: AsyncSession,
+        *,
+        job_id: int,
+        claimed_at: datetime | None,
+        delay_seconds: int,
+        reason: str,
+    ) -> IntegrationJob | None:
+        """Requeue a job WITHOUT consuming an attempt (another worker is busy
+        with the same unit of work). Fenced like every terminal write; commits.
+        """
+        applied = await _fenced_update(
+            db,
+            job_id=job_id,
+            claimed_at=claimed_at,
+            values={
+                "status": "retry",
+                "locked_at": None,
+                "attempts": func.greatest(IntegrationJob.attempts - 1, 0),
+                "available_at": datetime.now(timezone.utc)
+                + timedelta(seconds=delay_seconds),
+                "last_error": reason[:4000],
+            },
+        )
+        if not applied:
+            await db.rollback()
+            return None
         await db.commit()
         return await _reload(db, job_id)
 

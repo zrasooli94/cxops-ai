@@ -392,6 +392,9 @@ class ConversationDeliveryService:
                 DELIVERY_ERROR_TARGET_UNAVAILABLE,
                 "Message not found",
             )
+        # The identity map may hold a copy loaded before another worker
+        # committed "sent"; the already-sent guard below must see the database.
+        await db.refresh(message)
 
         if message.delivery_token is None:
             raise ConversationDeliveryError(
