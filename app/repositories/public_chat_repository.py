@@ -90,8 +90,16 @@ class PublicChatRepository:
         db: AsyncSession,
         session_id: int,
         organization_id: int,
+        *,
+        skip_locked: bool = False,
     ) -> PublicChatSession | None:
         """Tenant-scoped ``SELECT ... FOR UPDATE`` read of one live session.
+
+        ``skip_locked=True`` (scheduled expiry pass only) adds ``SKIP LOCKED``:
+        a row another transaction holds is returned as ``None`` immediately
+        instead of blocking, so a background pass can never queue behind a
+        live staff/customer action. The default keeps the blocking behavior the
+        manual CLI relies on.
 
         Used by the expiry finalizer immediately before it mutates a session:
         the row lock is held by the enclosing transaction until it ends, so once
@@ -107,7 +115,7 @@ class PublicChatRepository:
                 PublicChatSession.id == session_id,
                 PublicChatSession.organization_id == organization_id,
             )
-            .with_for_update()
+            .with_for_update(skip_locked=skip_locked)
             .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()

@@ -39,6 +39,7 @@ from typing import Any
 
 import pytest
 
+from app.services.public_chat_expiry_service import ExpiryBatchResult
 from scripts import worker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -752,3 +753,281 @@ def test_the_worker_module_never_invokes_migrations() -> None:
     source = WORKER_SOURCE.read_text(encoding="utf-8")
     for forbidden in ("run_migrations", "alembic", "upgrade head", "subprocess"):
         assert forbidden not in source, f"scripts/worker.py references {forbidden!r}"
+
+
+# ---------------------------------------------------------------------------
+# Scheduled expired public-chat finalization (Phase 1P.7.3B)
+# ---------------------------------------------------------------------------
+
+
+class ExpiryBatchRecorder:
+    """Stands in for ``PublicChatExpiryService.finalize_expired_batch``."""
+
+    def __init__(
+        self,
+        *,
+        raises: Exception | None = None,
+        result: ExpiryBatchResult | None = None,
+    ) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._raises = raises
+        self._result = result
+
+    async def __call__(self, session_factory: Any, **kwargs: Any) -> ExpiryBatchResult:
+        self.calls.append({"session_factory": session_factory, **kwargs})
+        if self._raises is not None:
+            raise self._raises
+        if self._result is not None:
+            return self._result
+        return ExpiryBatchResult(
+            limit=kwargs["limit"],
+            tenants_discovered=2,
+            tenants_processed=2,
+            candidates_attempted=3,
+            finalized=3,
+        )
+
+
+def install_expiry(
+    monkeypatch: pytest.MonkeyPatch, recorder: ExpiryBatchRecorder
+) -> ExpiryBatchRecorder:
+    monkeypatch.setattr(
+        worker.PublicChatExpiryService, "finalize_expired_batch", recorder
+    )
+    return recorder
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_queue(monkeypatch, lambda _n: None)
+    expiry = install_expiry(monkeypatch, ExpiryBatchRecorder())
+
+    summary = await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    assert expiry.calls == []
+    assert not any(key.startswith("expiry_") for key in summary)
+
+
+@pytest.mark.asyncio
+async def test_expiry_runs_once_after_the_drain_with_its_own_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expiry never consumes --max-jobs and never runs before jobs are drained."""
+    order: list[str] = []
+    claim, _factory, _processed = install_queue(
+        monkeypatch, lambda n: make_job(n) if n <= 2 else None
+    )
+
+    async def _record_process(_db: FakeSession, job: SimpleNamespace) -> None:
+        order.append(f"job-{job.id}")
+
+    monkeypatch.setattr(worker, "process_claimed_job", _record_process)
+    recorder = ExpiryBatchRecorder()
+
+    async def _expiry(session_factory: Any, **kwargs: Any) -> ExpiryBatchResult:
+        order.append("expiry")
+        return await recorder(session_factory, **kwargs)
+
+    monkeypatch.setattr(worker.PublicChatExpiryService, "finalize_expired_batch", _expiry)
+    monkeypatch.setattr(worker, "asyncio", SimpleNamespace(sleep=_forbidden_sleep))
+
+    summary = await worker.run_worker_once(
+        max_jobs=2,
+        max_seconds=240,
+        finalize_expired_public_chat=True,
+        expiry_batch_size=7,
+    )
+
+    assert order == ["job-1", "job-2", "expiry"]
+    assert claim.calls == 2
+    assert summary["jobs_processed"] == 2
+    assert summary["exit_reason"] == "max_jobs"
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]["limit"] == 7
+    assert recorder.calls[0]["session_factory"] is worker.AsyncSessionLocal
+    assert summary["expiry_finalized"] == 3
+    assert summary["expiry_outcome"] == "ok"
+    assert summary["expiry_exit_reason"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_expiry_shares_the_one_shot_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock(now=1_000.0)
+    monkeypatch.setattr(worker, "time", clock)
+    install_queue(monkeypatch, lambda _n: None)
+    expiry = install_expiry(monkeypatch, ExpiryBatchRecorder())
+
+    await worker.run_worker_once(
+        max_jobs=25, max_seconds=240, finalize_expired_public_chat=True
+    )
+
+    should_stop = expiry.calls[0]["should_stop"]
+    clock.now = 1_239.9
+    assert should_stop() is False
+    clock.now = 1_240.0
+    assert should_stop() is True
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_skipped_when_the_drain_used_the_whole_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock(now=1_000.0)
+    monkeypatch.setattr(worker, "time", clock)
+    install_queue(monkeypatch, lambda n: make_job(n))
+
+    async def _slow_job(_db: FakeSession, _job: SimpleNamespace) -> None:
+        clock.now += 300
+
+    monkeypatch.setattr(worker, "process_claimed_job", _slow_job)
+    expiry = install_expiry(monkeypatch, ExpiryBatchRecorder())
+
+    summary = await worker.run_worker_once(
+        max_jobs=25, max_seconds=240, finalize_expired_public_chat=True
+    )
+
+    assert expiry.calls == []
+    assert summary["exit_reason"] == "max_seconds"
+    assert summary["expiry_exit_reason"] == "deadline"
+
+
+@pytest.mark.asyncio
+async def test_complete_expiry_failure_never_fails_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_queue(monkeypatch, lambda n: make_job(n) if n == 1 else None)
+    recorder = LogRecorder()
+    monkeypatch.setattr(worker, "log", recorder)
+    install_expiry(
+        monkeypatch,
+        ExpiryBatchRecorder(raises=RuntimeError("postgresql://u:secret@h/db")),
+    )
+
+    summary = await worker.run_worker_once(
+        max_jobs=25, max_seconds=240, finalize_expired_public_chat=True
+    )
+
+    assert summary["jobs_processed"] == 1
+    assert summary["exit_reason"] == "queue_empty"
+    assert summary["expiry_outcome"] == "failed"
+    assert summary["expiry_exit_reason"] == "failed"
+    failed = recorder.of("public_chat_expiry_cycle_failed")
+    assert failed == [{"outcome": "failed", "failure_kind": "RuntimeError"}]
+    assert [lvl for lvl, name, _f in recorder.events
+            if name == "public_chat_expiry_cycle_failed"] == ["error"]
+    assert "secret" not in repr(recorder.events)
+    # The job summary line keeps its exact, safe shape.
+    completed = recorder.of("worker_once_completed")
+    assert set(completed[0]) == {"jobs_processed", "exit_reason", "elapsed_seconds"}
+
+
+@pytest.mark.parametrize(
+    ("result", "outcome"),
+    [
+        (
+            ExpiryBatchResult(
+                limit=10,
+                tenants_failed=[7],
+                failure_kinds={"sqlstate_55P03": 1},
+                candidates_attempted=3,
+                finalized=2,
+            ),
+            "partial_failure",
+        ),
+        (
+            ExpiryBatchResult(
+                limit=10,
+                tenants_failed=[7, 9],
+                failure_kinds={"RuntimeError": 2},
+                candidates_attempted=2,
+            ),
+            "failed",
+        ),
+    ],
+    ids=["partial", "all-failed"],
+)
+@pytest.mark.asyncio
+async def test_expiry_failures_are_never_reported_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    result: ExpiryBatchResult,
+    outcome: str,
+) -> None:
+    install_queue(monkeypatch, lambda n: make_job(n) if n == 1 else None)
+    recorder = LogRecorder()
+    monkeypatch.setattr(worker, "log", recorder)
+    install_expiry(monkeypatch, ExpiryBatchRecorder(result=result))
+
+    summary = await worker.run_worker_once(
+        max_jobs=25, max_seconds=240, finalize_expired_public_chat=True
+    )
+
+    assert summary["jobs_processed"] == 1
+    assert summary["exit_reason"] == "queue_empty"
+    assert summary["expiry_outcome"] == outcome
+    assert summary["expiry_exit_reason"] == outcome
+    assert summary["expiry_stop_reason"] == "complete"
+    assert recorder.of("public_chat_expiry_cycle_completed") == []
+    degraded = recorder.of("public_chat_expiry_cycle_degraded")
+    assert len(degraded) == 1
+    assert degraded[0]["failed_tenant_ids"] == sorted(result.tenants_failed)
+    assert degraded[0]["failure_kinds"] == result.failure_kinds
+    assert [lvl for lvl, name, _f in recorder.events
+            if name == "public_chat_expiry_cycle_degraded"] == ["error"]
+
+
+def test_expiry_cli_defaults_are_disabled() -> None:
+    args = worker.parse_args(["--once"])
+    assert args.finalize_expired_public_chat is False
+    assert args.expiry_batch_size == worker.DEFAULT_EXPIRY_BATCH_SIZE == 50
+
+
+def test_expiry_cli_flag_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _run_worker_once(**kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(worker, "run_worker_once", _run_worker_once)
+
+    assert worker.main(
+        ["--once", "--finalize-expired-public-chat", "--expiry-batch-size", "9"]
+    ) == 0
+    assert seen["finalize_expired_public_chat"] is True
+    assert seen["expiry_batch_size"] == 9
+    assert seen["max_jobs"] == 25
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--once", "--expiry-batch-size", "0"], "--expiry-batch-size must be between"),
+        (["--once", "--expiry-batch-size", "501"], "--expiry-batch-size must be between"),
+        (["--finalize-expired-public-chat"], "requires --once"),
+    ],
+    ids=["zero", "above-ceiling", "without-once"],
+)
+def test_invalid_expiry_options_fail_before_starting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    message: str,
+) -> None:
+    started: list[Any] = []
+    monkeypatch.setattr(worker, "start_http_server", started.append)
+
+    async def _should_not_run(**_kwargs: Any) -> dict[str, Any]:
+        started.append("worker")
+        return {}
+
+    monkeypatch.setattr(worker, "run_worker_once", _should_not_run)
+    monkeypatch.setattr(worker, "run_worker", _should_not_run)
+
+    with pytest.raises(SystemExit) as excinfo:
+        worker.main(argv)
+
+    assert excinfo.value.code == 2
+    assert started == []
+    assert message in capsys.readouterr().err

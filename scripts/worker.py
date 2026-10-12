@@ -33,6 +33,11 @@ from app.repositories.integration_job_repository import (
 from app.services.integration_job_service import (
     IntegrationJobService,
 )
+from app.services.public_chat_expiry_service import (
+    MAX_EXPIRY_BATCH_LIMIT,
+    PublicChatExpiryService,
+    failure_kind,
+)
 from app.services.sla_escalation_scanner_service import (
     SLAEscalationScannerService,
 )
@@ -57,6 +62,12 @@ SLA_SCAN_INTERVAL_SECONDS = 60
 # platform backstop behind it.
 DEFAULT_ONCE_MAX_JOBS = 25
 DEFAULT_ONCE_MAX_SECONDS = 240.0
+
+# Scheduled expired public-chat finalization (Phase 1P.7.3B). Disabled by
+# default: a run only finalizes expired sessions when the operator passes
+# --finalize-expired-public-chat. The batch size is a separate capacity from
+# --max-jobs (expiry closes are not IntegrationJobs) and is enforced in SQL.
+DEFAULT_EXPIRY_BATCH_SIZE = 50
 
 configure_logging()
 
@@ -294,9 +305,76 @@ async def run_worker() -> None:
             await process_claimed_job(db, job)
 
 
+async def run_expiry_cycle(
+    *,
+    batch_size: int,
+    deadline: float,
+) -> dict[str, int | str]:
+    """One bounded expired public-chat finalization pass. Never raises.
+
+    Runs strictly AFTER job draining in a one-shot run, under the same
+    monotonic deadline, so it can neither delay nor consume capacity from
+    integration jobs. A failure here never fails the run (housekeeping must
+    not turn a successful job drain into a failed run; the next scheduled run
+    retries), but it is never silent either: any failure makes the outcome
+    ``partial_failure`` or ``failed`` and is logged at error level as
+    ``public_chat_expiry_cycle_degraded`` / ``public_chat_expiry_cycle_failed``.
+    """
+
+    def _past_deadline() -> bool:
+        return time.monotonic() >= deadline
+
+    try:
+        result = await PublicChatExpiryService.finalize_expired_batch(
+            AsyncSessionLocal,
+            limit=batch_size,
+            now=datetime.now(UTC),
+            should_stop=_past_deadline,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Discovery itself failed: nothing ran. Bounded label only.
+        log.error(
+            "public_chat_expiry_cycle_failed",
+            outcome="failed",
+            failure_kind=failure_kind(exc),
+        )
+        return {"expiry_outcome": "failed", "expiry_exit_reason": "failed"}
+
+    summary: dict[str, int | str] = {
+        "expiry_outcome": result.outcome,
+        "expiry_exit_reason": result.exit_reason,
+        "expiry_stop_reason": result.stop_reason,
+        "expiry_tenants_discovered": result.tenants_discovered,
+        "expiry_tenants_failed": len(result.tenants_failed),
+        "expiry_failures": result.failures,
+        "expiry_candidates_attempted": result.candidates_attempted,
+        "expiry_finalized": result.finalized,
+        "expiry_pending_milestone": result.pending_milestone,
+        "expiry_repaired": result.repaired,
+        "expiry_skipped": result.skipped,
+    }
+    if result.outcome == "ok":
+        log.info("public_chat_expiry_cycle_completed", batch_size=batch_size, **summary)
+    else:
+        # Error level, with bounded detail, so a persistent expiry failure is
+        # visible in every run's log even though the run itself (and its job
+        # drain) still succeeds. Tenant ids are ints and at most batch_size
+        # long; failure kinds are SQLSTATEs / exception class names.
+        log.error(
+            "public_chat_expiry_cycle_degraded",
+            batch_size=batch_size,
+            failed_tenant_ids=sorted(result.tenants_failed),
+            failure_kinds=dict(sorted(result.failure_kinds.items())),
+            **summary,
+        )
+    return summary
+
+
 async def run_worker_once(
     max_jobs: int = DEFAULT_ONCE_MAX_JOBS,
     max_seconds: float = DEFAULT_ONCE_MAX_SECONDS,
+    finalize_expired_public_chat: bool = False,
+    expiry_batch_size: int = DEFAULT_EXPIRY_BATCH_SIZE,
 ) -> dict[str, float | int | str]:
     """Drain the queue once and exit. Never waits, never serves metrics.
 
@@ -321,6 +399,11 @@ async def run_worker_once(
     Job claiming remains the atomic, row-locked ``claim_next_unscoped``, so an
     overlap with another worker (including the always-on Render worker) is a
     correctness non-event rather than a race.
+
+    When ``finalize_expired_public_chat`` is set (opt-in, off by default), one
+    bounded expiry pass runs after the drain under the same deadline; see
+    :func:`run_expiry_cycle`. Its capacity is ``expiry_batch_size`` and is
+    independent of ``max_jobs``.
 
     Returns only safe metadata -- counts, a stop reason, and elapsed time. No
     payload, no URL, no credential ever reaches the summary line.
@@ -361,6 +444,17 @@ async def run_worker_once(
 
         jobs_processed += 1
 
+    expiry_summary: dict[str, int | str] = {}
+    if finalize_expired_public_chat:
+        if time.monotonic() >= deadline:
+            expiry_summary = {"expiry_outcome": "ok", "expiry_exit_reason": "deadline"}
+            log.info("public_chat_expiry_cycle_skipped", reason="deadline")
+        else:
+            expiry_summary = await run_expiry_cycle(
+                batch_size=expiry_batch_size,
+                deadline=deadline,
+            )
+
     elapsed_seconds = time.monotonic() - started
     log.info(
         "worker_once_completed",
@@ -373,6 +467,7 @@ async def run_worker_once(
         "jobs_processed": jobs_processed,
         "exit_reason": exit_reason,
         "elapsed_seconds": elapsed_seconds,
+        **expiry_summary,
     }
 
 
@@ -415,6 +510,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
             f"(default: {DEFAULT_ONCE_MAX_SECONDS}, must be > 0)"
         ),
     )
+    parser.add_argument(
+        "--finalize-expired-public-chat",
+        action="store_true",
+        help=(
+            "opt-in (disabled by default, --once only): after draining jobs, "
+            "finalize expired live public-chat sessions through the shared "
+            "close lifecycle, bounded by --expiry-batch-size and the same "
+            "--max-seconds deadline"
+        ),
+    )
+    parser.add_argument(
+        "--expiry-batch-size",
+        type=int,
+        default=DEFAULT_EXPIRY_BATCH_SIZE,
+        metavar="N",
+        help=(
+            "maximum expired public-chat sessions attempted per --once run, "
+            "independent of --max-jobs "
+            f"(default: {DEFAULT_EXPIRY_BATCH_SIZE}, "
+            f"range: 1..{MAX_EXPIRY_BATCH_LIMIT})"
+        ),
+    )
     return parser
 
 
@@ -434,6 +551,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error(f"--max-jobs must be >= 1 (got {args.max_jobs})")
     if args.max_seconds <= 0:
         parser.error(f"--max-seconds must be > 0 (got {args.max_seconds})")
+    if not 1 <= args.expiry_batch_size <= MAX_EXPIRY_BATCH_LIMIT:
+        parser.error(
+            f"--expiry-batch-size must be between 1 and {MAX_EXPIRY_BATCH_LIMIT} "
+            f"(got {args.expiry_batch_size})"
+        )
+    if args.finalize_expired_public_chat and not args.once:
+        # The continuous worker has no per-run bound to schedule this against;
+        # it stays a one-shot-only behavior until that is designed explicitly.
+        parser.error("--finalize-expired-public-chat requires --once")
 
     return args
 
@@ -450,6 +576,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_worker_once(
                 max_jobs=args.max_jobs,
                 max_seconds=args.max_seconds,
+                finalize_expired_public_chat=args.finalize_expired_public_chat,
+                expiry_batch_size=args.expiry_batch_size,
             )
         )
         return 0
