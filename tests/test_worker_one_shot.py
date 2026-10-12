@@ -139,6 +139,11 @@ class Clock:
         return self.now
 
 
+# The claim token (``locked_at`` at claim time) every fake job carries; the
+# shared job body passes it back to fence its terminal writes.
+CLAIM_TOKEN = "claim-token-1"
+
+
 def make_job(
     job_id: int,
     *,
@@ -154,6 +159,7 @@ def make_job(
         payload={"request_id": "req-1"} if payload is None else payload,
         last_error=None,
         organization_id=1,
+        locked_at=CLAIM_TOKEN,
     )
 
 
@@ -507,10 +513,15 @@ def _install_process_fakes(
             return None
         return SimpleNamespace(status=fresh_status, last_error=None)
 
-    async def _mark_completed(*, db: FakeSession, job_id: int) -> None:
+    async def _mark_completed(*, db: FakeSession, job_id: int, claimed_at: Any) -> Any:
+        assert claimed_at == CLAIM_TOKEN, "terminal writes must carry the claim token"
         seen["completed"].append(job_id)
+        return SimpleNamespace(status="completed", id=job_id)
 
-    async def _mark_failed(*, db: FakeSession, job_id: int, error_message: str) -> Any:
+    async def _mark_failed(
+        *, db: FakeSession, job_id: int, error_message: str, claimed_at: Any, terminal: bool
+    ) -> Any:
+        assert claimed_at == CLAIM_TOKEN, "terminal writes must carry the claim token"
         seen["failed"].append((job_id, error_message))
         return SimpleNamespace(status=failed_status, id=job_id) if failed_status else None
 
@@ -1031,3 +1042,299 @@ def test_invalid_expiry_options_fail_before_starting(
     assert excinfo.value.code == 2
     assert started == []
     assert message in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Phase 1P.8: run summary, health, and degraded-result reporting
+# ---------------------------------------------------------------------------
+
+SUMMARY_FIELDS = {
+    "worker_version",
+    "run_id",
+    "run_attempt",
+    "health",
+    "elapsed_seconds",
+    "exit_reason",
+    "capacity_exhausted",
+    "sla_scan",
+    "jobs_claimed",
+    "jobs_completed",
+    "jobs_retried",
+    "jobs_failed",
+    "jobs_claim_lost",
+    "jobs_unknown",
+    "failure_categories",
+    "expiry_enabled",
+}
+
+
+def _queue_with_results(monkeypatch: pytest.MonkeyPatch, results: list[Any]) -> LogRecorder:
+    """Jobs 1..N whose shared body reports ``results[n-1]``; then empty."""
+    install_queue(monkeypatch, lambda n: make_job(n) if n <= len(results) else None)
+
+    async def _process(_db: FakeSession, job: SimpleNamespace) -> Any:
+        return results[job.id - 1]
+
+    monkeypatch.setattr(worker, "process_claimed_job", _process)
+    recorder = LogRecorder()
+    monkeypatch.setattr(worker, "log", recorder)
+    return recorder
+
+
+def _summary(recorder: LogRecorder) -> dict[str, Any]:
+    events = recorder.of("worker_once_summary")
+    assert len(events) == 1, "exactly one summary event per run"
+    return events[0]
+
+
+@pytest.mark.asyncio
+async def test_empty_queue_run_is_healthy_and_fully_described(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _queue_with_results(monkeypatch, [])
+
+    result = await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    summary = _summary(recorder)
+    assert SUMMARY_FIELDS <= set(summary)
+    assert summary["health"] == "healthy"
+    assert summary["jobs_claimed"] == 0
+    assert summary["capacity_exhausted"] is False
+    assert result["health"] == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_mixed_outcomes_are_counted_and_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _queue_with_results(
+        monkeypatch,
+        [
+            worker.JobResult("completed"),
+            worker.JobResult("retry", "ConversationDeliveryTransientError"),
+            worker.JobResult("failed", "PermanentJobError"),
+            worker.JobResult("claim_lost"),
+            worker.JobResult("completed"),
+        ],
+    )
+
+    await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    summary = _summary(recorder)
+    assert summary["jobs_claimed"] == 5
+    assert summary["jobs_completed"] == 2
+    assert summary["jobs_retried"] == 1
+    assert summary["jobs_failed"] == 1
+    assert summary["jobs_claim_lost"] == 1
+    assert summary["failure_categories"] == {
+        "ConversationDeliveryTransientError": 1,
+        "PermanentJobError": 1,
+    }
+    assert summary["health"] == "degraded"
+    levels = [lvl for lvl, name, _f in recorder.events if name == "worker_once_summary"]
+    assert levels == ["warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_where_every_job_failed_is_unsuccessful(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _queue_with_results(
+        monkeypatch,
+        [worker.JobResult("retry", "TimeoutError"), worker.JobResult("failed", "ValueError")],
+    )
+
+    result = await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    assert _summary(recorder)["health"] == "unsuccessful"
+    assert result["health"] == "unsuccessful"
+
+
+@pytest.mark.asyncio
+async def test_a_body_that_reports_nothing_is_never_counted_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exit code 0 / a returned call is not proof a job succeeded."""
+    recorder = _queue_with_results(monkeypatch, [None])
+
+    await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    summary = _summary(recorder)
+    assert summary["jobs_unknown"] == 1
+    assert summary["jobs_completed"] == 0
+    assert summary["health"] != "healthy"
+
+
+@pytest.mark.asyncio
+async def test_failed_sla_scan_degrades_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _queue_with_results(monkeypatch, [])
+
+    async def _scan_failed() -> str:
+        return worker.SLA_SCAN_FAILED
+
+    monkeypatch.setattr(worker, "run_sla_scan_cycle", _scan_failed)
+    await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    summary = _summary(recorder)
+    assert summary["sla_scan"] == "failed"
+    assert summary["health"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_capacity_exhaustion_is_reported_but_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _queue_with_results(monkeypatch, [worker.JobResult("completed")] * 3)
+
+    await worker.run_worker_once(max_jobs=2, max_seconds=240)
+
+    summary = _summary(recorder)
+    assert summary["exit_reason"] == "max_jobs"
+    assert summary["capacity_exhausted"] is True
+    assert summary["health"] == "healthy"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"jobs_claimed": 0, "jobs_completed": 0, "job_problems": 0}, "healthy"),
+        ({"jobs_claimed": 3, "jobs_completed": 3, "job_problems": 0}, "healthy"),
+        ({"jobs_claimed": 3, "jobs_completed": 2, "job_problems": 1}, "degraded"),
+        ({"jobs_claimed": 2, "jobs_completed": 0, "job_problems": 2}, "unsuccessful"),
+        (
+            {"jobs_claimed": 0, "jobs_completed": 0, "job_problems": 0, "expiry_outcome": "failed"},
+            "unsuccessful",
+        ),
+        (
+            {
+                "jobs_claimed": 0,
+                "jobs_completed": 0,
+                "job_problems": 0,
+                "expiry_outcome": "partial_failure",
+            },
+            "degraded",
+        ),
+        (
+            {"jobs_claimed": 0, "jobs_completed": 0, "job_problems": 0, "sla_scan_status": "failed"},
+            "degraded",
+        ),
+    ],
+)
+def test_health_classification_rules(kwargs: dict[str, Any], expected: str) -> None:
+    params: dict[str, Any] = {"sla_scan_status": "completed", "expiry_outcome": None, **kwargs}
+    assert worker.classify_run_health(**params) == expected
+
+
+@pytest.mark.asyncio
+async def test_summary_never_carries_payloads_or_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    secret_payload = {"body": "customer secret body", "token": "Bearer sk-live-123"}
+    install_queue(
+        monkeypatch,
+        lambda n: make_job(n, payload=secret_payload) if n == 1 else None,
+    )
+
+    async def _process(_db: FakeSession, _job: SimpleNamespace) -> Any:
+        return worker.JobResult("retry", "ZendeskAPIError")
+
+    monkeypatch.setattr(worker, "process_claimed_job", _process)
+    recorder = LogRecorder()
+    monkeypatch.setattr(worker, "log", recorder)
+    step_summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(step_summary))
+    monkeypatch.setenv("GITHUB_SHA", "a" * 64)
+
+    await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    summary = _summary(recorder)
+    assert len(summary["worker_version"]) <= 40
+    rendered = repr(summary) + step_summary.read_text()
+    for forbidden in ("customer secret body", "Bearer", "sk-live", "postgres"):
+        assert forbidden not in rendered
+    assert "| health | unsuccessful |" in step_summary.read_text()
+
+
+@pytest.mark.asyncio
+async def test_step_summary_failure_never_breaks_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    recorder = _queue_with_results(monkeypatch, [worker.JobResult("completed")])
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))  # a directory: open() fails
+
+    result = await worker.run_worker_once(max_jobs=25, max_seconds=240)
+
+    assert result["health"] == "healthy"
+    failures = recorder.of("worker_step_summary_failed")
+    assert len(failures) == 1 and set(failures[0]) == {"error_type"}
+
+
+def test_worker_identity_defaults_outside_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("WORKER_VERSION", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+        monkeypatch.delenv(name, raising=False)
+    assert worker.worker_identity() == {
+        "worker_version": "unknown",
+        "run_id": "local",
+        "run_attempt": "1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("argv", "health", "code"),
+    [
+        (["--once"], "unsuccessful", 0),
+        (["--once", "--exit-nonzero-on-unsuccessful"], "unsuccessful", 3),
+        (["--once", "--exit-nonzero-on-unsuccessful"], "degraded", 0),
+        (["--once", "--exit-nonzero-on-unsuccessful"], "healthy", 0),
+    ],
+)
+def test_nonzero_exit_is_opt_in_and_only_for_unsuccessful(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], health: str, code: int
+) -> None:
+    async def _run_worker_once(**_kwargs: Any) -> dict[str, Any]:
+        return {"health": health}
+
+    monkeypatch.setattr(worker, "run_worker_once", _run_worker_once)
+    assert worker.main(argv) == code
+
+
+def test_exit_flag_requires_once(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        worker.parse_args(["--exit-nonzero-on-unsuccessful"])
+    assert excinfo.value.code == 2
+    assert "requires --once" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_sla_scan_cycle_reports_failure_and_lock_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker, "log", LogRecorder())
+
+    class _BrokenEngine:
+        async def connect(self) -> Any:
+            raise OSError("database unreachable")
+
+    monkeypatch.setattr(worker, "engine", _BrokenEngine())
+    assert await worker.run_sla_scan_cycle() == worker.SLA_SCAN_FAILED
+
+    class _Conn:
+        async def close(self) -> None:
+            return None
+
+    class _Engine:
+        async def connect(self) -> Any:
+            return _Conn()
+
+    async def _not_acquired(_conn: Any) -> bool:
+        return False
+
+    async def _release(_conn: Any) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "engine", _Engine())
+    monkeypatch.setattr(worker, "_try_acquire_scanner_lock", _not_acquired)
+    monkeypatch.setattr(worker, "_release_scanner_lock", _release)
+    assert await worker.run_sla_scan_cycle() == worker.SLA_SCAN_SKIPPED_LOCKED

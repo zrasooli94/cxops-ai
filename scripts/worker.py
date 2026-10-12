@@ -2,8 +2,10 @@ import argparse
 import asyncio
 import os
 import time
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any, NamedTuple
 
 from prometheus_client import (
     start_http_server,
@@ -32,6 +34,7 @@ from app.repositories.integration_job_repository import (
 )
 from app.services.integration_job_service import (
     IntegrationJobService,
+    PermanentJobError,
 )
 from app.services.public_chat_expiry_service import (
     MAX_EXPIRY_BATCH_LIMIT,
@@ -131,23 +134,34 @@ async def _release_scanner_lock(
         )
 
 
-async def run_sla_scan_cycle() -> None:
-    """Run one bounded SLA escalation scan if the advisory lock is available."""
+SLA_SCAN_COMPLETED = "completed"
+SLA_SCAN_SKIPPED_LOCKED = "skipped_locked"
+SLA_SCAN_FAILED = "failed"
+
+
+async def run_sla_scan_cycle() -> str:
+    """Run one bounded SLA escalation scan if the advisory lock is available.
+
+    Never raises. Returns a bounded status (``completed`` / ``skipped_locked``
+    / ``failed``) so a run summary can tell "nothing to do" from "broken".
+    """
     lock_conn: AsyncConnection | None = None
+    status = SLA_SCAN_FAILED
     try:
         lock_conn = await engine.connect()
         acquired = await _try_acquire_scanner_lock(lock_conn)
         if not acquired:
             log.debug("scanner_lock_unavailable", lock_key=SLA_SCANNER_LOCK_KEY)
-            return
+            return SLA_SCAN_SKIPPED_LOCKED
 
         log.info("sla_scan_started")
         async with AsyncSessionLocal() as db:
-            evaluated = await SLAEscalationScannerService.scan_once(
+            evaluated, enqueued = await SLAEscalationScannerService.scan_once(
                 db,
                 now=datetime.now(UTC),
             )
-        log.info("sla_scan_completed", evaluated=evaluated)
+        log.info("sla_scan_completed", evaluated=evaluated, enqueued=enqueued)
+        status = SLA_SCAN_COMPLETED
 
     except Exception:
         log.exception("sla_scan_failed")
@@ -157,9 +171,25 @@ async def run_sla_scan_cycle() -> None:
                 await _release_scanner_lock(lock_conn)
             finally:
                 await lock_conn.close()
+    return status
 
 
-async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> None:
+# Bounded outcome labels returned by ``process_claimed_job``.
+JOB_OUTCOME_COMPLETED = "completed"
+JOB_OUTCOME_RETRY = "retry"
+JOB_OUTCOME_FAILED = "failed"
+JOB_OUTCOME_CLAIM_LOST = "claim_lost"
+
+
+class JobResult(NamedTuple):
+    """What one claimed job amounted to. Bounded labels only, never content."""
+
+    outcome: str
+    # Exception class name for retry/failed outcomes (e.g. "ZendeskAPIError").
+    error_category: str | None = None
+
+
+async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> JobResult:
     """Run one already-claimed job to a terminal-or-retry decision.
 
     This is the whole job-processing body, shared verbatim by the infinite
@@ -172,10 +202,23 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> None:
     ``db`` must be the same session the job was claimed on: ``execute`` writes
     through it, and the terminal re-read below has to observe what ``execute``
     just wrote.
+
+    Every terminal write is fenced by the claim token (``locked_at`` at claim
+    time): if the job was recovered and re-claimed while this worker was still
+    running it, this worker's late report is rejected (``claim_lost``) instead
+    of overwriting the newer claim. A ``PermanentJobError`` fails the job now
+    rather than spending its remaining attempts.
+
+    Returns a :class:`JobResult` - a bounded outcome label (``completed`` /
+    ``retry`` / ``failed`` / ``claim_lost``) plus the exception class name on
+    failure - for run-level reporting; it never carries job content.
     """
     job_id = job.id
     job_type = job.job_type
     attempt = job.attempts
+    claimed_at = job.locked_at
+    outcome = JOB_OUTCOME_COMPLETED
+    error_category: str | None = None
 
     # Extract and bind request correlation ID from job payload
     request_id = job.payload.get("request_id") if job.payload else None
@@ -199,18 +242,25 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> None:
             job_id=job_id,
         )
         if fresh_job is not None and fresh_job.status == "processing":
-            await IntegrationJobRepository.mark_completed(
+            completed = await IntegrationJobRepository.mark_completed(
                 db=db,
                 job_id=job_id,
+                claimed_at=claimed_at,
             )
 
-            record_integration_job_completed(
-                job_type=job_type,
-            )
+            if completed is None:
+                outcome = JOB_OUTCOME_CLAIM_LOST
+                log.warning("job_claim_lost", job_id=job_id, job_type=job_type)
+            else:
+                record_integration_job_completed(
+                    job_type=job_type,
+                )
 
-            log.info("job_completed", job_id=job_id, job_type=job_type)
+                log.info("job_completed", job_id=job_id, job_type=job_type)
 
         elif fresh_job is not None and fresh_job.status == "failed":
+            outcome = JOB_OUTCOME_FAILED
+            error_category = "non_retryable"
             record_integration_job_failure(
                 job_type=job_type,
             )
@@ -226,21 +276,29 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> None:
 
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
+        error_category = type(exc).__name__
 
         updated_job = await IntegrationJobRepository.mark_failed(
             db=db,
             job_id=job_id,
             error_message=str(exc),
+            claimed_at=claimed_at,
+            terminal=isinstance(exc, PermanentJobError),
         )
 
-        await IntegrationJobService.handle_failure(
-            db=db,
-            job=updated_job,
-            error_message=str(exc),
-        )
+        # ``None`` means the job is gone or another worker now holds the claim:
+        # there is nothing of ours to synchronize, and the new owner will.
+        if updated_job is not None:
+            await IntegrationJobService.handle_failure(
+                db=db,
+                job=updated_job,
+                error_message=str(exc),
+            )
 
+        outcome = JOB_OUTCOME_CLAIM_LOST if updated_job is None else JOB_OUTCOME_FAILED
         if updated_job is not None:
             if updated_job.status == "retry":
+                outcome = JOB_OUTCOME_RETRY
                 record_integration_job_retry(
                     job_type=job_type,
                 )
@@ -277,6 +335,89 @@ async def process_claimed_job(db: AsyncSession, job: IntegrationJob) -> None:
 
     finally:
         unbind_context()
+
+    return JobResult(outcome, error_category)
+
+
+RUN_HEALTHY = "healthy"
+RUN_DEGRADED = "degraded"
+RUN_UNSUCCESSFUL = "unsuccessful"
+
+# Exit code for ``--exit-nonzero-on-unsuccessful`` (opt-in; the scheduled
+# workflow does not pass it, so its behavior is unchanged).
+EXIT_UNSUCCESSFUL = 3
+
+
+def worker_identity() -> dict[str, str]:
+    """Non-sensitive provenance of the running worker: code version and run.
+
+    ``GITHUB_SHA`` / ``GITHUB_RUN_ID`` / ``GITHUB_RUN_ATTEMPT`` are set by
+    GitHub Actions; ``WORKER_VERSION`` can override the version elsewhere.
+    Values are truncated and never include secrets.
+    """
+    version = (os.environ.get("WORKER_VERSION") or os.environ.get("GITHUB_SHA") or "unknown")
+    return {
+        "worker_version": version.strip()[:40] or "unknown",
+        "run_id": (os.environ.get("GITHUB_RUN_ID") or "local").strip()[:32],
+        "run_attempt": (os.environ.get("GITHUB_RUN_ATTEMPT") or "1").strip()[:8],
+    }
+
+
+def classify_run_health(
+    *,
+    jobs_claimed: int,
+    jobs_completed: int,
+    job_problems: int,
+    sla_scan_status: str,
+    expiry_outcome: str | None,
+) -> str:
+    """Healthy / degraded / unsuccessful, by a fixed rule.
+
+    - ``unsuccessful``: the run attempted work and none of it succeeded - jobs
+      were claimed and every one of them failed, retried, or lost its claim -
+      or the expiry pass failed outright.
+    - ``degraded``: some useful work happened, but something failed: any job
+      retry / failure / lost claim, a failed SLA scan, or a partially failed
+      expiry pass.
+    - ``healthy``: nothing failed. An empty queue is healthy.
+
+    Hitting ``max_jobs`` / ``max_seconds`` is NOT a failure (those are the
+    designed bounds); it is reported separately as ``capacity_exhausted``.
+    """
+    if (jobs_claimed > 0 and jobs_completed == 0 and job_problems > 0) or (
+        expiry_outcome == "failed"
+    ):
+        return RUN_UNSUCCESSFUL
+    if job_problems > 0 or sla_scan_status == SLA_SCAN_FAILED or (
+        expiry_outcome == "partial_failure"
+    ):
+        return RUN_DEGRADED
+    return RUN_HEALTHY
+
+
+def write_github_step_summary(summary: dict[str, Any]) -> bool:
+    """Append a Markdown table of the run summary to ``$GITHUB_STEP_SUMMARY``.
+
+    Best effort: a reporting failure is logged (type name only) and never
+    changes the run's outcome. The summary contains counts and bounded labels
+    only.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return False
+    try:
+        lines = ["### CXOps worker run", "", "| field | value |", "| --- | --- |"]
+        for key, value in summary.items():
+            rendered = ", ".join(f"{k}={v}" for k, v in value.items()) if isinstance(
+                value, dict
+            ) else str(value)
+            lines.append(f"| {key} | {rendered} |")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("worker_step_summary_failed", error_type=type(exc).__name__)
+        return False
 
 
 async def run_worker() -> None:
@@ -420,10 +561,12 @@ async def run_worker_once(
     # Exactly one SLA scan per run. The advisory lock inside it is what makes
     # running this every five minutes safe alongside an always-on worker: if a
     # continuous worker already holds the lock, this run skips silently.
-    await run_sla_scan_cycle()
+    sla_scan_status = await run_sla_scan_cycle()
 
     jobs_processed = 0
     exit_reason = "queue_empty"
+    outcomes: Counter[str] = Counter()
+    failure_categories: Counter[str] = Counter()
 
     while True:
         if jobs_processed >= max_jobs:
@@ -440,9 +583,15 @@ async def run_worker_once(
             if job is None:
                 break
 
-            await process_claimed_job(db, job)
+            result = await process_claimed_job(db, job)
 
         jobs_processed += 1
+        if isinstance(result, JobResult):
+            outcomes[result.outcome] += 1
+            if result.error_category and result.outcome != JOB_OUTCOME_COMPLETED:
+                failure_categories[result.error_category] += 1
+        else:
+            outcomes["unknown"] += 1
 
     expiry_summary: dict[str, int | str] = {}
     if finalize_expired_public_chat:
@@ -463,10 +612,44 @@ async def run_worker_once(
         elapsed_seconds=round(elapsed_seconds, 3),
     )
 
+    jobs_completed = outcomes[JOB_OUTCOME_COMPLETED]
+    job_problems = jobs_processed - jobs_completed
+    expiry_outcome = expiry_summary.get("expiry_outcome")
+    health = classify_run_health(
+        jobs_claimed=jobs_processed,
+        jobs_completed=jobs_completed,
+        job_problems=job_problems,
+        sla_scan_status=sla_scan_status if isinstance(sla_scan_status, str) else "unknown",
+        expiry_outcome=str(expiry_outcome) if expiry_outcome is not None else None,
+    )
+    run_summary: dict[str, Any] = {
+        **worker_identity(),
+        "health": health,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "exit_reason": exit_reason,
+        "capacity_exhausted": exit_reason in ("max_jobs", "max_seconds"),
+        "sla_scan": sla_scan_status if isinstance(sla_scan_status, str) else "unknown",
+        "jobs_claimed": jobs_processed,
+        "jobs_completed": jobs_completed,
+        "jobs_retried": outcomes[JOB_OUTCOME_RETRY],
+        "jobs_failed": outcomes[JOB_OUTCOME_FAILED],
+        "jobs_claim_lost": outcomes[JOB_OUTCOME_CLAIM_LOST],
+        "jobs_unknown": outcomes["unknown"],
+        "failure_categories": dict(sorted(failure_categories.items())),
+        "expiry_enabled": finalize_expired_public_chat,
+        **expiry_summary,
+    }
+    if health == RUN_HEALTHY:
+        log.info("worker_once_summary", **run_summary)
+    else:
+        log.warning("worker_once_summary", **run_summary)
+    write_github_step_summary(run_summary)
+
     return {
         "jobs_processed": jobs_processed,
         "exit_reason": exit_reason,
         "elapsed_seconds": elapsed_seconds,
+        "health": health,
         **expiry_summary,
     }
 
@@ -508,6 +691,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "wall-clock deadline for --once mode, checked between jobs; a job "
             f"already in flight is allowed to finish "
             f"(default: {DEFAULT_ONCE_MAX_SECONDS}, must be > 0)"
+        ),
+    )
+    parser.add_argument(
+        "--exit-nonzero-on-unsuccessful",
+        action="store_true",
+        help=(
+            f"opt-in (--once only): exit with code {EXIT_UNSUCCESSFUL} when the run "
+            "summary's health is 'unsuccessful'. Without it the exit code stays 0 "
+            "and health is reported in the worker_once_summary log event only."
         ),
     )
     parser.add_argument(
@@ -556,6 +748,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             f"--expiry-batch-size must be between 1 and {MAX_EXPIRY_BATCH_LIMIT} "
             f"(got {args.expiry_batch_size})"
         )
+    if args.exit_nonzero_on_unsuccessful and not args.once:
+        parser.error("--exit-nonzero-on-unsuccessful requires --once")
     if args.finalize_expired_public_chat and not args.once:
         # The continuous worker has no per-run bound to schedule this against;
         # it stays a one-shot-only behavior until that is designed explicitly.
@@ -572,7 +766,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # a platform that tears the runner down; a Prometheus socket would be
         # unscrapeable for its whole lifetime and its port would fight the
         # next run. The listener belongs to the process that stays up.
-        asyncio.run(
+        summary = asyncio.run(
             run_worker_once(
                 max_jobs=args.max_jobs,
                 max_seconds=args.max_seconds,
@@ -580,6 +774,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expiry_batch_size=args.expiry_batch_size,
             )
         )
+        if args.exit_nonzero_on_unsuccessful and (summary or {}).get("health") == (
+            RUN_UNSUCCESSFUL
+        ):
+            return EXIT_UNSUCCESSFUL
         return 0
 
     _metrics_port = resolve_metrics_port()

@@ -183,10 +183,13 @@ class AgentExecutionService:
         organization_id: int,
     ) -> bool:
 
+        # Newest first: the marker this run wrote is a recent comment, and the
+        # default (oldest-first) page misses it on tickets with >100 comments.
         response = await self.zendesk.get_ticket_comments(
             db,
             zendesk_ticket_id,
             organization_id=organization_id,
+            newest_first=True,
         )
 
         comments = response.get(

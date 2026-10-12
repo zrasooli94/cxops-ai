@@ -1,6 +1,5 @@
 from datetime import datetime
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -12,6 +11,7 @@ from app.repositories.conversation_message_repository import (
     ConversationMessageRepository,
 )
 from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.savepoint import insert_in_savepoint
 from app.repositories.ticket_repository import TicketRepository
 from app.services.ticket_sla_service import TicketSLAService
 
@@ -117,22 +117,23 @@ class ConversationIngestionService:
                 subject=ticket.subject,
                 status=conversation_status_for_ticket(ticket),
             )
-            try:
-                return await ConversationRepository.create(db, conversation)
-            except IntegrityError:
-                await db.rollback()
-                # A concurrent sync created the thread; re-resolve instead of
-                # erroring (mirrors the customer-identity race pattern).
-                re_resolved = await cls._resolve_conversation(
-                    db,
-                    conversation=conversation,
-                    is_zendesk=is_zendesk,
-                    organization_id=organization_id,
-                )
-                if re_resolved is not None:
-                    conversation = re_resolved
-                else:
-                    raise
+            collision = await insert_in_savepoint(db, conversation)
+            if collision is None:
+                await db.commit()
+                await db.refresh(conversation)
+                return conversation
+            # A concurrent sync created the thread; re-resolve instead of
+            # erroring. The SAVEPOINT kept the caller's transaction and loaded
+            # objects (e.g. ``ticket``) intact.
+            re_resolved = await cls._resolve_conversation(
+                db,
+                conversation=conversation,
+                is_zendesk=is_zendesk,
+                organization_id=organization_id,
+            )
+            if re_resolved is None:
+                raise collision
+            conversation = re_resolved
 
         changes: dict = {
             "subject": ticket.subject,
@@ -220,10 +221,8 @@ class ConversationIngestionService:
             sent_at=ticket.created_at,
         )
 
-        try:
-            message = await ConversationMessageRepository.create(db, message)
-        except IntegrityError:
-            await db.rollback()
+        collision = await insert_in_savepoint(db, message)
+        if collision is not None:
             existing = await ConversationMessageRepository.get_by_dedupe_key(
                 db,
                 conversation_id=conversation.id,
@@ -232,7 +231,9 @@ class ConversationIngestionService:
             )
             if existing is not None:
                 return existing
-            raise
+            raise collision
+        await db.commit()
+        await db.refresh(message)
 
         sent_at = message.sent_at or message.created_at
         if (
@@ -457,10 +458,13 @@ class ConversationIngestionService:
         if not missing:
             return
 
-        try:
-            await ConversationMessageRepository.create_many(db, missing)
-        except IntegrityError:
-            await db.rollback()
+        collision = await insert_in_savepoint(db, *missing)
+        if collision is None:
+            await db.commit()
+        else:
+            # A stale preview: some rows were inserted concurrently. Only the
+            # SAVEPOINT was rolled back; insert what is still missing, one row
+            # per savepoint so a second collision cannot undo the others.
             retry_ids = [
                 m.external_message_id
                 for m in missing
@@ -480,7 +484,8 @@ class ConversationIngestionService:
                 if m.external_message_id not in existing
             ]
             for message in still_missing:
-                await ConversationMessageRepository.create(db, message)
+                await insert_in_savepoint(db, message)
+            await db.commit()
 
     @classmethod
     async def ensure_agent_reply_message(
@@ -537,10 +542,8 @@ class ConversationIngestionService:
             sent_at=None,
         )
 
-        try:
-            message = await ConversationMessageRepository.create(db, message)
-        except IntegrityError:
-            await db.rollback()
+        collision = await insert_in_savepoint(db, message)
+        if collision is not None:
             existing = await ConversationMessageRepository.get_by_dedupe_key(
                 db,
                 conversation_id=conversation.id,
@@ -549,7 +552,9 @@ class ConversationIngestionService:
             )
             if existing is not None:
                 return existing
-            raise
+            raise collision
+        await db.commit()
+        await db.refresh(message)
 
         await cls.sync_conversation_latest_message(
             db,

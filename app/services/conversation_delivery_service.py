@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.metrics import record_human_reply_delivery
-from app.integrations.zendesk.client import ZendeskClient
+from app.integrations.zendesk.client import ZendeskAPIError, ZendeskClient
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.ticket import Ticket
@@ -38,6 +38,12 @@ DELIVERY_ERROR_UNSUPPORTED = "unsupported"
 REPLY_MARKER_PREFIX = "CXOps Reply Ref:"
 
 MAX_ZENDESK_COMMENTS_FOR_MARKER = 50
+
+# Zendesk responses that mean "this request will never be accepted as sent":
+# bad request, forbidden, ticket gone, conflict, validation. Retrying them only
+# burns attempts. 401 is retried inside the client after a token refresh; 408,
+# 429 and 5xx are transient.
+PERMANENT_PROVIDER_REJECTION_STATUSES = frozenset({400, 403, 404, 409, 422})
 
 
 class ConversationDeliveryError(Exception):
@@ -137,11 +143,14 @@ class ZendeskConversationDeliveryAdapter:
 
         marker = _reply_marker(delivery_token)
 
+        # Fail closed: if this scan cannot run, a previous attempt may already
+        # have delivered the reply, so sending now could duplicate it.
         existing_comment_id = await self._find_marker_comment(
             db,
             zendesk_ticket_id=zendesk_ticket_id,
             marker=marker,
             organization_id=organization_id,
+            fail_closed=True,
         )
 
         if existing_comment_id is not None:
@@ -179,6 +188,14 @@ class ZendeskConversationDeliveryAdapter:
             )
             if isinstance(exc, ConversationDeliveryError):
                 raise
+            if (
+                isinstance(exc, ZendeskAPIError)
+                and exc.status_code in PERMANENT_PROVIDER_REJECTION_STATUSES
+            ):
+                raise ConversationDeliveryError(
+                    DELIVERY_ERROR_PROVIDER_REJECTED,
+                    "Zendesk rejected the reply",
+                ) from exc
             raise ConversationDeliveryTransientError(
                 DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
                 "Zendesk reply request failed",
@@ -208,23 +225,36 @@ class ZendeskConversationDeliveryAdapter:
         zendesk_ticket_id: int,
         marker: str,
         organization_id: int,
+        fail_closed: bool = False,
     ) -> str | None:
+        """The id of the newest comment carrying ``marker``, or ``None``.
+
+        Scans newest first, so a marker written moments ago is found even on a
+        ticket with more than one page of comments. With ``fail_closed=True`` a
+        failed scan raises a retryable error instead of reporting "not found".
+        """
         try:
             response = await self.zendesk.get_ticket_comments(
                 db,
                 ticket_id=zendesk_ticket_id,
                 organization_id=organization_id,
+                newest_first=True,
             )
-        except Exception:
+        except Exception as exc:
             log.exception(
                 "zendesk_marker_scan_failed",
                 zendesk_ticket_id=zendesk_ticket_id,
                 organization_id=organization_id,
             )
+            if fail_closed:
+                raise ConversationDeliveryTransientError(
+                    DELIVERY_ERROR_PROVIDER_UNAVAILABLE,
+                    "Zendesk marker scan failed; not sending",
+                ) from exc
             return None
 
         comments = response.get("comments") or []
-        for comment in comments[-MAX_ZENDESK_COMMENTS_FOR_MARKER:]:
+        for comment in comments[:MAX_ZENDESK_COMMENTS_FOR_MARKER]:
             body = str(comment.get("body", ""))
             if marker in body:
                 comment_id = comment.get("id")

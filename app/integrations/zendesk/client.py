@@ -8,7 +8,11 @@ from app.services.zendesk_oauth_service import (
 
 
 class ZendeskAPIError(Exception):
-    pass
+    """A non-2xx Zendesk response. ``status_code`` lets callers classify it."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ZendeskClient:
@@ -74,7 +78,10 @@ class ZendeskClient:
             )
 
         if response.is_error:
-            raise ZendeskAPIError(f"Zendesk API error {response.status_code}")
+            raise ZendeskAPIError(
+                f"Zendesk API error {response.status_code}",
+                status_code=response.status_code,
+            )
 
         if not response.content:
             return {}
@@ -188,13 +195,22 @@ class ZendeskClient:
         ticket_id: int,
         *,
         organization_id: int,
+        newest_first: bool = False,
     ) -> dict:
+        """One page (at most 100) of a ticket's comments.
 
+        Zendesk returns comments oldest first by default, so on a ticket with
+        more than one page the newest comments are NOT in the response.
+        Exactly-once marker scans look for a comment this system just wrote and
+        must pass ``newest_first=True`` (``sort_order=desc``).
+        """
+        extra: dict = {"params": {"sort_order": "desc"}} if newest_first else {}
         return await self.request(
             db,
             "GET",
             f"/tickets/{ticket_id}/comments.json",
             organization_id=organization_id,
+            **extra,
         )
 
     async def apply_agent_action(
