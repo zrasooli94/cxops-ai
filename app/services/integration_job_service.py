@@ -226,6 +226,7 @@ class IntegrationJobService:
         # Human reply delivery
         if job.job_type == IntegrationJobService.CONVERSATION_REPLY:
             organization_id = job.organization_id
+            job_id = job.id
 
             if organization_id is None:
                 raise ValueError("Conversation reply job is missing an organization binding")
@@ -261,19 +262,37 @@ class IntegrationJobService:
                 # now rather than exhausting retries.
                 await db.rollback()
 
-                job.status = "failed"
-                job.locked_at = None
-                job.last_error = str(exc)[:4000]
-
-                await ConversationMessageRepository.update_for_tenant(
+                # rollback() expires every instance loaded in this session
+                # (expire_on_commit=False only covers commit). Reading an
+                # attribute of the pre-rollback ``job``/``message`` would be an
+                # implicit sync refresh, which an AsyncSession rejects with
+                # MissingGreenlet - turning this non-retryable failure into a
+                # retryable one. Re-load both explicitly with awaited queries;
+                # the message stays tenant-scoped.
+                failed_job = await IntegrationJobRepository.get_by_id_unscoped(
                     db,
-                    message=message,
-                    changes={
-                        "delivery_status": "failed",
-                        "delivery_error_code": exc.error_code,
-                    },
+                    job_id,
+                )
+                if failed_job is not None:
+                    failed_job.status = "failed"
+                    failed_job.locked_at = None
+                    failed_job.last_error = str(exc)[:4000]
+
+                failed_message = await ConversationMessageRepository.get_by_id_for_tenant(
+                    db,
+                    message_id=message_id,
                     organization_id=organization_id,
                 )
+                if failed_message is not None:
+                    await ConversationMessageRepository.update_for_tenant(
+                        db,
+                        message=failed_message,
+                        changes={
+                            "delivery_status": "failed",
+                            "delivery_error_code": exc.error_code,
+                        },
+                        organization_id=organization_id,
+                    )
 
                 await db.commit()
                 return

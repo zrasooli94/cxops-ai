@@ -2373,3 +2373,142 @@ async def test_zendesk_delivery_skips_provider_when_message_already_sent(
     )
 
     assert captured["calls"] == 0
+
+
+# ---------------------------------------------------------------------------
+# conversation.reply non-retryable delivery failure (MissingGreenlet regression)
+# ---------------------------------------------------------------------------
+
+
+def _forbid_zendesk_network(monkeypatch) -> None:
+    """Any provider call in these tests is a defect: fail loudly, never send."""
+    from app.integrations.zendesk.client import ZendeskClient
+
+    async def _forbidden(*_args, **_kwargs):
+        raise AssertionError("conversation.reply must not contact Zendesk here")
+
+    monkeypatch.setattr(ZendeskClient, "apply_agent_action", _forbidden)
+    monkeypatch.setattr(ZendeskClient, "get_ticket_comments", _forbidden)
+
+
+async def _queue_reply_to_invalid_zendesk_target(db, org) -> tuple[int, int]:
+    """A zendesk reply whose ticket is not a valid execution target.
+
+    The ticket has no Zendesk external id, so delivery raises the
+    NON-retryable ``ConversationDeliveryError`` before any provider call.
+    Returns ``(job_id, message_id)``.
+    """
+    ticket = await _make_ticket(db, org.id, subject="Invalid target", source="zendesk")
+    conversation = await _link_conversation(db, ticket, org.id)
+    result = await ConversationReplyService.enqueue_reply(
+        db=db,
+        conversation_id=conversation.id,
+        body="Reply to an invalid target.",
+        client_request_id=str(uuid.uuid4()),
+        organization_id=org.id,
+        requested_by_subject=USER_ALPHA,
+    )
+    assert result["job_id"] is not None
+    return result["job_id"], result["message_id"]
+
+
+async def _fresh_job_and_message(job_id: int, message_id: int):
+    async with AsyncSessionLocal() as session:
+        job = (
+            await session.execute(select(IntegrationJob).where(IntegrationJob.id == job_id))
+        ).scalar_one()
+        message = (
+            await session.execute(
+                select(ConversationMessage).where(ConversationMessage.id == message_id)
+            )
+        ).scalar_one()
+        return job, message
+
+
+@pytest.mark.asyncio
+async def test_reply_job_non_retryable_failure_does_not_touch_expired_orm_state(
+    db, org_scope, monkeypatch
+):
+    """``db.rollback()`` expires every loaded instance (``expire_on_commit=False``
+    does not apply to rollback). The failure branch must re-load the job and
+    message instead of reading expired attributes, which in an async session
+    is an implicit sync refresh and raises ``MissingGreenlet``."""
+    from app.services.integration_job_service import IntegrationJobService
+
+    _forbid_zendesk_network(monkeypatch)
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    # Plain int: the failure path rolls back this shared session, which expires
+    # ``org`` too - the very mechanism under test.
+    org_id = org.id
+    job_id, message_id = await _queue_reply_to_invalid_zendesk_target(db, org)
+
+    job = await IntegrationJobRepository.get_by_id_unscoped(db, job_id)
+    assert job is not None
+
+    await IntegrationJobService.execute(db=db, job=job)
+
+    persisted_job, message = await _fresh_job_and_message(job_id, message_id)
+    assert persisted_job.status == "failed"
+    assert persisted_job.locked_at is None
+    assert "greenlet" not in (persisted_job.last_error or "").lower()
+    assert message.delivery_status == "failed"
+    assert message.delivery_error_code == "target_unavailable"
+    assert message.organization_id == org_id
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_non_retryable_reply_failed_once_without_retry(
+    db, org_scope, monkeypatch
+):
+    """Through the worker's real shared job body: terminal failure, no retry,
+    no provider call, and the bounded error code - not a MissingGreenlet
+    text that sends a non-retryable reply around the retry loop."""
+    from scripts import worker
+
+    _forbid_zendesk_network(monkeypatch)
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    job_id, message_id = await _queue_reply_to_invalid_zendesk_target(db, org)
+
+    # Simulate a claim of exactly this job (never claim_next: other rows in a
+    # shared test database must not be picked up).
+    job = await IntegrationJobRepository.get_by_id_unscoped(db, job_id)
+    assert job is not None
+    job.status = "processing"
+    job.attempts = 1
+    await db.commit()
+
+    await worker.process_claimed_job(db, job)
+
+    persisted_job, message = await _fresh_job_and_message(job_id, message_id)
+    assert persisted_job.status == "failed", "non-retryable must not be scheduled for retry"
+    assert persisted_job.attempts == 1
+    assert "greenlet" not in (persisted_job.last_error or "").lower()
+    assert message.delivery_status == "failed"
+    assert message.delivery_error_code == "target_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_reply_job_failure_path_stays_tenant_scoped(db, org_scope, monkeypatch):
+    """The failure branch re-loads the message tenant-scoped: a job whose
+    organization binding does not own the message cannot mark it failed."""
+    from app.services.integration_job_service import IntegrationJobService
+
+    _forbid_zendesk_network(monkeypatch)
+    org_a = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    org_b = await org_scope(subject=USER_BETA, role=OrganizationRole.OWNER)
+    org_a_id, org_b_id = org_a.id, org_b.id
+    job_id, message_id = await _queue_reply_to_invalid_zendesk_target(db, org_a)
+
+    job = await IntegrationJobRepository.get_by_id_unscoped(db, job_id)
+    assert job is not None
+    # A crafted job bound to tenant B that points at tenant A's message.
+    job.organization_id = org_b_id
+    await db.commit()
+
+    with pytest.raises(ValueError):
+        await IntegrationJobService.execute(db=db, job=job)
+    await db.rollback()
+
+    _job, message = await _fresh_job_and_message(job_id, message_id)
+    assert message.delivery_status == "queued"
+    assert message.organization_id == org_a_id
