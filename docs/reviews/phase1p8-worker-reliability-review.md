@@ -3,6 +3,18 @@
 Owner-review package. Every statement below cites a test, a command output, or a
 document. Where the evidence ends, the text says so.
 
+> **Corrected by Phase 1P.8R** (see `phase1p8r-independent-review.md`). A
+> second, independent review proved three statements here incomplete:
+>
+> 1. PR #4's claim fencing was **read-check-write** and still racy under
+>    concurrency. It is now atomic (PR #8).
+> 2. The reply-marker scan covered only the **newest 50 comments**, so a
+>    duplicate was still possible. It is now a complete, fail-closed scan
+>    (PR #9).
+> 3. The merge order must include **#8 and #9** before any deploy.
+>
+> Those sections are annotated below; the rest stands.
+
 ## 1. Executive summary
 
 - **The production schedule is the dominant reliability problem.**
@@ -114,7 +126,9 @@ discarded the caller's other pending work**. Proven by the five F05 tests.
 - **Job repository:**
   - `STALE_PROCESSING_SECONDS = 600` (D5);
   - stale jobs with exhausted attempts are failed (D6);
-  - `claimed_at` fencing on terminal writes (D7);
+  - `claimed_at` fencing on terminal writes (D7). *Corrected: this was a
+    Python check before an ORM write and was racy. PR #8 makes it one atomic
+    conditional `UPDATE`.*
   - `mark_failed(terminal=True)`.
 - **Job service:** `PermanentJobError(ValueError)` (D8); sanitized `ai.evaluation`
   import path (D10).
@@ -184,7 +198,9 @@ vanished-job test added during review.
   another tenant fails terminally without touching the foreign row (F12).
 - The global claim stays the only cross-tenant read. Claiming uses
   `FOR UPDATE SKIP LOCKED` and was verified under concurrent sessions (F09).
-- Terminal job writes are fenced by the claim token (F15).
+- Terminal job writes are fenced by the claim token (F15). *Corrected: atomic
+  only since PR #8; PR #4's version could be overwritten between read and
+  write.*
 - Duplicate collisions no longer roll back the caller's transaction (F05).
 - The diagnostic runs in a verified `READ ONLY` transaction. A write attempted
   inside it is rejected by Postgres (test).
@@ -352,10 +368,10 @@ No local record needs Zendesk verification, and none should be sent.
 1. The production schedule remains at about 1.5 % coverage until §7.4 is
    approved.
 2. Production affected-job state is unknown (no production access by design).
-3. The reply exactly-once guarantee still relies on the marker being among the
-   newest 50 comments. If more than 50 comments arrive between a send and its
-   retry, the marker could be missed. The window is now minutes, not ticket
-   lifetime.
+3. ~~The reply exactly-once guarantee still relies on the marker being among
+   the newest 50 comments.~~ *Resolved by PR #9:* a complete, bounded cursor
+   scan that fails closed (`delivery_unverified`) when it cannot prove absence.
+   The remaining residual risks are listed in `phase1p8r-independent-review.md`.
 4. A stale window of 600 s means a crashed job waits up to 10 minutes. This is
    deliberate, and reversible by constant.
 5. Render background-worker restart and deploy semantics are not documented on
@@ -368,9 +384,10 @@ No local record needs Zendesk verification, and none should be sent.
 **Merging to `master` is deploying.** The scheduled worker checks out `master`
 on every run.
 
-1. Merge #3, then #4 (stacked; no migrations). The next worker run uses them.
-   **Precondition:** the production affected-job diagnostic (§9).
-2. #5, #6 and #7 change tooling and docs only; merge in any order.
+1. Merge **#3 → #4 → #8 → #9** (stacked; no migrations). The next worker run
+   uses them. **Do not deploy #4 without #8 and #9.** **Precondition:** the
+   production affected-job diagnostic (§9; PR #11 `--operator-report`).
+2. #5, #6 → #12, #7 → #11 and #10 change tooling, tests or docs only.
 3. Rollback: `git revert` the merge commit on `master`. No schema change, so
    rollback is immediate on the next run. The 600 s stale window and the claim
    fencing revert with it.
@@ -380,7 +397,10 @@ on every run.
 
 ## 12. Acceptance criteria for production approval
 
-- [ ] CI green on #3, #4, #5, #6 and #7 at their final heads.
+- [ ] CI green on #3–#12 at their final heads.
+- [ ] The production worker `DATABASE_URL` is confirmed to be a direct
+      (non-pooler) Neon endpoint, required by the session-level advisory locks
+      in PR #8.
 - [ ] Owner has reviewed the fault-injection matrix (§5.1).
 - [ ] Production affected-job diagnostic run read-only and its categories
       decided (§9).
