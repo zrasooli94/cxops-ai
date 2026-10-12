@@ -27,6 +27,11 @@ async def insert_in_savepoint(db: AsyncSession, *instances: object) -> Integrity
     collision, after which the outer transaction is still usable and every
     previously loaded object is still intact.
     """
+    # Flush the caller's own pending work FIRST, outside the savepoint:
+    # ``begin_nested()`` would otherwise flush it inside the ``try`` and a
+    # unique violation in the caller's work would be misreported as "our
+    # insert lost a race". The caller's error must surface as-is.
+    await db.flush()
     try:
         async with db.begin_nested():
             db.add_all(instances)
