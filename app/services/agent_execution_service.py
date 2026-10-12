@@ -12,6 +12,11 @@ from app.core.metrics import (
 from app.integrations.zendesk.client import (
     ZendeskClient,
 )
+from app.integrations.zendesk.marker_scan import (
+    MarkerScanInconclusive,
+    find_marker,
+    marker_boundary,
+)
 from app.models.agent_run import AgentRun
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import (
@@ -181,36 +186,35 @@ class AgentExecutionService:
         zendesk_ticket_id: int,
         run_id: str,
         organization_id: int,
+        not_before: datetime,
     ) -> bool:
+        """Whether this run's marker is already on the ticket - PROVEN either way.
 
-        # Newest first: the marker this run wrote is a recent comment, and the
-        # default (oldest-first) page misses it on tickets with >100 comments.
-        response = await self.zendesk.get_ticket_comments(
-            db,
-            zendesk_ticket_id,
-            organization_id=organization_id,
-            newest_first=True,
-        )
+        A complete, bounded, newest-first cursor scan back to ``not_before``
+        (the run's creation time minus clock skew). An inconclusive scan raises
+        ``AgentExecutionStateError``: the tool plan is not executed rather than
+        risking a duplicate external write. Provider errors propagate.
+        """
 
-        comments = response.get(
-            "comments",
-            [],
-        )
-
-        marker = self._comment_marker(run_id)
-
-        for comment in comments:
-            body = str(
-                comment.get(
-                    "body",
-                    "",
-                )
+        async def fetch_page(cursor: str | None) -> dict:
+            return await self.zendesk.get_ticket_comments_page(
+                db,
+                zendesk_ticket_id,
+                organization_id=organization_id,
+                cursor=cursor,
             )
 
-            if marker in body:
-                return True
-
-        return False
+        try:
+            result = await find_marker(
+                fetch_page,
+                marker=self._comment_marker(run_id),
+                not_before=not_before,
+            )
+        except MarkerScanInconclusive as exc:
+            raise AgentExecutionStateError(
+                f"Zendesk marker verification inconclusive ({exc.reason}); not executing."
+            ) from exc
+        return result.found
 
     async def _execute_tool(
         self,
@@ -622,6 +626,7 @@ class AgentExecutionService:
                 already_written = await self._already_written(
                     db,
                     zendesk_ticket_id=(zendesk_ticket_id),
+                    not_before=marker_boundary(run.created_at),
                     run_id=run_id,
                     organization_id=organization_id,
                 )

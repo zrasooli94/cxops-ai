@@ -1464,13 +1464,16 @@ async def test_delivery_service_zendesk_recovers_existing_marker(
         captured["calls"] += 1
 
     async def _fake_comments(*args, **kwargs):
+        # Cursor page, newest first, as get_ticket_comments_page returns it.
         return {
             "comments": [
                 {
                     "id": "comment-999",
                     "body": f"Zendesk recovery reply.\n\nCXOps Reply Ref: {marker_token}",
+                    "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
-            ]
+            ],
+            "meta": {"has_more": False},
         }
 
     from app.integrations.zendesk.client import ZendeskClient
@@ -1479,7 +1482,7 @@ async def test_delivery_service_zendesk_recovers_existing_marker(
         ZendeskClient, "apply_agent_action", _fake_apply
     )
     monkeypatch.setattr(
-        ZendeskClient, "get_ticket_comments", _fake_comments
+        ZendeskClient, "get_ticket_comments_page", _fake_comments
     )
 
     await ConversationDeliveryService().deliver(
@@ -2295,21 +2298,24 @@ async def test_zendesk_delivery_sends_once_when_marker_absent(
         captured["calls"] += 1
 
     async def _fake_comments(*args, **kwargs):
+        # Cursor page, newest first, as get_ticket_comments_page returns it.
         if captured["calls"] == 0:
-            return {"comments": []}
+            return {"comments": [], "meta": {"has_more": False}}
         return {
             "comments": [
                 {
                     "id": captured["comment_id"],
                     "body": "Zendesk once reply.\n\nCXOps Reply Ref: unknown",
+                    "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
-            ]
+            ],
+            "meta": {"has_more": False},
         }
 
     from app.integrations.zendesk.client import ZendeskClient
 
     monkeypatch.setattr(ZendeskClient, "apply_agent_action", _fake_apply)
-    monkeypatch.setattr(ZendeskClient, "get_ticket_comments", _fake_comments)
+    monkeypatch.setattr(ZendeskClient, "get_ticket_comments_page", _fake_comments)
 
     await ConversationDeliveryService().deliver(
         db,
@@ -2389,6 +2395,7 @@ def _forbid_zendesk_network(monkeypatch) -> None:
 
     monkeypatch.setattr(ZendeskClient, "apply_agent_action", _forbidden)
     monkeypatch.setattr(ZendeskClient, "get_ticket_comments", _forbidden)
+    monkeypatch.setattr(ZendeskClient, "get_ticket_comments_page", _forbidden)
 
 
 async def _queue_reply_to_invalid_zendesk_target(db, org) -> tuple[int, int]:

@@ -213,6 +213,35 @@ class ZendeskClient:
             **extra,
         )
 
+    async def get_ticket_comments_page(
+        self,
+        db: AsyncSession,
+        ticket_id: int,
+        *,
+        organization_id: int,
+        cursor: str | None = None,
+        page_size: int = 100,
+    ) -> dict:
+        """One cursor-paginated page of comments, NEWEST FIRST.
+
+        ``page[size]`` (max 100) + ``sort=-created_at``; follow
+        ``meta.after_cursor`` while ``meta.has_more`` is true. Used by the
+        exactly-once marker scans (``app/integrations/zendesk/marker_scan.py``).
+        """
+        params: dict[str, str | int] = {
+            "page[size]": max(1, min(page_size, 100)),
+            "sort": "-created_at",
+        }
+        if cursor:
+            params["page[after]"] = cursor
+        return await self.request(
+            db,
+            "GET",
+            f"/tickets/{ticket_id}/comments.json",
+            organization_id=organization_id,
+            params=params,
+        )
+
     async def apply_agent_action(
         self,
         db,

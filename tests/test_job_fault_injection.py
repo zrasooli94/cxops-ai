@@ -96,11 +96,17 @@ def _no_network(monkeypatch):
 
 
 class FakeZendesk:
-    """In-memory Zendesk ticket comments with the real API's paging shape.
+    """In-memory Zendesk ticket comments with the real API's paging shapes.
 
-    ``GET comments`` returns at most 100 comments, oldest first unless
-    ``newest_first`` asks for ``sort_order=desc`` - exactly what the real List
-    Comments endpoint does.
+    * Offset listing (``get_ticket_comments``): at most 100 comments, oldest
+      first unless ``newest_first`` asks for ``sort_order=desc``.
+    * Cursor listing (``get_ticket_comments_page``): ``page[size]`` <= 100,
+      ``sort=-created_at`` (newest first), ``meta.has_more`` and
+      ``meta.after_cursor``. A cursor is anchored to a comment id, so comments
+      arriving during a scan appear at the head and never shift deeper pages.
+
+    Every comment has a ``created_at``. ``seed`` adds OLD comments (before any
+    reply in a test); ``add_newer`` adds comments created after "now".
     """
 
     PAGE = 100
@@ -108,38 +114,107 @@ class FakeZendesk:
     def __init__(self) -> None:
         self.comments: dict[int, list[dict]] = {}
         self.sends = 0
+        self.page_calls = 0
         self.fail_scan_times = 0
         self.fail_send: Exception | None = None
+        # Cursor-page fault knobs (keyed by 1-based page number within a scan).
+        self.page_errors: dict[int, Exception] = {}
+        self.drop_cursor_on_page: int | None = None
+        self.repeat_cursor_on_page: int | None = None
+        self.malformed_on_page: int | None = None
+        self.arrivals_after_page: dict[int, int] = {}
+        self._clock = datetime.now(UTC)
+
+    def _stamp(self, moment: datetime) -> str:
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _append(self, ticket_id: int, body: str, created: datetime) -> dict:
+        bucket = self.comments.setdefault(ticket_id, [])
+        comment = {
+            "id": len(bucket) + 1,
+            "body": body,
+            "created_at": self._stamp(created),
+        }
+        bucket.append(comment)
+        return comment
 
     def seed(self, ticket_id: int, count: int) -> None:
-        bucket = self.comments.setdefault(ticket_id, [])
+        start = datetime.now(UTC) - timedelta(days=30)
+        for n in range(count):
+            self._append(ticket_id, "older comment", start + timedelta(minutes=n))
+
+    def add_newer(self, ticket_id: int, count: int) -> None:
         for _ in range(count):
-            bucket.append({"id": f"c{len(bucket) + 1}", "body": "older comment"})
+            self._clock = max(self._clock, datetime.now(UTC)) + timedelta(seconds=1)
+            self._append(ticket_id, "newer comment", self._clock)
 
     def marker_count(self, ticket_id: int, token: str) -> int:
         return sum(token in c["body"] for c in self.comments.get(ticket_id, []))
 
+    def _cursor_page(self, ticket_id: int, cursor: str | None, size: int, page_no: int) -> dict:
+        if page_no in self.page_errors:
+            raise self.page_errors[page_no]
+        ordered = sorted(
+            self.comments.get(ticket_id, []), key=lambda c: (c["created_at"], c["id"]), reverse=True
+        )
+        if cursor is not None:
+            anchor = int(cursor.removeprefix("after-"))
+            index = next(i for i, c in enumerate(ordered) if c["id"] == anchor) + 1
+            ordered = ordered[index:]
+        page = [dict(c) for c in ordered[:size]]
+        has_more = len(ordered) > size
+        meta: dict = {"has_more": has_more}
+        if has_more and page:
+            meta["after_cursor"] = f"after-{page[-1]['id']}"
+        if page_no == self.drop_cursor_on_page:
+            meta.pop("after_cursor", None)
+        if page_no == self.repeat_cursor_on_page and cursor is not None:
+            meta["after_cursor"] = cursor
+        if page_no == self.malformed_on_page and page:
+            page[0]["created_at"] = "not-a-date"
+        return {"comments": page, "meta": meta}
+
     def install(self, monkeypatch) -> None:
         fake = self
+        scan_pages: dict[int, int] = {}
 
         async def get_ticket_comments(self, db, ticket_id, *, organization_id, **kwargs):
             if fake.fail_scan_times > 0:
                 fake.fail_scan_times -= 1
-                raise ZendeskAPIError("Zendesk API error 503")
+                raise ZendeskAPIError("Zendesk API error 503", status_code=503)
             bucket = list(fake.comments.get(int(ticket_id), []))
             if kwargs.get("newest_first"):
                 bucket.reverse()
             return {"comments": bucket[: fake.PAGE]}
 
+        async def get_ticket_comments_page(
+            self, db, ticket_id, *, organization_id, cursor=None, page_size=100
+        ):
+            fake.page_calls += 1
+            if fake.fail_scan_times > 0:
+                fake.fail_scan_times -= 1
+                raise ZendeskAPIError("Zendesk API error 503", status_code=503)
+            key = int(ticket_id)
+            page_no = 1 if cursor is None else scan_pages.get(key, 0) + 1
+            scan_pages[key] = page_no
+            response = fake._cursor_page(key, cursor, min(page_size, 100), page_no)
+            arrivals = fake.arrivals_after_page.get(page_no)
+            if arrivals:
+                fake.add_newer(key, arrivals)
+            return response
+
         async def apply_agent_action(self, db, ticket_id, *, organization_id, comment=None, **kwargs):
             if fake.fail_send is not None:
                 raise fake.fail_send
             fake.sends += 1
-            bucket = fake.comments.setdefault(int(ticket_id), [])
-            bucket.append({"id": f"c{len(bucket) + 1}", "body": comment or ""})
+            fake._clock = max(fake._clock, datetime.now(UTC)) + timedelta(seconds=1)
+            fake._append(int(ticket_id), comment or "", fake._clock)
             return {}
 
         monkeypatch.setattr(ZendeskClient, "get_ticket_comments", get_ticket_comments)
+        monkeypatch.setattr(
+            ZendeskClient, "get_ticket_comments_page", get_ticket_comments_page, raising=False
+        )
         monkeypatch.setattr(ZendeskClient, "apply_agent_action", apply_agent_action)
 
 

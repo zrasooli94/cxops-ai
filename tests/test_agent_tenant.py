@@ -784,7 +784,8 @@ async def test_i_own_execution_scoped_to_own_ticket_org(
     ):
         captured["orgs"].append(organization_id)
         captured["paths"].append(path)
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     async def fake_sync(db, zendesk_ticket_id, organization_id):
         captured["sync_orgs"].append(organization_id)
@@ -1055,7 +1056,8 @@ async def test_p_zendesk_execution_selects_tenant_connection(
         _self, db, method, path, *, organization_id, retry_on_unauthorized=True, **kwargs
     ):
         captured["orgs"].append(organization_id)
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     async def fake_sync(db, zendesk_ticket_id, organization_id):
         captured["orgs"].append(organization_id)
@@ -1203,7 +1205,8 @@ async def test_cross_tenant_execution_side_effect_blocked(
         _self, db, method, path, *, organization_id, retry_on_unauthorized=True, **kwargs
     ):
         mutation_calls.append((method, path, organization_id))
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     from app.integrations.zendesk.client import ZendeskClient
 
@@ -1293,7 +1296,8 @@ async def test_own_run_full_cycle_analyze_approve_execute(
         _self, db, method, path, *, organization_id, retry_on_unauthorized=True, **kwargs
     ):
         captured["orgs"].append(organization_id)
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     async def fake_sync(db, zendesk_ticket_id, organization_id):
         captured["orgs"].append(organization_id)
@@ -2419,7 +2423,8 @@ async def test_execution_preflight_rejects_unsupported_target(
 
     async def fake_request(_self, _db, _method, _path, **_kwargs):
         captured_calls.append((_method, _path))
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     monkeypatch.setattr(ZendeskClient, "request", fake_request)
 
@@ -2479,7 +2484,8 @@ async def test_execution_preflight_rejects_non_positive_zendesk_id(
 
     async def fake_request(_self, _db, _method, _path, **_kwargs):
         captured_calls.append((_method, _path))
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     monkeypatch.setattr(ZendeskClient, "request", fake_request)
 
@@ -2648,7 +2654,8 @@ async def test_send_reply_execution_mirrors_public_outbound_message(
     async def fake_request(_self, _db, method, path, **_kwargs):
         if method == "PUT":
             put_calls.append(path)
-        return {"comments": []}
+        # Real cursor pages always carry meta.has_more.
+        return {"comments": [], "meta": {"has_more": False}}
 
     async def fake_sync(_db, _zendesk_ticket_id, organization_id):
         return None
