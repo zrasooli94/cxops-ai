@@ -21,6 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.core.config import settings
 from app.core.database import engine
+from app.core.db_connection import (
+    AnalysisCapacity,
+    dedicated_lock_connection,
+    release_idle_connection,
+)
 from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_auto_approval,
@@ -1625,9 +1630,17 @@ Choose the safest next action.
             retrieve_node,
         )
 
+        async def decide_node(
+            state: AgentState,
+        ) -> dict:
+            # Phase 1P.9R: the decision is a multi-second model call; give the
+            # session's (read-only) connection back to the pool meanwhile.
+            await release_idle_connection(db)
+            return await self._run_action_specialist(state)
+
         graph.add_node(
             "decide_action",
-            self._run_action_specialist,
+            decide_node,
         )
 
         graph.add_node(
@@ -2145,6 +2158,7 @@ Choose the safest next action.
         persist_run: bool = True,
         authz: "AuthorizationContext | None" = None,
         force: bool = False,
+        lock_conn: AsyncConnection | None = None,
     ) -> dict:
 
         run_id = uuid4().hex
@@ -2222,6 +2236,21 @@ Choose the safest next action.
         # Acquire a database-backed concurrency guard before the reuse check
         # and before any LLM work. The lock key is scoped to the tenant,
         # ticket, and fingerprint so unrelated analyses never serialize.
+        critical_kwargs: dict[str, Any] = {
+            "ticket_id": ticket_id,
+            "organization_id": organization_id,
+            "ticket_data": ticket_data,
+            "fingerprint": fingerprint,
+            "run_id": run_id,
+            "persist_run": persist_run,
+            "force": force,
+            "allow_auto_queue": allow_auto_queue,
+            "authz": authz,
+            "customer_context": customer_context,
+            "customer_context_digest": customer_context_digest,
+            "conversation_context": conversation_context,
+            "conversation_context_digest": conversation_context_digest,
+        }
         lock_key: int | None = None
         if persist_run:
             lock_key = self._analysis_lock_key(
@@ -2229,44 +2258,38 @@ Choose the safest next action.
                 ticket_id=ticket_id,
                 fingerprint=fingerprint,
             )
-            async with engine.connect() as lock_conn:
-                await self._acquire_analysis_lock(lock_conn, lock_key)
-                try:
-                    return await self._analyze_critical_section(
-                        db,
-                        ticket_id=ticket_id,
-                        organization_id=organization_id,
-                        ticket_data=ticket_data,
-                        fingerprint=fingerprint,
-                        run_id=run_id,
-                        persist_run=persist_run,
-                        force=force,
-                        allow_auto_queue=allow_auto_queue,
-                        authz=authz,
-                        customer_context=customer_context,
-                        customer_context_digest=customer_context_digest,
-                        conversation_context=conversation_context,
-                        conversation_context_digest=conversation_context_digest,
+            # Phase 1P.9R: never hold the session's connection while waiting
+            # for an analysis slot or the (blocking) analysis lock - holding
+            # one pooled connection while waiting for another is what
+            # deadlocked the pool under concurrent chat turns.
+            await release_idle_connection(db)
+            async with analysis_capacity.slot():
+                if lock_conn is not None:
+                    # The caller's dedicated connection (a chat turn's lease)
+                    # carries this lock too: same per-connection semantics,
+                    # one pooled connection instead of two.
+                    return await self._locked_critical_section(
+                        lock_conn, lock_key, db, critical_kwargs
                     )
-                finally:
-                    await self._release_analysis_lock(lock_conn, lock_key)
+                async with dedicated_lock_connection(engine) as own_lock_conn:
+                    return await self._locked_critical_section(
+                        own_lock_conn, lock_key, db, critical_kwargs
+                    )
         else:
-            return await self._analyze_critical_section(
-                db,
-                ticket_id=ticket_id,
-                organization_id=organization_id,
-                ticket_data=ticket_data,
-                fingerprint=fingerprint,
-                run_id=run_id,
-                persist_run=persist_run,
-                force=force,
-                allow_auto_queue=allow_auto_queue,
-                authz=authz,
-                customer_context=customer_context,
-                customer_context_digest=customer_context_digest,
-                conversation_context=conversation_context,
-                conversation_context_digest=conversation_context_digest,
-            )
+            return await self._analyze_critical_section(db, **critical_kwargs)
 
+    async def _locked_critical_section(
+        self,
+        lock_conn: AsyncConnection,
+        lock_key: int,
+        db: AsyncSession,
+        critical_kwargs: dict[str, Any],
+    ) -> dict:
+        await self._acquire_analysis_lock(lock_conn, lock_key)
+        try:
+            return await self._analyze_critical_section(db, **critical_kwargs)
+        finally:
+            await self._release_analysis_lock(lock_conn, lock_key)
 
+analysis_capacity = AnalysisCapacity(settings.agent_analysis_max_concurrency)
 agent_workflow_service = AgentWorkflowService()

@@ -74,6 +74,7 @@ TENANT_HEADER = "x-cxops-organization-id"
 P1P7R_ORG_PREFIX = "p1p7r-test-"
 
 _PURGE_TABLES = [
+    "ai_usage_reservations",
     "ai_request_logs",
     "public_chat_sessions",
     "public_chat_configurations",

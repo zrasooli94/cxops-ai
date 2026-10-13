@@ -5,6 +5,7 @@ from app.models.ai_evaluation_case import AIEvaluationCase
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
+from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.automation_rule import AutomationRule
 from app.models.base import Base
 from app.models.business_action import BusinessAction
@@ -41,6 +42,7 @@ __all__ = [
     "AIEvaluationReleaseDecision",
     "AIEvaluationRun",
     "AIRequestLog",
+    "AIUsageReservation",
     "AgentActionEvent",
     "AgentRun",
     "AutomationRule",

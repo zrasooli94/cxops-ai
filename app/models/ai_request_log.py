@@ -42,6 +42,8 @@ class AIRequestLog(Base):
             "organization_id",
             "created_at",
         ),
+        # Phase 1P.9R: platform-wide month-to-date spend check.
+        Index("ix_ai_request_logs_created_at", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(

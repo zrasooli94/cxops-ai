@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "smoke_public_chat.py"
 
@@ -121,3 +123,80 @@ def test_embedding_origin_is_still_required() -> None:
 
     assert result.returncode == 2
     assert "--embedding-origin" in result.stderr, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Phase 1P.9R: --delivery async activation check (no network: stub transport)
+# ---------------------------------------------------------------------------
+
+
+def _smoke_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "smoke_public_chat_under_test",
+        Path(__file__).resolve().parents[1] / "scripts" / "smoke_public_chat.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class _StubSmoke:
+    backend_url = "https://api.example.invalid"
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def _auth(self):
+        return {"Authorization": "Bearer t"}
+
+    def _request(self, url, *, method="GET", payload=None, headers=None):
+        self.requests.append((method, url, payload))
+        return self.responses.pop(0)
+
+
+def test_async_delivery_waits_for_the_reply_via_updates() -> None:
+    smoke_mod = _smoke_module()
+    stub = _StubSmoke(
+        [
+            (200, {"processing_state": "accepted", "reply": None, "status": "ai_active"}),
+            (200, {"messages": [], "cursor": 0, "poll_after_ms": 1000, "status": "ai_active"}),
+            (
+                200,
+                {
+                    "messages": [{"id": 9, "direction": "outbound", "body": "Hi there"}],
+                    "cursor": 9,
+                    "poll_after_ms": 3000,
+                    "status": "ai_active",
+                },
+            ),
+        ]
+    )
+    detail = smoke_mod.send_and_wait_for_reply(
+        stub, origin_header={}, client_message_id="smoke-1", delivery="async", sleep=lambda _s: None
+    )
+    assert "async reply visible" in detail and "Hi there" not in detail
+    assert stub.requests[0][2]["delivery"] == "async"
+    assert "/sessions/updates?after_id=0" in stub.requests[1][1]
+
+
+def test_async_delivery_fails_when_the_tenant_is_not_activated() -> None:
+    smoke_mod = _smoke_module()
+    stub = _StubSmoke([(200, {"processing_state": "completed", "reply": "Hi", "status": "ai_active"})])
+    with pytest.raises(smoke_mod.StepFailure, match="not active for this tenant"):
+        smoke_mod.send_and_wait_for_reply(
+            stub, origin_header={}, client_message_id="smoke-2", delivery="async"
+        )
+
+
+def test_sync_delivery_keeps_the_original_contract() -> None:
+    smoke_mod = _smoke_module()
+    stub = _StubSmoke([(200, {"processing_state": "completed", "reply": "Hi", "status": "ai_active"})])
+    detail = smoke_mod.send_and_wait_for_reply(
+        stub, origin_header={}, client_message_id="smoke-3", delivery="sync"
+    )
+    assert "reply received" in detail
+    assert "delivery" not in stub.requests[0][2]

@@ -38,6 +38,11 @@ from sqlalchemy.pool import NullPool
 from app.core import database as _db_module
 from app.core.config import settings
 
+# Phase 1P.9R: the platform-wide AI ceiling sums every tenant in the (shared,
+# disposable) test database. Tests that exercise it set it explicitly; the rest
+# must not be refused because unrelated tests logged estimated costs.
+settings.platform_monthly_ai_budget_usd = 1_000_000.0
+
 _engine: AsyncEngine | None = None
 
 

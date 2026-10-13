@@ -167,6 +167,59 @@ class Settings(BaseSettings):
     public_chat_max_messages_per_minute_per_config: int = 600
     public_chat_new_sessions_per_hour_per_config: int = 120
 
+    # Phase 1P.9: asynchronous public-chat turns. The visitor's message is
+    # accepted and persisted immediately; the AI turn runs as a durable,
+    # tenant-bound job processed in-process by the API (bounded concurrency)
+    # with the scheduled worker as a backstop.
+    #
+    # Phase 1P.9R rollout gate: a turn is asynchronous only when ALL of
+    #   1. this platform switch is on (default OFF, so merging the code never
+    #      changes production behaviour),
+    #   2. the tenant's ``public_chat_configurations.async_turns_enabled`` is
+    #      on (default OFF; RISPU-first activation), and
+    #   3. the widget asks for ``delivery: "async"``.
+    # Turning this off is the kill switch: every request is served
+    # synchronously again, and turns already queued still complete.
+    public_chat_async_enabled: bool = False
+    # Concurrent AI turns run by one API process. A running turn holds one
+    # pooled connection across the model call (its lease connection, which also
+    # carries the analysis lock); its job session is released around model
+    # calls. Keep this below the pool size (see agent_analysis_max_concurrency).
+    # 6 is the measured optimum on a 0.5-CPU / 512 MB instance with the default
+    # 5 + 10 pool (Phase 1P.9R certification): vs 4, queue-wait p95 -24% at the
+    # same CPU and pool waits; 8 is no faster because the analysis slots
+    # (pool - turns - 2 = 5) become the limit.
+    public_chat_turn_max_concurrency: int = 6
+    public_chat_turn_max_concurrency_per_tenant: int = 2
+    # A turn still "processing" after this long is treated as abandoned (API
+    # instance restarted mid-turn) and may be re-claimed. Reply de-duplication
+    # guarantees a re-run can never post a second customer message.
+    public_chat_turn_stale_seconds: int = 120
+    # Phase 1P.9R: a low-frequency in-process sweep re-dispatches turns nobody
+    # is waiting on (e.g. after a crash with the visitor gone). One bounded,
+    # indexed query per interval; 0 disables. Hourly keeps Neon free-plan
+    # compute impact negligible (the database may wake at most once per hour).
+    public_chat_turn_sweep_seconds: int = 3600
+    # Default monthly AI allowance per tenant when its widget configuration has
+    # no override. Exhausting either limit routes new turns to a human (no
+    # model call); messages are still accepted.
+    public_chat_default_monthly_ai_turns: int = 3000
+    public_chat_default_monthly_ai_budget_usd: float = 5.0
+    # Phase 1P.9R: estimated cost reserved before each AI turn (decision + RAG
+    # + embeddings + retries) and held until the turn settles. Deliberately
+    # above the typical turn cost so concurrent turns cannot overshoot a budget.
+    public_chat_turn_reserved_cost_usd: float = 0.01
+    # A reservation not settled within this window (crashed turn) stops being
+    # counted as outstanding; any model calls it made are already logged.
+    public_chat_reservation_ttl_seconds: int = 900
+    # Platform-wide monthly AI ceiling across all tenants (estimated). 0 means
+    # no AI turns at all. Keep it at or below the provider-side hard limit.
+    platform_monthly_ai_budget_usd: float = 15.0
+    # Phase 1P.9R: concurrent persisted agent analyses per process (sync chat,
+    # async turns, staff analysis). Each holds one dedicated lock connection
+    # for its duration; bounding them keeps the pool from deadlocking.
+    agent_analysis_max_concurrency: int = 8
+
     @field_validator("public_chat_session_token_entropy_bytes", mode="after")
     @classmethod
     def _public_chat_token_entropy_bounded(cls, value: int) -> int:
@@ -186,6 +239,40 @@ class Settings(BaseSettings):
     def _public_chat_limits_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Public chat per-config limits must be positive")
+        return value
+
+    @field_validator(
+        "public_chat_turn_max_concurrency",
+        "public_chat_turn_max_concurrency_per_tenant",
+        "public_chat_turn_stale_seconds",
+        "public_chat_default_monthly_ai_turns",
+        "public_chat_reservation_ttl_seconds",
+        "agent_analysis_max_concurrency",
+        mode="after",
+    )
+    @classmethod
+    def _public_chat_turn_limits_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Public chat turn limits must be positive")
+        return value
+
+    @field_validator(
+        "public_chat_default_monthly_ai_budget_usd",
+        "public_chat_turn_reserved_cost_usd",
+        "platform_monthly_ai_budget_usd",
+        mode="after",
+    )
+    @classmethod
+    def _public_chat_budget_non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("AI budget settings must be >= 0")
+        return value
+
+    @field_validator("public_chat_turn_sweep_seconds", mode="after")
+    @classmethod
+    def _public_chat_sweep_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("public_chat_turn_sweep_seconds must be >= 0 (0 disables)")
         return value
 
     @field_validator(

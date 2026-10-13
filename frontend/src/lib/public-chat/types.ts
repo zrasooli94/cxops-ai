@@ -40,6 +40,28 @@ export interface PublicChatMessageSendResponse {
   reply: string | null;
   status: string;
   handoff: boolean;
+  // Phase 1P.9: "accepted" when the reply will arrive through /sessions/updates.
+  processing_state?: PublicChatProcessingState | null;
+}
+
+export type PublicChatProcessingState =
+  | "accepted"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "handoff";
+
+export interface PublicChatTurnState {
+  message_id: number;
+  state: "accepted" | "processing";
+}
+
+export interface PublicChatUpdatesResponse {
+  status: string;
+  messages: PublicChatMessageRead[];
+  turns: PublicChatTurnState[];
+  cursor: number;
+  poll_after_ms: number;
 }
 
 export interface PublicChatHumanRequestResponse {

@@ -201,6 +201,9 @@ class PublicChatRepository:
         *,
         limit: int = 50,
     ) -> list[ConversationMessage]:
+        # The LATEST ``limit`` messages, returned oldest-first. (Previously the
+        # OLDEST ``limit`` were returned, so in a long conversation new replies
+        # never reached the widget.)
         result = await db.execute(
             select(ConversationMessage)
             .where(
@@ -208,10 +211,36 @@ class PublicChatRepository:
                 ConversationMessage.organization_id == organization_id,
                 ConversationMessage.visibility == "public",
             )
-            .order_by(ConversationMessage.sent_at.asc().nulls_last(), ConversationMessage.id.asc())
+            .order_by(ConversationMessage.id.desc())
             .limit(limit)
         )
+        latest = list(result.scalars().all())
+        latest.sort(
+            key=lambda m: (m.sent_at is None, m.sent_at or m.created_at, m.id)
+        )
+        return latest
 
+    @staticmethod
+    async def list_public_messages_after(
+        db: AsyncSession,
+        conversation_id: int,
+        organization_id: int,
+        *,
+        after_id: int,
+        limit: int = 50,
+    ) -> list[ConversationMessage]:
+        """Public messages with ``id > after_id`` (cursor), oldest first."""
+        result = await db.execute(
+            select(ConversationMessage)
+            .where(
+                ConversationMessage.conversation_id == conversation_id,
+                ConversationMessage.organization_id == organization_id,
+                ConversationMessage.visibility == "public",
+                ConversationMessage.id > after_id,
+            )
+            .order_by(ConversationMessage.id.asc())
+            .limit(limit)
+        )
         return list(result.scalars().all())
 
     @staticmethod

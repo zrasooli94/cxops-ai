@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.integration_job import IntegrationJob
@@ -252,6 +252,150 @@ class IntegrationJobRepository:
         await db.refresh(job)
 
         return job
+
+    @staticmethod
+    async def list_open_by_dedupe_prefix(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        job_type: str,
+        dedupe_prefix: str,
+        limit: int,
+    ) -> list[IntegrationJob]:
+        """Tenant-scoped, not-yet-finished jobs whose dedupe key starts with a
+        prefix (e.g. one chat session's turns), oldest first."""
+        escaped = (
+            dedupe_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        result = await db.execute(
+            select(IntegrationJob)
+            .where(
+                IntegrationJob.organization_id == organization_id,
+                IntegrationJob.job_type == job_type,
+                IntegrationJob.status.in_(("pending", "retry", "processing")),
+                IntegrationJob.dedupe_key.like(f"{escaped}%", escape="\\"),
+            )
+            .order_by(IntegrationJob.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def list_recoverable(
+        db: AsyncSession,
+        *,
+        job_type: str,
+        stale_after_seconds: int,
+        limit: int,
+    ) -> list[IntegrationJob]:
+        """INTERNAL-ONLY: due or abandoned jobs of one type, oldest first.
+
+        Used once at API start-up to resume chat turns interrupted by a
+        restart; bounded by ``limit``.
+        """
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(IntegrationJob)
+            .where(
+                IntegrationJob.job_type == job_type,
+                IntegrationJob.attempts < IntegrationJob.max_attempts,
+                or_(
+                    and_(
+                        IntegrationJob.status.in_(("pending", "retry")),
+                        IntegrationJob.available_at <= now,
+                    ),
+                    and_(
+                        IntegrationJob.status == "processing",
+                        IntegrationJob.locked_at
+                        < now - timedelta(seconds=stale_after_seconds),
+                    ),
+                ),
+            )
+            .order_by(IntegrationJob.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def list_open_by_type(
+        db: AsyncSession,
+        *,
+        job_type: str,
+        after_id: int,
+        limit: int,
+    ) -> list[IntegrationJob]:
+        """INTERNAL-ONLY: every unfinished job of one type, by id, one page.
+
+        Phase 1P.9R recovery input: pending/retry jobs (due or not) and
+        processing jobs (stale or not); the caller schedules each for when it
+        becomes claimable. Keyset-paged on ``id`` so a large backlog is
+        walked completely without OFFSET scans.
+        """
+        result = await db.execute(
+            select(IntegrationJob)
+            .where(
+                IntegrationJob.job_type == job_type,
+                IntegrationJob.id > after_id,
+                IntegrationJob.status.in_(("pending", "retry", "processing")),
+                IntegrationJob.attempts < IntegrationJob.max_attempts,
+            )
+            .order_by(IntegrationJob.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def claim_by_id(
+        db: AsyncSession,
+        *,
+        job_id: int,
+        job_type: str,
+        stale_after_seconds: int,
+    ) -> IntegrationJob | None:
+        """Claim ONE specific job atomically, or return ``None``.
+
+        Used by the in-process public-chat turn dispatcher, which knows the
+        exact job it just enqueued. A single conditional ``UPDATE ... RETURNING``
+        claims the job only if it is claimable right now - ``pending``/``retry``
+        and due, or ``processing`` with a claim older than
+        ``stale_after_seconds`` (its process died) - and still has attempts
+        left. Two dispatchers (or a dispatcher and the worker) racing for the
+        same job: exactly one wins. Commits.
+        """
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(seconds=stale_after_seconds)
+        claimable = or_(
+            and_(
+                IntegrationJob.status.in_(("pending", "retry")),
+                IntegrationJob.available_at <= now,
+            ),
+            and_(
+                IntegrationJob.status == "processing",
+                IntegrationJob.locked_at.is_not(None),
+                IntegrationJob.locked_at < stale_before,
+            ),
+        )
+        result = await db.execute(
+            update(IntegrationJob)
+            .where(
+                IntegrationJob.id == job_id,
+                IntegrationJob.job_type == job_type,
+                IntegrationJob.attempts < IntegrationJob.max_attempts,
+                claimable,
+            )
+            .values(
+                status="processing",
+                attempts=IntegrationJob.attempts + 1,
+                locked_at=now,
+            )
+            .returning(IntegrationJob.id)
+            .execution_options(synchronize_session=False)
+        )
+        claimed = result.first() is not None
+        await db.commit()
+        if not claimed:
+            return None
+        return await _reload(db, job_id)
 
     @staticmethod
     async def mark_completed(

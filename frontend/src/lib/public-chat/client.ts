@@ -3,6 +3,7 @@ import type {
   PublicChatSessionCreateResponse,
   PublicChatMessageSendResponse,
   PublicChatStateResponse,
+  PublicChatUpdatesResponse,
   PublicChatHumanRequestResponse,
   PublicChatCloseResponse,
 } from "./types";
@@ -146,6 +147,10 @@ export async function sendPublicChatMessage(
   clientMessageId: string,
   text: string,
   fetcher: typeof fetch = fetch,
+  // "async" (Phase 1P.9) returns as soon as the message is stored; the reply
+  // arrives through fetchPublicChatUpdates. Omitted, the original synchronous
+  // contract applies, so older backends behave exactly as before.
+  delivery: "sync" | "async" = "sync",
 ): Promise<PublicChatMessageSendResponse> {
   const response = await fetcher(
     "/api/public/chat/messages",
@@ -158,6 +163,7 @@ export async function sendPublicChatMessage(
       body: JSON.stringify({
         client_message_id: clientMessageId,
         text,
+        ...(delivery === "async" ? { delivery } : {}),
       }),
       cache: "no-store",
     },
@@ -180,6 +186,34 @@ export async function fetchPublicChatState(
     },
   );
   return parseJson<PublicChatStateResponse>(response);
+}
+
+/**
+ * Messages after ``afterId`` plus pending AI-turn states (Phase 1P.9).
+ * Returns ``null`` when the backend predates the endpoint (404), so the widget
+ * can fall back to full-state polling.
+ */
+export async function fetchPublicChatUpdates(
+  sessionToken: string,
+  afterId: number,
+  fetcher: typeof fetch = fetch,
+): Promise<PublicChatUpdatesResponse | null> {
+  const response = await fetcher(
+    `/api/public/chat/sessions/updates?after_id=${Math.max(0, Math.floor(afterId))}`,
+    {
+      headers: sessionHeaders(
+        sessionToken,
+        null,
+      ),
+      cache: "no-store",
+    },
+  );
+  if (response.status === 404) {
+    // Session problems are 401/409, so a 404 here means the route itself is
+    // missing (an older backend).
+    return null;
+  }
+  return parseJson<PublicChatUpdatesResponse>(response);
 }
 
 export async function requestPublicChatHuman(

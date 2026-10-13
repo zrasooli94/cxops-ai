@@ -30,6 +30,7 @@ from app.services.ai_observability_service import (
     AIObservabilityService,
 )
 from app.services.service_kpi_service import ServiceKPIService
+from app.services.tenant_ai_allowance_service import TenantUsageService
 
 router = APIRouter(
     prefix="/observability",
@@ -61,6 +62,19 @@ async def ai_summary(
         db,
         tenant.organization_id,
     )
+
+
+@router.get("/usage")
+async def tenant_usage(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    authz: ObservabilityReadAuthz,
+):
+    """Month-to-date AI allowance and 24 h chat-turn health for this tenant.
+
+    Counts and durations only; scoped to the caller's current tenant.
+    """
+    return await TenantUsageService.report(db, organization_id=tenant.organization_id)
 
 
 @router.get(

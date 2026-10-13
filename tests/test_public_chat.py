@@ -136,6 +136,7 @@ _PURGE_TABLES = [
     "ticket_events",
     "agent_action_events",
     "knowledge_chunks",
+    "ai_usage_reservations",
     "ai_request_logs",
     "integration_jobs",
     "agent_runs",
@@ -253,6 +254,7 @@ async def _make_widget_config(
     max_messages_per_minute: int = 20,
     session_ttl_hours: int = 24,
     grounded_auto_reply_enabled: bool = False,
+    async_turns_enabled: bool = False,
 ) -> tuple[PublicChatConfiguration, str]:
     key = f"pk_live_{secrets.token_hex(20)}"
     config = PublicChatConfiguration(
@@ -266,6 +268,7 @@ async def _make_widget_config(
         max_messages_per_minute=max_messages_per_minute,
         session_ttl_hours=session_ttl_hours,
         grounded_auto_reply_enabled=grounded_auto_reply_enabled,
+        async_turns_enabled=async_turns_enabled,
     )
     db.add(config)
     await db.commit()

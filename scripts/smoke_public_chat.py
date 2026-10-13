@@ -104,6 +104,71 @@ class Smoke:
         return {"Authorization": f"Bearer {self.session_token}"}
 
 
+def send_and_wait_for_reply(
+    smoke: Smoke,
+    *,
+    origin_header: dict[str, str],
+    client_message_id: str,
+    delivery: str,
+    reply_timeout: float = 90.0,
+    sleep: Any = time.sleep,
+) -> str:
+    """Send the probe message and verify a reply arrives.
+
+    ``sync`` (the original contract): the reply must be in the response.
+    ``async`` (Phase 1P.9R activation check): the message must be
+    ``accepted`` - proving all three async gates are open for this tenant -
+    and the reply must then become visible through ``/sessions/updates``,
+    polled at the server's suggested pace. Bodies are never printed.
+    """
+    payload_out: dict[str, Any] = {"client_message_id": client_message_id, "text": PROBE_TEXT}
+    if delivery == "async":
+        payload_out["delivery"] = "async"
+    started = time.monotonic()
+    code, payload = smoke._request(
+        f"{smoke.backend_url}/public/chat/messages",
+        method="POST",
+        payload=payload_out,
+        headers={**origin_header, **smoke._auth()},
+    )
+    if code not in (200, 201) or not isinstance(payload, dict):
+        raise StepFailure(f"HTTP {code}: {_describe(payload)}")
+    state = payload.get("processing_state")
+    if delivery == "sync":
+        reply = payload.get("reply")
+        if not reply:
+            raise StepFailure("no reply returned; the agent did not answer")
+        return (
+            f"reply received ({len(reply)} chars, body not shown), "
+            f"status={payload.get('status')!r}"
+        )
+    if state != "accepted":
+        raise StepFailure(
+            f"async delivery is not active for this tenant (processing_state={state!r}); "
+            "check PUBLIC_CHAT_ASYNC_ENABLED and the tenant's async_turns_enabled"
+        )
+    cursor = 0
+    while time.monotonic() - started < reply_timeout:
+        code, update = smoke._request(
+            f"{smoke.backend_url}/public/chat/sessions/updates?after_id={cursor}",
+            headers=smoke._auth(),
+        )
+        if code != 200 or not isinstance(update, dict):
+            raise StepFailure(f"updates HTTP {code}: {_describe(update)}")
+        cursor = int(update.get("cursor") or cursor)
+        outbound = [
+            m for m in update.get("messages") or [] if m.get("direction") == "outbound"
+        ]
+        if outbound:
+            return (
+                f"async reply visible after {time.monotonic() - started:.1f}s "
+                f"({len(outbound[-1].get('body') or '')} chars, body not shown), "
+                f"status={update.get('status')!r}"
+            )
+        sleep(max(0.5, float(update.get("poll_after_ms") or 1000) / 1000))
+    raise StepFailure(f"no async reply within {reply_timeout:.0f}s")
+
+
 def _describe(payload: Any) -> str:
     """Summarise an API error without echoing request content."""
     if isinstance(payload, dict):
@@ -202,21 +267,13 @@ def run(args: argparse.Namespace) -> int:
 
     # 6. Send a message. Bodies are never printed.
     try:
-        code, payload = smoke._request(
-            f"{smoke.backend_url}/public/chat/messages",
-            method="POST",
-            payload={"client_message_id": f"smoke-{run_id}", "text": PROBE_TEXT},
-            headers={**origin_header, **smoke._auth()},
+        detail = send_and_wait_for_reply(
+            smoke,
+            origin_header=origin_header,
+            client_message_id=f"smoke-{run_id}",
+            delivery=args.delivery,
         )
-        if code not in (200, 201) or not isinstance(payload, dict):
-            raise StepFailure(f"HTTP {code}: {_describe(payload)}")
-        reply = payload.get("reply")
-        if not reply:
-            raise StepFailure("no reply returned; the agent did not answer")
-        ok(
-            "message answered",
-            f"reply received ({len(reply)} chars, body not shown), status={payload.get('status')!r}",
-        )
+        ok("message answered", detail)
     except StepFailure as exc:
         bad("message answered", str(exc))
 
@@ -308,6 +365,16 @@ def main() -> int:
         help="An origin already on the tenant's allowlist, e.g. https://www.example.com",
     )
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--delivery",
+        choices=("sync", "async"),
+        default="sync",
+        help=(
+            "sync (default): the reply must be in the send response. async: the "
+            "message must be accepted asynchronously and its reply must appear "
+            "through /sessions/updates (Phase 1P.9R activation check)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.widget_key_file:

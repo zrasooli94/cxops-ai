@@ -35,20 +35,23 @@ widget never downgrades ``human_assigned`` to ``human_requested``.
 import hashlib
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.core.config import settings
+from app.core.db_connection import release_idle_connection
 from app.core.logging import get_logger
 from app.models.agent_run import AgentRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
+from app.models.integration_job import IntegrationJob
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
@@ -56,18 +59,58 @@ from app.repositories.conversation_message_repository import (
     ConversationMessageRepository,
 )
 from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.integration_job_repository import IntegrationJobRepository
 from app.repositories.public_chat_repository import PublicChatRepository
+from app.repositories.savepoint import insert_in_savepoint
 from app.repositories.ticket_repository import TicketRepository
 from app.services.agent_workflow_service import agent_workflow_service
 from app.services.business_integration_service import BusinessIntegrationService
 from app.services.conversation_ingestion_service import ConversationIngestionService
+from app.services.delivery_lease import chat_turn_lease_connection
+from app.services.integration_job_service import JobDeferredError, PermanentJobError
 from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
 from app.services.public_chat_resolution import PublicChatResolutionService
 from app.services.rag_reliability import public_answer_eligible
 from app.services.rag_service import rag_service
+from app.services.tenant_ai_allowance_service import (
+    TenantAIAllowanceService,
+    reservation_key,
+)
 from app.services.ticket_routing_service import TicketRoutingService
 
 LOCAL_PROVIDER = "cxops"
+
+# Phase 1P.9 durable async turns.
+PUBLIC_CHAT_TURN_JOB_TYPE = "public_chat.turn"
+TURN_JOB_DEDUPE_PREFIX = "public-chat-turn:"
+
+
+class _StageTimer:
+    """Wall-clock milliseconds per stage of one chat request/turn.
+
+    Logged as one structured ``public_chat_timing`` event with stage names and
+    durations only - never message text or tokens - so production latency can
+    be attributed to validation, persistence, agent/LLM, RAG, or enqueueing.
+    """
+
+    def __init__(self) -> None:
+        self._started = time.perf_counter()
+        self._last = self._started
+        self.stages: dict[str, float] = {}
+
+    def mark(self, stage: str) -> None:
+        now = time.perf_counter()
+        self.stages[stage] = round((now - self._last) * 1000, 1)
+        self._last = now
+
+    def log(self, kind: str, **ids: int) -> None:
+        log.info(
+            "public_chat_timing",
+            kind=kind,
+            total_ms=round((time.perf_counter() - self._started) * 1000, 1),
+            **{f"{name}_ms": value for name, value in self.stages.items()},
+            **ids,
+        )
 WEB_CHANNEL = "web"
 
 # Public widget key prefix (cosmetic distinction from machine-channel keys).
@@ -681,13 +724,21 @@ class PublicChatService:
         embedding_origin: str | None,
         text: str,
         client_message_id: str,
+        delivery: str = "sync",
     ) -> dict:
-        """Append an inbound message and run the agent (``authz=None``).
+        """Append an inbound message and run (or enqueue) the agent turn.
 
         Idempotent by ``client_message_id``: a retry resolves the already
         persisted inbound + reply messages and returns them, and the reply is
         keyed by the same id so the returned text is stable.
+
+        ``delivery="sync"`` (default, the original contract) runs the AI turn
+        inside this request. ``delivery="async"`` (Phase 1P.9) persists the
+        message, enqueues a durable tenant-bound turn job, and returns
+        ``processing_state="accepted"`` immediately; the reply arrives through
+        ``get_updates``.
         """
+        timer = _StageTimer()
         session = await cls.verify_session(db, session_token)
         configuration = await PublicChatRepository.get_config_by_id_for_tenant(
             db,
@@ -737,6 +788,9 @@ class PublicChatService:
         if conversation is None:
             raise PublicChatSessionNotFoundError("Session conversation not found.")
 
+        timer.mark("validate")
+        use_async = cls.async_turns_active(configuration, delivery)
+
         # ---- early duplicate: retry returns the already-persisted reply ----
         inbound = await ConversationMessageRepository.get_by_dedupe_key(
             db,
@@ -755,11 +809,13 @@ class PublicChatService:
                 handoff_text = await cls.handoff_reply_for(
                     db, session.organization_id
                 )
+                handoff = reply.body == handoff_text
                 return {
                     "message_id": inbound.id,
                     "reply": reply.body,
                     "status": session.status,
-                    "handoff": reply.body == handoff_text,
+                    "handoff": handoff,
+                    "processing_state": "handoff" if handoff else "completed",
                 }
             if session.status in HANDED_OFF_STATUSES:
                 # A handed-off message never creates an outbound reply, so the
@@ -771,10 +827,54 @@ class PublicChatService:
                     "reply": None,
                     "status": session.status,
                     "handoff": session.status == "human_requested",
+                    "processing_state": "handoff",
                 }
+            if use_async:
+                # The message was accepted before; make sure its turn exists
+                # (idempotent) - this also repairs a crash between persisting
+                # the message and enqueueing its turn.
+                job_id = await cls._ensure_turn_job(
+                    db,
+                    session=session,
+                    inbound_id=inbound.id,
+                    client_message_id=client_message_id,
+                )
+                return cls._accepted(session=session, inbound_id=inbound.id, job_id=job_id)
             raise PublicChatMessageInFlightError(
                 "This message is still being processed."
             )
+
+        if use_async and session.status not in HANDED_OFF_STATUSES:
+            # Phase 1P.9R: the inbound message and its durable turn job commit
+            # together, so "accepted" always means "recoverable". A crash
+            # before the commit stores nothing (the client's retry with the
+            # same client_message_id starts clean); after it, every recovery
+            # path can find the job.
+            inbound, job_id = await cls._accept_turn_atomically(
+                db,
+                session=session,
+                conversation=conversation,
+                text=text,
+                client_message_id=client_message_id,
+            )
+            timer.mark("persist_inbound")
+            try:
+                await cls._record_inbound_on_ticket(
+                    db, session=session, conversation=conversation, text=text
+                )
+            except Exception as exc:  # noqa: BLE001 - the turn repeats it
+                # The message and its turn are already durable; the turn
+                # re-applies the (idempotent) ticket mirror before analysis.
+                await db.rollback()
+                log.warning(
+                    "public_chat_ticket_mirror_deferred",
+                    organization_id=session.organization_id,
+                    session_id=session.id,
+                    error_type=type(exc).__name__,
+                )
+            timer.mark("enqueue")
+            timer.log("accept", organization_id=session.organization_id, session_id=session.id)
+            return cls._accepted(session=session, inbound_id=inbound.id, job_id=job_id)
 
         inbound = await cls._insert_inbound_message(
             db,
@@ -783,29 +883,9 @@ class PublicChatService:
             client_message_id=client_message_id,
         )
 
-        ticket_result = await db.execute(
-            select(Ticket).where(
-                Ticket.id == session.ticket_id,
-                Ticket.organization_id == session.organization_id,
-            )
+        await cls._record_inbound_on_ticket(
+            db, session=session, conversation=conversation, text=text
         )
-        ticket = ticket_result.scalar_one_or_none()
-        if ticket is None:
-            raise PublicChatSessionNotFoundError("Session ticket not found.")
-
-        if ticket.subject == TICKET_PLACEHOLDER_SUBJECT:
-            await cls._mirror_first_message_to_ticket(
-                db,
-                ticket=ticket,
-                text=text,
-            )
-        else:
-            await ConversationRepository.update_for_tenant(
-                db,
-                conversation=conversation,
-                changes={"latest_message_at": datetime.now(UTC)},
-                organization_id=conversation.organization_id,
-            )
 
         if session.status in HANDED_OFF_STATUSES:
             # Phase 1P.6: the customer is talking to (or waiting on) a human.
@@ -828,9 +908,121 @@ class PublicChatService:
                 "reply": None,
                 "status": session.status,
                 "handoff": session.status == "human_requested",
+                "processing_state": "handoff",
+            }
+        timer.mark("persist_inbound")
+
+        result = await cls._ai_reply_turn(
+            db,
+            session=session,
+            configuration=configuration,
+            conversation=conversation,
+            inbound=inbound,
+            text=text,
+            client_message_id=client_message_id,
+            timer=timer,
+        )
+        timer.log("sync_turn", organization_id=result.pop("_organization_id"), session_id=result.pop("_session_id"))
+        return result
+
+    @staticmethod
+    def _accepted(*, session: PublicChatSession, inbound_id: int, job_id: int) -> dict:
+        # ``_turn_job_id``/``_organization_id`` are internal hand-offs to the
+        # route (which dispatches the turn after this request's commit); the
+        # route removes them before responding.
+        return {
+            "message_id": inbound_id,
+            "reply": None,
+            "status": session.status,
+            "handoff": False,
+            "processing_state": "accepted",
+            "_turn_job_id": job_id,
+            "_organization_id": session.organization_id,
+        }
+
+    @classmethod
+    async def _ai_reply_turn(
+        cls,
+        db: AsyncSession,
+        *,
+        session: PublicChatSession,
+        configuration: PublicChatConfiguration,
+        conversation: Conversation,
+        inbound: ConversationMessage,
+        text: str,
+        client_message_id: str,
+        timer: "_StageTimer",
+        lock_conn: AsyncConnection | None = None,
+    ) -> dict:
+        """The AI half of a chat turn, shared by the sync path and async jobs.
+
+        Unchanged safety rules (handoff-only by default, the narrow grounded
+        auto-reply carve-out, fail-closed RAG). Phase 1P.9 adds the tenant's
+        monthly AI allowance check BEFORE any model call: an exhausted
+        allowance hands the conversation to a human without calling a model.
+        """
+        organization_id = session.organization_id
+        ticket_result = await db.execute(
+            select(Ticket).where(
+                Ticket.id == session.ticket_id,
+                Ticket.organization_id == organization_id,
+            )
+        )
+        ticket = ticket_result.scalar_one_or_none()
+        if ticket is None:
+            raise PublicChatSessionNotFoundError("Session ticket not found.")
+        if ticket.subject == TICKET_PLACEHOLDER_SUBJECT:
+            # Async acceptance mirrors the first message after its commit and
+            # tolerates failure there; make sure analysis sees the real text.
+            await cls._mirror_first_message_to_ticket(db, ticket=ticket, text=text)
+
+        # Phase 1P.9R: reserve (not just check) the allowance, serialised
+        # across instances; a retried or duplicated turn reuses its reservation.
+        allowance_key = reservation_key(
+            organization_id=organization_id,
+            session_id=session.id,
+            client_message_id=client_message_id,
+        )
+        allowance = await TenantAIAllowanceService.reserve(
+            db,
+            organization_id=organization_id,
+            configuration=configuration,
+            key=allowance_key,
+        )
+        timer.mark("allowance")
+        if not allowance.allowed:
+            log.warning(
+                "public_chat_ai_allowance_exhausted",
+                organization_id=organization_id,
+                session_id=session.id,
+                reason=allowance.reason,
+                turns_used=allowance.turns_used,
+                turn_limit=allowance.turn_limit,
+            )
+            reply_text = await cls.handoff_reply_for(db, organization_id)
+            if session.status == "ai_active":
+                session = await PublicChatRepository.update_session_for_tenant(
+                    db,
+                    session=session,
+                    changes={"status": "human_requested"},
+                    organization_id=organization_id,
+                )
+            await cls._insert_reply_message(
+                db,
+                conversation=conversation,
+                body=reply_text,
+                client_message_id=client_message_id,
+            )
+            return {
+                "message_id": inbound.id,
+                "reply": reply_text,
+                "status": session.status,
+                "handoff": True,
+                "processing_state": "handoff",
+                "_organization_id": organization_id,
+                "_session_id": session.id,
             }
 
-        organization_id = session.organization_id
         result = await agent_workflow_service.analyze(
             db=db,
             ticket_id=ticket.id,
@@ -838,7 +1030,10 @@ class PublicChatService:
             allow_auto_queue=True,
             persist_run=True,
             authz=None,
+            lock_conn=lock_conn,
         )
+
+        timer.mark("agent")
 
         # ---- bounded reply selection (Phase 1P.1 + 1P.5) ----
         # Default is handoff-only: the repo's tool policy forces
@@ -905,12 +1100,14 @@ class PublicChatService:
                 organization_id=session.organization_id,
             )
 
+        timer.mark("rag")
         await cls._insert_reply_message(
             db,
             conversation=conversation,
             body=reply_text,
             client_message_id=client_message_id,
         )
+        timer.mark("persist_reply")
 
         if grounded_reply is not None and run is not None:
             await cls._record_grounded_auto_reply(
@@ -932,12 +1129,400 @@ class PublicChatService:
             status=session.status,
             handoff=handoff,
         )
+        await TenantAIAllowanceService.settle(db, key=allowance_key)
 
         return {
             "message_id": inbound.id,
             "reply": reply_text,
             "status": session.status,
             "handoff": handoff,
+            "processing_state": "handoff" if handoff else "completed",
+            "_organization_id": session.organization_id,
+            "_session_id": session.id,
+        }
+
+
+    # ------------------------------------------------------------------
+    # Phase 1P.9: durable asynchronous turns
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def turn_dedupe_key(*, organization_id: int, session_id: int, client_message_id: str) -> str:
+        return f"{TURN_JOB_DEDUPE_PREFIX}{organization_id}:{session_id}:{client_message_id}"
+
+    @staticmethod
+    def async_turns_active(
+        configuration: PublicChatConfiguration, delivery: str
+    ) -> bool:
+        """Phase 1P.9R rollout gate: platform switch AND tenant opt-in AND a
+        widget that asked for async delivery. Any one off means sync."""
+        return (
+            delivery == "async"
+            and settings.public_chat_async_enabled
+            and bool(getattr(configuration, "async_turns_enabled", False))
+        )
+
+    @classmethod
+    async def _record_inbound_on_ticket(
+        cls,
+        db: AsyncSession,
+        *,
+        session: PublicChatSession,
+        conversation: Conversation,
+        text: str,
+    ) -> None:
+        """Mirror the first message onto the placeholder ticket, else bump the
+        conversation's activity time. Idempotent."""
+        ticket = (
+            await db.execute(
+                select(Ticket).where(
+                    Ticket.id == session.ticket_id,
+                    Ticket.organization_id == session.organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if ticket is None:
+            raise PublicChatSessionNotFoundError("Session ticket not found.")
+
+        if ticket.subject == TICKET_PLACEHOLDER_SUBJECT:
+            await cls._mirror_first_message_to_ticket(
+                db,
+                ticket=ticket,
+                text=text,
+            )
+        else:
+            await ConversationRepository.update_for_tenant(
+                db,
+                conversation=conversation,
+                changes={"latest_message_at": datetime.now(UTC)},
+                organization_id=conversation.organization_id,
+            )
+
+    @classmethod
+    async def _accept_turn_atomically(
+        cls,
+        db: AsyncSession,
+        *,
+        session: PublicChatSession,
+        conversation: Conversation,
+        text: str,
+        client_message_id: str,
+    ) -> tuple[ConversationMessage, int]:
+        """Insert the inbound message and its turn job in ONE transaction.
+
+        Both inserts are idempotent (savepoint + unique dedupe keys), so
+        concurrent duplicate submissions converge on one message and one job.
+        Nothing is committed until both rows exist.
+        """
+        inbound_key = f"{DEDUPE_INBOUND_PREFIX}{client_message_id}"
+        message = ConversationMessage(
+            organization_id=conversation.organization_id,
+            conversation_id=conversation.id,
+            provider=LOCAL_PROVIDER,
+            dedupe_key=inbound_key,
+            direction="inbound",
+            visibility="public",
+            body=text,
+            sent_at=datetime.now(UTC),
+        )
+        collision = await insert_in_savepoint(db, message)
+        if collision is not None:
+            existing = await ConversationMessageRepository.get_by_dedupe_key(
+                db,
+                conversation_id=conversation.id,
+                organization_id=conversation.organization_id,
+                dedupe_key=inbound_key,
+            )
+            if existing is None:
+                raise collision
+            message = existing
+
+        job_key = cls.turn_dedupe_key(
+            organization_id=session.organization_id,
+            session_id=session.id,
+            client_message_id=client_message_id,
+        )
+        job = await IntegrationJobRepository.get_by_dedupe_key(db, job_key)
+        if job is None:
+            job = IntegrationJob(
+                organization_id=session.organization_id,
+                dedupe_key=job_key,
+                job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
+                payload={
+                    "session_id": session.id,
+                    "message_id": message.id,
+                    "client_message_id": client_message_id,
+                },
+            )
+            job_collision = await insert_in_savepoint(db, job)
+            if job_collision is not None:
+                winner = await IntegrationJobRepository.get_by_dedupe_key(db, job_key)
+                if winner is None:
+                    raise job_collision
+                job = winner
+        job_id = job.id
+        await db.commit()
+        return message, job_id
+
+    @classmethod
+    async def _ensure_turn_job(
+        cls,
+        db: AsyncSession,
+        *,
+        session: PublicChatSession,
+        inbound_id: int,
+        client_message_id: str,
+    ) -> int:
+        """Enqueue the AI turn for an accepted message, exactly once.
+
+        Keyed by (tenant, session, client_message_id): enqueueing again (a
+        client retry, or recovery after a crash between persisting the message
+        and enqueueing) resolves the existing job. The job is bound to the
+        session's tenant; its payload carries only ids.
+        """
+        dedupe_key = cls.turn_dedupe_key(
+            organization_id=session.organization_id,
+            session_id=session.id,
+            client_message_id=client_message_id,
+        )
+        existing = await IntegrationJobRepository.get_by_dedupe_key(db, dedupe_key)
+        if existing is not None:
+            return existing.id
+        job = IntegrationJob(
+            organization_id=session.organization_id,
+            dedupe_key=dedupe_key,
+            job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
+            payload={
+                "session_id": session.id,
+                "message_id": inbound_id,
+                "client_message_id": client_message_id,
+            },
+        )
+        collision = await insert_in_savepoint(db, job)
+        if collision is not None:
+            winner = await IntegrationJobRepository.get_by_dedupe_key(db, dedupe_key)
+            if winner is None:
+                raise collision
+            await db.commit()
+            return winner.id
+        await db.commit()
+        return job.id
+
+    @classmethod
+    async def process_turn(
+        cls,
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        session_id: int,
+        message_id: int,
+        client_message_id: str,
+    ) -> dict:
+        """Run one durable AI turn (called by the job executor).
+
+        Tenant-bound: the session and message are loaded with the job's
+        persisted ``organization_id`` and must belong together. Idempotent: an
+        existing reply (or a handed-off / closed session) completes the turn
+        without any model call. Serialized per session across processes with
+        an advisory lease; a busy lease defers the job instead of failing it.
+        """
+        session = await PublicChatRepository.get_session_by_id_for_tenant(
+            db, session_id, organization_id
+        )
+        if session is None:
+            raise PermanentJobError("Chat turn references a missing session")
+        inbound = await ConversationMessageRepository.get_by_id_for_tenant(
+            db, message_id=message_id, organization_id=organization_id
+        )
+        if (
+            inbound is None
+            or inbound.conversation_id != session.conversation_id
+            or inbound.dedupe_key != f"{DEDUPE_INBOUND_PREFIX}{client_message_id}"
+        ):
+            raise PermanentJobError("Chat turn references a foreign or missing message")
+
+        existing_reply = await ConversationMessageRepository.get_by_dedupe_key(
+            db,
+            conversation_id=session.conversation_id,
+            organization_id=organization_id,
+            dedupe_key=f"{DEDUPE_REPLY_PREFIX}{client_message_id}",
+        )
+        if existing_reply is not None:
+            return {"outcome": "already_replied"}
+        if session.status == "closed" or session.expires_at <= datetime.now(UTC):
+            return {"outcome": "session_closed"}
+        if session.status in HANDED_OFF_STATUSES:
+            return {"outcome": "handed_off"}
+
+        configuration = await PublicChatRepository.get_config_by_id_for_tenant(
+            db,
+            configuration_id=session.configuration_id,
+            organization_id=organization_id,
+        )
+        conversation = (
+            await db.execute(
+                select(Conversation).where(
+                    Conversation.id == session.conversation_id,
+                    Conversation.organization_id == organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if configuration is None or conversation is None:
+            raise PermanentJobError("Chat turn references a missing configuration")
+
+        # Never hold this session's connection while checking out the lease
+        # connection (hold-and-wait); the reads above are re-done as needed.
+        await release_idle_connection(db)
+        async with chat_turn_lease_connection(session.id) as lease_conn:
+            if lease_conn is None:
+                raise JobDeferredError("another turn of this session is running")
+            # Re-check under the lease: the previous turn may have just
+            # replied to this message (e.g. a recovered duplicate dispatch).
+            if await ConversationMessageRepository.get_by_dedupe_key(
+                db,
+                conversation_id=session.conversation_id,
+                organization_id=organization_id,
+                dedupe_key=f"{DEDUPE_REPLY_PREFIX}{client_message_id}",
+            ):
+                return {"outcome": "already_replied"}
+            timer = _StageTimer()
+            result = await cls._ai_reply_turn(
+                db,
+                session=session,
+                configuration=configuration,
+                conversation=conversation,
+                inbound=inbound,
+                text=inbound.body,
+                client_message_id=client_message_id,
+                timer=timer,
+                lock_conn=lease_conn,
+            )
+            timer.log("async_turn", organization_id=organization_id, session_id=session_id)
+        return {"outcome": result["processing_state"]}
+
+    @classmethod
+    async def fail_turn_to_handoff(
+        cls,
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        session_id: int,
+        client_message_id: str,
+    ) -> None:
+        """A turn failed permanently: never leave the visitor waiting.
+
+        Hands the session to a human and posts the tenant's handoff text as
+        the reply (de-duplicated by the same reply key, so it can never
+        duplicate a reply that did get through). No model call.
+        """
+        # The turn is over: release its allowance reservation (any model call
+        # it made is already in ai_request_logs).
+        await TenantAIAllowanceService.settle(
+            db,
+            key=reservation_key(
+                organization_id=organization_id,
+                session_id=session_id,
+                client_message_id=client_message_id,
+            ),
+        )
+        session = await PublicChatRepository.get_session_by_id_for_tenant(
+            db, session_id, organization_id
+        )
+        if session is None or session.status == "closed":
+            return
+        conversation = (
+            await db.execute(
+                select(Conversation).where(
+                    Conversation.id == session.conversation_id,
+                    Conversation.organization_id == organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if conversation is None:
+            return
+        if session.status == "ai_active":
+            session = await PublicChatRepository.update_session_for_tenant(
+                db,
+                session=session,
+                changes={"status": "human_requested"},
+                organization_id=organization_id,
+            )
+        await cls._insert_reply_message(
+            db,
+            conversation=conversation,
+            body=await cls.handoff_reply_for(db, organization_id),
+            client_message_id=client_message_id,
+        )
+        log.warning(
+            "public_chat_turn_failed_to_handoff",
+            organization_id=organization_id,
+            session_id=session_id,
+        )
+
+    @classmethod
+    async def get_updates(
+        cls,
+        db: AsyncSession,
+        session: PublicChatSession,
+        *,
+        after_id: int,
+    ) -> dict:
+        """Messages newer than ``after_id`` plus the state of pending turns.
+
+        The widget's cursor-based replacement for full-history polling: the
+        payload is only what changed, every query is scoped to the verified
+        session (and therefore its tenant), and ``poll_after_ms`` tells the
+        client how soon another poll is useful. Pending turns that look
+        abandoned are handed back to the in-process dispatcher here, so
+        recovery is driven by the visitor who is waiting for them - no idle
+        database polling.
+        """
+        messages = await PublicChatRepository.list_public_messages_after(
+            db,
+            conversation_id=session.conversation_id,
+            organization_id=session.organization_id,
+            after_id=after_id,
+            limit=MAX_HISTORY_MESSAGES,
+        )
+        jobs = await IntegrationJobRepository.list_open_by_dedupe_prefix(
+            db,
+            organization_id=session.organization_id,
+            job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
+            dedupe_prefix=f"{TURN_JOB_DEDUPE_PREFIX}{session.organization_id}:{session.id}:",
+            limit=20,
+        )
+        turns = [
+            {
+                "message_id": int((job.payload or {}).get("message_id") or 0),
+                "state": "processing" if job.status == "processing" else "accepted",
+            }
+            for job in jobs
+        ]
+        from app.services.public_chat_turn_dispatcher import turn_dispatcher
+
+        turn_dispatcher.recover(jobs)
+        if any(turn["state"] == "processing" for turn in turns):
+            poll_after_ms = 1000  # the model is answering now
+        elif turns:
+            # Phase 1P.9R: a queued turn waits for a slot; polling every
+            # second would only add load. Pace by this process's backlog.
+            poll_after_ms = turn_dispatcher.queued_poll_after_ms()
+        else:
+            poll_after_ms = 3000 if messages else 10000
+        return {
+            "status": session.status,
+            "messages": [
+                {
+                    "id": message.id,
+                    "direction": message.direction,
+                    "body": message.body,
+                    "sent_at": message.sent_at,
+                }
+                for message in messages
+            ],
+            "turns": turns,
+            "cursor": max([after_id, *(m.id for m in messages)]),
+            "poll_after_ms": poll_after_ms,
         }
 
     @staticmethod

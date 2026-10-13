@@ -602,12 +602,12 @@ def _fake_alembic(monkeypatch, *, current: str, heads: str, code: int = 0) -> No
 def test_migration_check_parses_revision_ids_containing_non_hex_letters(
     monkeypatch,
 ) -> None:
-    """The repository head is '1p5a0001', which is not valid hex.
+    """The repository head is '1p9b0001', which is not valid hex.
 
     A parser that only accepts hex silently reports "no revisions" and downgrades
     a database one migration behind to a warning.
     """
-    _fake_alembic(monkeypatch, current="1p5a0001 (head)\n", heads="1p5a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="1p9b0001 (head)\n", heads="1p9b0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
@@ -619,7 +619,7 @@ def test_migration_check_parses_revision_ids_containing_non_hex_letters(
 def test_migration_gap_is_a_failure_not_a_warning(monkeypatch) -> None:
     """An unapplied head must be a hard FAIL with the revision named."""
     # A real ancestor of the head, so this is a gap rather than a mismatch.
-    _fake_alembic(monkeypatch, current="1p4a0001 (head)\n", heads="1p5a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="1p5a0001 (head)\n", heads="1p9b0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
@@ -627,7 +627,7 @@ def test_migration_gap_is_a_failure_not_a_warning(monkeypatch) -> None:
     assert reporter.failures >= 1, reporter.lines
     joined = "\n".join(reporter.lines)
     assert "migration gap" in joined
-    assert "1p5a0001" in joined
+    assert "1p9b0001" in joined
     assert "alembic upgrade head" in joined
 
 
@@ -637,7 +637,7 @@ def test_database_at_an_unknown_revision_is_reported_as_a_mismatch(monkeypatch) 
     A database at a revision this build has never heard of is a schema mismatch;
     telling the operator to run the migration would be wrong advice.
     """
-    _fake_alembic(monkeypatch, current="ffff9999 (head)\n", heads="1p5a0001 (head)\n")
+    _fake_alembic(monkeypatch, current="ffff9999 (head)\n", heads="1p9b0001 (head)\n")
     reporter = _reporter()
 
     validator.check_migrations(reporter)
@@ -655,7 +655,7 @@ def test_unreachable_database_fails_loudly(monkeypatch) -> None:
         if "current" in subcommand:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
         return subprocess.CompletedProcess(
-            cmd, 0, stdout="1p5a0001 (head)\n", stderr=""
+            cmd, 0, stdout="1p9b0001 (head)\n", stderr=""
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -687,7 +687,7 @@ def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         subcommand = cmd[cmd.index("alembic") + 1 :]
         target = "current" if "current" in subcommand else "heads"
-        stdout = "1p4a0001 (head)\n" if target == "current" else "1p5a0001 (head)\n"
+        stdout = "1p5a0001 (head)\n" if target == "current" else "1p9b0001 (head)\n"
         stderr = "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n"
         return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -696,7 +696,7 @@ def test_alembic_log_lines_are_not_parsed_as_revisions(monkeypatch) -> None:
     validator.check_migrations(reporter)
 
     assert reporter.failures >= 1, reporter.lines
-    assert "1p5a0001" in "\n".join(reporter.lines)
+    assert "1p9b0001" in "\n".join(reporter.lines)
 
 
 def test_migrations_can_be_skipped_for_air_gapped_runs(monkeypatch):
@@ -760,3 +760,28 @@ def test_migration_check_only_issues_read_only_alembic_commands():
 def test_script_is_executable_with_a_shebang():
     assert SCRIPT.read_text(encoding="utf-8").startswith("#!")
     assert os.access(SCRIPT, os.X_OK)
+
+
+def test_neon_pooler_endpoint_fails_the_advisory_lock_requirement() -> None:
+    """Phase 1P.9R: session-level advisory locks need the direct endpoint."""
+    reporter = _reporter()
+    pooled = SimpleNamespace(
+        database_url=(
+            "postgresql+asyncpg://u:p@ep-calm-sun-123456-pooler.ap-southeast-1.aws.neon.tech"
+            "/cxops?ssl=require"
+        )
+    )
+    validator.check_database(pooled, reporter)
+    assert reporter.failures == 1
+    assert any("pooler" in line for line in reporter.lines)
+
+    reporter = _reporter()
+    direct = SimpleNamespace(
+        database_url=(
+            "postgresql+asyncpg://u:p@ep-calm-sun-123456.ap-southeast-1.aws.neon.tech"
+            "/cxops?ssl=require"
+        )
+    )
+    validator.check_database(direct, reporter)
+    assert reporter.failures == 0
+    assert any("direct (non-pooler)" in line for line in reporter.lines)

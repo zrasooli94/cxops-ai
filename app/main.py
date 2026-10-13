@@ -1,3 +1,7 @@
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import (
@@ -17,10 +21,34 @@ log = get_logger(__name__)
 
 configure_logging()
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Resume public-chat turns interrupted by a restart, then sweep hourly.
+
+    Runs in the background so a slow or unreachable database never delays the
+    process from serving (Phase 1P.9, hardened in 1P.9R).
+    """
+    from app.core.database import engine
+    from app.core.schema_gate import check_schema
+    from app.services.public_chat_turn_dispatcher import turn_dispatcher
+
+    # Phase 1P.9R: refuse to serve on a schema this build does not support
+    # (raises in production; uvicorn then exits before binding its port).
+    await check_schema(engine)
+
+    task = asyncio.get_running_loop().create_task(turn_dispatcher.run_maintenance())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await turn_dispatcher.drain(timeout=10.0)
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     debug=settings.debug,
+    lifespan=lifespan,
 )
 
 app.add_middleware(RequestCorrelationMiddleware)
