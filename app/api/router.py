@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes.agent import router as agent_router
 from app.api.routes.automation_rules import router as automation_rules_router
+from app.api.routes.commercial import routers as commercial_routers
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.customers import router as customers_router
 from app.api.routes.evaluations import router as evaluations_router
@@ -53,3 +54,5 @@ api_router.include_router(evaluations_router)
 api_router.include_router(public_chat_router)
 api_router.include_router(staff_public_chat_router)
 api_router.include_router(tenant_config_router)
+for commercial_router in commercial_routers:
+    api_router.include_router(commercial_router)

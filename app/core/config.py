@@ -220,6 +220,36 @@ class Settings(BaseSettings):
     # for its duration; bounding them keeps the pool from deadlocking.
     agent_analysis_max_concurrency: int = 8
 
+    # Phase 1Q: commercial onboarding.
+    #
+    # Public early-access / demo-request submissions. Default OFF: releasing
+    # lead capture in production is a separate owner approval. While off, the
+    # public endpoint answers 503 and stores nothing.
+    public_lead_capture_enabled: bool = False
+    # Abuse ceilings for lead submissions. The platform-wide cap is the robust
+    # bound (it does not depend on a client IP the API cannot verify); the
+    # per-email cap stops one address from flooding the review queue.
+    lead_submissions_per_hour_platform: int = 30
+    lead_submissions_per_day_per_email: int = 3
+    # Team invitations: single-use, hashed at rest, and short-lived.
+    team_invitation_ttl_hours: int = 72
+    # Knowledge ingestion calls the paid embedding API. A tenant that has not
+    # been approved (lifecycle_status != active) may upload knowledge during
+    # setup only when this is on. Default OFF: approval gates every AI spend.
+    onboarding_knowledge_setup_enabled: bool = False
+
+    @field_validator(
+        "lead_submissions_per_hour_platform",
+        "lead_submissions_per_day_per_email",
+        "team_invitation_ttl_hours",
+        mode="after",
+    )
+    @classmethod
+    def _commercial_limits_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Lead and invitation limits must be positive")
+        return value
+
     @field_validator("public_chat_session_token_entropy_bytes", mode="after")
     @classmethod
     def _public_chat_token_entropy_bounded(cls, value: int) -> int:

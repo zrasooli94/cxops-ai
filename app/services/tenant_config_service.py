@@ -88,6 +88,23 @@ class UnsupportedProviderError(TenantConfigError):
     pass
 
 
+class OrganizationNotApprovedError(TenantConfigError):
+    """Phase 1Q: going live needs an ``active`` (operator-approved) tenant."""
+
+
+async def _require_active_organization(db: AsyncSession, organization_id: int) -> None:
+    from app.models.organization import LIFECYCLE_ACTIVE, Organization
+
+    status = await db.scalar(
+        select(Organization.lifecycle_status).where(Organization.id == organization_id)
+    )
+    if status != LIFECYCLE_ACTIVE:
+        raise OrganizationNotApprovedError(
+            "This workspace has not been approved yet. The chatbot and business "
+            "integrations can be switched on after CXOps approves it."
+        )
+
+
 def _validate_origins(origins: list[str]) -> list[str]:
     """Re-validate the exact-origin allowlist at the service boundary.
 
@@ -249,6 +266,8 @@ class TenantConfigService:
             raw = changes["enabled"]
             if not isinstance(raw, bool):
                 raise TenantConfigError("enabled must be true or false")
+            if raw and not config.enabled:
+                await _require_active_organization(db, organization_id)
             if config.enabled != raw:
                 config.enabled = raw
                 changed.append("enabled")
@@ -364,6 +383,9 @@ class TenantConfigService:
                 f"unknown provider {provider!r}; known providers: "
                 + ", ".join(sorted(known_providers))
             )
+
+        if enabled:
+            await _require_active_organization(db, organization_id)
 
         # set_provider_enabled only flushes; the commit is this service's job so
         # the audit event and the row move together.

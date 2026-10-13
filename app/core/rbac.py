@@ -147,6 +147,55 @@ ROLE_CAPABILITIES: dict[OrganizationRole, frozenset[Capability]] = {
 }
 
 
+# Phase 1Q: an organization that has not been approved by a platform operator
+# keeps only the capabilities needed to finish setup. Everything that can spend
+# AI allowance (agent runs, evaluations, knowledge search/ingestion), reach an
+# external system (integration management, ticket/conversation writes that
+# deliver to Zendesk), or change automation is withheld until approval. The
+# role is unchanged - the effective capability set is role ∩ this mask.
+SETUP_CAPABILITIES: frozenset[Capability] = frozenset({
+    Capability.ORGANIZATION_READ,
+    Capability.ORGANIZATION_MANAGE,
+    Capability.MEMBER_READ,
+    Capability.MEMBER_MANAGE,
+    Capability.CUSTOMER_READ,
+    Capability.TICKET_READ,
+    Capability.INTEGRATION_READ,
+    Capability.OBSERVABILITY_READ,
+    Capability.AUTOMATION_READ,
+})
+
+# Added to the setup mask only when the platform enables knowledge setup during
+# onboarding (settings.onboarding_knowledge_setup_enabled); ingestion and
+# search call the paid embedding API.
+KNOWLEDGE_SETUP_CAPABILITIES: frozenset[Capability] = frozenset({
+    Capability.KNOWLEDGE_READ,
+    Capability.KNOWLEDGE_MANAGE,
+})
+
+ORGANIZATION_ACTIVE = "active"
+
+
+def lifecycle_capability_mask(
+    organization_status: str,
+    *,
+    knowledge_setup_enabled: bool = False,
+) -> frozenset[Capability]:
+    """Capabilities an organization in ``organization_status`` may exercise.
+
+    ``active`` is unrestricted. Every other value - including an unknown one -
+    gets the setup mask (fail closed); a ``suspended`` organization gets only
+    read access to its own organization and team.
+    """
+    if organization_status == ORGANIZATION_ACTIVE:
+        return ALL_CAPABILITIES
+    if organization_status == "suspended":
+        return frozenset({Capability.ORGANIZATION_READ, Capability.MEMBER_READ})
+    if knowledge_setup_enabled:
+        return SETUP_CAPABILITIES | KNOWLEDGE_SETUP_CAPABILITIES
+    return SETUP_CAPABILITIES
+
+
 class AuthorizationError(Exception):
     """Base authorization decision error."""
 
@@ -176,9 +225,21 @@ class AuthorizationContext:
     organization_id: int
     subject: str
     role: OrganizationRole
+    # Phase 1Q: the organization's commercial lifecycle status. Defaults to
+    # ``active`` so contexts built before Phase 1Q keep their capabilities.
+    organization_status: str = ORGANIZATION_ACTIVE
+    knowledge_setup_enabled: bool = False
 
     @property
     def capabilities(self) -> frozenset[Capability]:
+        return capabilities_for_role(self.role) & lifecycle_capability_mask(
+            self.organization_status,
+            knowledge_setup_enabled=self.knowledge_setup_enabled,
+        )
+
+    @property
+    def role_capabilities(self) -> frozenset[Capability]:
+        """What the role grants once the organization is active."""
         return capabilities_for_role(self.role)
 
     def has(self, capability: Capability) -> bool:

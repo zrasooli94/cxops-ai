@@ -41,7 +41,9 @@ async def create_organization(
 ):
     # Atomic creation: organization + creator membership in one transaction.
     # This is tenant bootstrap, NOT RBAC (no roles assigned).
-    return await OrganizationService.create_with_membership(db, data, principal.subject)
+    return await OrganizationService.create_with_membership(
+        db, data, principal.subject, email=principal.email
+    )
 
 
 @router.get(

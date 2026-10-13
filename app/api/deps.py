@@ -17,6 +17,10 @@ from app.services.authorization_service import (
     AuthorizationRoleInvalidError,
     resolve_authorization_context,
 )
+from app.services.platform_operator_service import (
+    PlatformOperatorContext,
+    PlatformOperatorService,
+)
 from app.services.tenant_service import (
     TenantAccessDeniedError,
     TenantMembershipAmbiguousError,
@@ -245,6 +249,39 @@ def RequireCapability(capability: Capability | str):
         return authz
 
     return _require
+
+
+async def get_platform_operator(
+    principal: CurrentPrincipal,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
+) -> PlatformOperatorContext:
+    """Phase 1Q: require platform-operator authority.
+
+    Resolved only from the ``platform_operators`` table by the verified
+    ``sub``. Tenant roles, organization selection headers, email addresses and
+    JWT role claims are never consulted, so a tenant owner cannot pass this.
+    Denials are 403 with a generic message and are logged.
+    """
+    operator = await PlatformOperatorService.resolve(db, principal.subject)
+    if operator is None:
+        log.warning(
+            "platform_operator_denied",
+            subject=principal.subject,
+            request_id=get_request_id(),
+            route=request.url.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform operator access required",
+        )
+    return operator
+
+
+PlatformOperator = Annotated[
+    PlatformOperatorContext,
+    Depends(get_platform_operator),
+]
 
 
 async def verify_ticket_event_signature(request: Request) -> bytes:

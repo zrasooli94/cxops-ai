@@ -220,7 +220,9 @@ async def test_multiple_memberships_require_selector(db, org_scope):
 
 def test_membership_schema_has_no_token_columns():
     columns = {column.name for column in OrganizationMembership.__table__.columns}
-    assert columns == {"id", "organization_id", "subject", "role", "created_at"}
+    # Phase 1Q adds ``email``: display-only data copied from an accepted
+    # invitation. It is never a credential and never used for authorization.
+    assert columns == {"id", "organization_id", "subject", "role", "email", "created_at"}
 
 
 @pytest.mark.asyncio

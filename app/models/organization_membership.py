@@ -58,6 +58,10 @@ class OrganizationMembership(Base):
         nullable=False,
     )
 
+    # Phase 1Q: the address the member was invited with, for the team list.
+    # Display only: never used to authenticate or authorize.
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

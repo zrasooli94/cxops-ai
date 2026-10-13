@@ -247,6 +247,7 @@ async def send_public_chat_message(
         )
     except (
         PublicChatConfigurationNotFoundError,
+        PublicChatWidgetDisabledError,
         PublicChatOriginNotAllowedError,
         PublicChatSessionNotFoundError,
         PublicChatSessionExpiredError,

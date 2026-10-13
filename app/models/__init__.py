@@ -10,6 +10,7 @@ from app.models.automation_rule import AutomationRule
 from app.models.base import Base
 from app.models.business_action import BusinessAction
 from app.models.business_integration import BusinessIntegrationConfiguration
+from app.models.commercial import OrganizationInvitation, PlatformOperator, SalesLead
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.customer import Customer
@@ -57,11 +58,14 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "Organization",
+    "OrganizationInvitation",
     "OrganizationMembership",
+    "PlatformOperator",
     "PublicChatConfiguration",
     "PublicChatRateLimitBucket",
     "PublicChatSession",
     "SLAPolicy",
+    "SalesLead",
     "ServiceEscalation",
     "ServiceQueue",
     "ServiceTransformationExperiment",
