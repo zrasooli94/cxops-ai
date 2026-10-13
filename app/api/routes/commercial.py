@@ -157,6 +157,26 @@ async def update_lead(
         _fail(exc)
 
 
+@platform_router.get("/leads/{lead_id}/export")
+async def export_lead(
+    lead_id: int, db: DatabaseSession, operator: PlatformOperator
+) -> dict[str, Any]:
+    try:
+        return await LeadService.export_lead(
+            db, lead_id=lead_id, operator_subject=operator.subject
+        )
+    except LeadError as exc:
+        _fail(exc)
+
+
+@platform_router.delete("/leads/{lead_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_lead(lead_id: int, db: DatabaseSession, operator: PlatformOperator) -> None:
+    try:
+        await LeadService.delete_lead(db, lead_id=lead_id, operator_subject=operator.subject)
+    except LeadError as exc:
+        _fail(exc)
+
+
 @platform_router.post("/leads/{lead_id}/provision", status_code=status.HTTP_201_CREATED)
 async def provision_lead(
     lead_id: int,

@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_CONSENT_TEXT,
+  parseAvailability,
   interpretLeadResponse,
   normalizeWebsite,
   toLeadPayload,
@@ -100,6 +102,27 @@ describe("lead form validation", () => {
     assert.equal(mapped.kind, "invalid");
     assert.ok(mapped.kind === "invalid" && mapped.fieldErrors.email);
     assert.equal((await interpretLeadResponse(new Response("", { status: 500 }))).kind, "error");
+  });
+});
+
+describe("lead availability", () => {
+  it("uses the server consent text and a valid contact address", () => {
+    const parsed = parseAvailability({
+      accepting: false,
+      consent_text: "Server wording v2",
+      contact_email: "hello@cxops.example",
+    });
+    assert.deepEqual(parsed, {
+      accepting: false,
+      consentText: "Server wording v2",
+      contactEmail: "hello@cxops.example",
+    });
+  });
+
+  it("falls back safely on malformed fields", () => {
+    const parsed = parseAvailability({ accepting: "yes", consent_text: "", contact_email: "javascript:alert(1)" });
+    assert.deepEqual(parsed, { accepting: null, consentText: DEFAULT_CONSENT_TEXT, contactEmail: null });
+    assert.equal(parseAvailability(null).consentText, DEFAULT_CONSENT_TEXT);
   });
 });
 

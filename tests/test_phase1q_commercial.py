@@ -1384,3 +1384,86 @@ async def test_chatbot_settings_locked_during_review(db, client):
             headers=_auth(owner, org.id),
         )
     assert r.status_code == 409
+
+
+# ======================================================================
+# Phase 1Q-R: lead privacy controls
+# ======================================================================
+
+
+@pytest.mark.asyncio
+async def test_availability_publishes_the_consent_text_that_is_recorded(monkeypatch, client):
+    from app.services.lead_service import CONSENT_TEXT, CONSENT_VERSION
+
+    monkeypatch.setenv("PUBLIC_CONTACT_EMAIL", "hello@cxops.example")
+    reset_settings_cache()
+    async with client:
+        body = (await client.get("/public/leads/availability")).json()
+    assert body["consent_version"] == CONSENT_VERSION
+    assert body["consent_text"] == CONSENT_TEXT
+    assert body["contact_email"] == "hello@cxops.example"
+    assert body["accepting"] is False
+
+
+@pytest.mark.asyncio
+async def test_lead_export_and_erasure_are_operator_only(db, monkeypatch, client):
+    _enable_leads(monkeypatch)
+    operator = await _operator(db)
+    org, owner, _ = await _org(db)
+    payload = _lead_payload()
+    async with client:
+        await client.post("/public/leads", json=payload)
+        lead_id = (
+            await db.execute(
+                select(SalesLead.id).where(SalesLead.email_normalized == payload["email"].lower())
+            )
+        ).scalar_one()
+        for method in ("GET", "DELETE"):
+            path = f"/platform-admin/leads/{lead_id}" + ("/export" if method == "GET" else "")
+            denied = await client.request(method, path, headers=_auth(owner, org.id))
+            assert denied.status_code == 403
+        exported = await client.get(
+            f"/platform-admin/leads/{lead_id}/export", headers=_auth(operator)
+        )
+        assert exported.status_code == 200
+        record = exported.json()["lead"]
+        assert record["email"] == payload["email"]
+        assert record["consent_text_at_submission"]
+        erased = await client.delete(f"/platform-admin/leads/{lead_id}", headers=_auth(operator))
+        assert erased.status_code == 204
+        gone = await client.get(f"/platform-admin/leads/{lead_id}/export", headers=_auth(operator))
+        assert gone.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_retention_purge_is_dry_run_by_default(db):
+    from app.services.lead_service import LeadService
+
+    old = datetime.now(UTC) - timedelta(days=400)
+    lead = SalesLead(
+        company_name="Old Co",
+        contact_name="Old",
+        email=f"old-{uuid.uuid4().hex[:6]}@{LEAD_DOMAIN}",
+        email_normalized=f"old-{uuid.uuid4().hex[:6]}@{LEAD_DOMAIN}",
+        industry="other",
+        consent_version="v",
+        consented_at=old,
+        status="declined",
+        last_submitted_at=old,
+    )
+    db.add(lead)
+    await db.flush()
+    lead.updated_at = old
+    await db.commit()
+    lead_id = lead.id
+    dry = await LeadService.purge_expired(
+        db, declined_days=90, approved_days=365, stale_open_days=180, apply=False
+    )
+    assert dry["declined"] >= 1
+    assert await db.get(SalesLead, lead_id) is not None
+    applied = await LeadService.purge_expired(
+        db, declined_days=90, approved_days=365, stale_open_days=180, apply=True
+    )
+    assert applied["declined"] >= 1
+    db.expunge_all()
+    assert await db.get(SalesLead, lead_id) is None

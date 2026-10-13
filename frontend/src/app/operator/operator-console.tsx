@@ -341,6 +341,45 @@ function LeadDetail({
         ))}
       </div>
 
+      <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+        <button
+          className={buttonSecondary}
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              const data = await requestJson<unknown>(`/platform-admin/leads/${lead.id}/export`);
+              const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `lead-${lead.id}.json`;
+              link.click();
+              URL.revokeObjectURL(url);
+            })
+          }
+        >
+          Export data
+        </button>
+        <button
+          className={`${buttonSecondary} text-rose-700`}
+          disabled={busy}
+          onClick={() => {
+            if (
+              window.confirm(
+                "Permanently delete this request and its personal data? A workspace created from it is not affected. This cannot be undone.",
+              )
+            ) {
+              void run(async () => {
+                await requestJson(`/platform-admin/leads/${lead.id}`, { method: "DELETE" });
+                await onChanged();
+              });
+            }
+          }}
+        >
+          Delete data
+        </button>
+      </div>
+
       {lead.status === "approved" && lead.provisioned_organization_id === null && !provisioned ? (
         <div className="mt-6 space-y-3 rounded-xl border border-violet-200 bg-violet-50/50 p-4">
           <p className="text-sm font-medium text-slate-900">Provision a workspace</p>

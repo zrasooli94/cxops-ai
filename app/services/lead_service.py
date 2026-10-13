@@ -57,6 +57,13 @@ from app.services.team_service import TeamService
 log = get_logger(__name__)
 
 CONSENT_VERSION = "2026-10-early-access-v1"
+# The exact wording a visitor agrees to. The website renders this text from
+# the API, so the stored ``consent_version`` always identifies what was shown.
+# Changing the wording requires a new CONSENT_VERSION.
+CONSENT_TEXT = (
+    "I agree that CXOps AI may store these details and contact me by email about "
+    "this request. We do not add you to marketing lists."
+)
 
 LEAD_TRANSITIONS: dict[str, frozenset[str]] = {
     LEAD_STATUS_NEW: frozenset({LEAD_STATUS_REVIEWING, LEAD_STATUS_CONTACTED, LEAD_STATUS_DECLINED}),
@@ -131,7 +138,13 @@ RECEIVED = {
 class LeadService:
     @staticmethod
     def availability() -> dict[str, Any]:
-        return {"accepting": get_settings().public_lead_capture_enabled}
+        settings = get_settings()
+        return {
+            "accepting": settings.public_lead_capture_enabled,
+            "consent_version": CONSENT_VERSION,
+            "consent_text": CONSENT_TEXT,
+            "contact_email": settings.public_contact_email or None,
+        }
 
     @classmethod
     async def submit(
@@ -326,6 +339,79 @@ class LeadService:
             notes_changed=notes_provided,
         )
         return _lead_payload(lead)
+
+    @staticmethod
+    async def export_lead(
+        db: AsyncSession, *, lead_id: int, operator_subject: str
+    ) -> dict[str, Any]:
+        """Everything stored about one lead (subject-access / portability)."""
+        lead = await db.get(SalesLead, lead_id)
+        if lead is None:
+            raise LeadNotFoundError("Lead not found.")
+        log.info("lead_exported", lead_id=lead_id, operator_subject=operator_subject)
+        record = _lead_payload(lead)
+        record.pop("allowed_transitions", None)
+        record["consent_text_at_submission"] = (
+            CONSENT_TEXT if lead.consent_version == CONSENT_VERSION else None
+        )
+        return {"exported_at": datetime.now(UTC).isoformat(), "lead": record}
+
+    @staticmethod
+    async def delete_lead(db: AsyncSession, *, lead_id: int, operator_subject: str) -> None:
+        """Erase a lead (erasure request or retention). A provisioned
+        organization is not touched; only the lead record goes."""
+        lead = await db.get(SalesLead, lead_id)
+        if lead is None:
+            raise LeadNotFoundError("Lead not found.")
+        await db.delete(lead)
+        await db.commit()
+        log.info("lead_deleted", lead_id=lead_id, operator_subject=operator_subject)
+
+    @staticmethod
+    async def purge_expired(
+        db: AsyncSession,
+        *,
+        declined_days: int,
+        approved_days: int,
+        stale_open_days: int,
+        apply: bool,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Retention policy: count (and with ``apply`` delete) leads past their
+        retention window. Returns counts per category."""
+        from datetime import timedelta
+
+        from sqlalchemy import delete as sa_delete
+
+        moment = now or datetime.now(UTC)
+        rules = {
+            "declined": (
+                SalesLead.status == LEAD_STATUS_DECLINED,
+                SalesLead.updated_at < moment - timedelta(days=declined_days),
+            ),
+            "approved": (
+                SalesLead.status == LEAD_STATUS_APPROVED,
+                SalesLead.updated_at < moment - timedelta(days=approved_days),
+            ),
+            "stale_open": (
+                SalesLead.status.in_(LEAD_OPEN_STATUSES),
+                SalesLead.last_submitted_at < moment - timedelta(days=stale_open_days),
+            ),
+        }
+        counts: dict[str, int] = {}
+        for name, conditions in rules.items():
+            counts[name] = int(
+                await db.scalar(select(func.count()).select_from(SalesLead).where(*conditions))
+                or 0
+            )
+            if apply and counts[name]:
+                await db.execute(sa_delete(SalesLead).where(*conditions))
+        if apply:
+            await db.commit()
+            log.info("lead_retention_purge", **counts)
+        else:
+            await db.rollback()
+        return counts
 
     @staticmethod
     async def provision(

@@ -4,7 +4,10 @@ import { CheckCircle2, LoaderCircle } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import {
+  DEFAULT_CONSENT_TEXT,
   LEAD_INDUSTRIES,
+  parseAvailability,
+  type LeadAvailability,
   LEAD_LIMITS,
   interpretLeadResponse,
   toLeadPayload,
@@ -40,7 +43,12 @@ export function LeadForm() {
   const [phase, setPhase] = useState<Phase>({ kind: "editing" });
   // null = still checking. The backend flag is off until the release of lead
   // capture is approved; visitors should learn that before filling the form.
-  const [accepting, setAccepting] = useState<boolean | null>(null);
+  const [availability, setAvailability] = useState<LeadAvailability>({
+    accepting: null,
+    consentText: DEFAULT_CONSENT_TEXT,
+    contactEmail: null,
+  });
+  const accepting = availability.accepting;
   const confirmationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -56,16 +64,13 @@ export function LeadForm() {
     let cancelled = false;
     fetch("/api/public/leads", { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
-      .then((body: { accepting?: unknown } | null) => {
+      .then((body: unknown) => {
         if (!cancelled) {
-          // Unknown -> let the visitor try; the submit path reports closure.
-          setAccepting(body && typeof body.accepting === "boolean" ? body.accepting : true);
+          setAvailability(parseAvailability(body));
         }
       })
       .catch(() => {
-        if (!cancelled) {
-          setAccepting(true);
-        }
+        // Unknown -> keep defaults; the submit path reports closure.
       });
     return () => {
       cancelled = true;
@@ -113,10 +118,9 @@ export function LeadForm() {
         setPhase({ kind: "done", message: outcome.message });
         return;
       case "closed":
-        setPhase({
-          kind: "error",
-          message: "Online requests are not open yet. Please check back soon.",
-        });
+        // Show the closed state (with the contact fallback, if any).
+        setAvailability((current) => ({ ...current, accepting: false }));
+        setPhase({ kind: "editing" });
         return;
       case "rate_limited":
         setPhase({
@@ -157,8 +161,9 @@ export function LeadForm() {
         <h2 className="text-xl font-semibold text-slate-950">Early-access requests open soon</h2>
         <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-slate-600">
           We are preparing to welcome our first businesses and are not accepting online
-          requests just yet. Please check back shortly.
+          requests just yet.
         </p>
+        <ContactFallback email={availability.contactEmail} />
       </div>
     );
   }
@@ -304,8 +309,7 @@ export function LeadForm() {
               onChange={(event) => update("consent", event.target.checked)}
             />
             <label htmlFor={`${id}-consent`} className="text-sm leading-6 text-slate-600">
-              I agree that CXOps AI may store these details and contact me by email about this
-              request. We do not add you to marketing lists.
+              {availability.consentText}
             </label>
           </div>
           {error("consent")}
@@ -339,5 +343,24 @@ export function LeadForm() {
         A request does not create an account or start any charges.
       </p>
     </form>
+  );
+}
+
+function ContactFallback({ email }: { email: string | null }) {
+  if (!email) {
+    return (
+      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">
+        Please check back shortly.
+      </p>
+    );
+  }
+  return (
+    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">
+      In the meantime you can reach us at{" "}
+      <a href={`mailto:${email}`} className="font-medium text-violet-700 underline underline-offset-4">
+        {email}
+      </a>
+      .
+    </p>
   );
 }

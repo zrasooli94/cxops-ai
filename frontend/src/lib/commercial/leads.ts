@@ -216,3 +216,37 @@ export async function interpretLeadResponse(
   }
   return { kind: "error" };
 }
+
+export const DEFAULT_CONSENT_TEXT =
+  "I agree that CXOps AI may store these details and contact me by email about this request. We do not add you to marketing lists.";
+
+export interface LeadAvailability {
+  /** null = unknown (let the visitor try; the submit path reports closure). */
+  accepting: boolean | null;
+  consentText: string;
+  contactEmail: string | null;
+}
+
+/**
+ * Parse GET /public/leads/availability. The consent wording comes from the
+ * API so the recorded consent_version always matches what was shown; any
+ * malformed field falls back to safe defaults.
+ */
+export function parseAvailability(body: unknown): LeadAvailability {
+  const value = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const consent =
+    typeof value.consent_text === "string" &&
+    value.consent_text.trim().length > 0 &&
+    value.consent_text.length <= 500
+      ? value.consent_text
+      : DEFAULT_CONSENT_TEXT;
+  const email =
+    typeof value.contact_email === "string" && EMAIL_PATTERN.test(value.contact_email)
+      ? value.contact_email
+      : null;
+  return {
+    accepting: typeof value.accepting === "boolean" ? value.accepting : null,
+    consentText: consent,
+    contactEmail: email,
+  };
+}

@@ -249,6 +249,9 @@ class Settings(BaseSettings):
     # Phase 1Q-R: how many not-yet-approved organizations one identity may
     # create through self-service POST /organizations (abuse / name squatting).
     self_service_organization_limit: int = 2
+    # Optional public address shown to prospects while lead capture is off.
+    # Empty = no address shown (the owner has not provided one).
+    public_contact_email: str = ""
 
     @field_validator("invitation_identity_mode", mode="after")
     @classmethod

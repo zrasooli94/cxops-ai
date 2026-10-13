@@ -95,6 +95,10 @@ every value below is validated before uvicorn binds.
 | `PUBLIC_LEAD_CAPTURE_ENABLED` | Phase 1Q. **Unset / `false`** until releasing lead capture is approved | While off, `POST /public/leads` answers 503 and stores nothing; the website form says requests open soon. |
 | `LEAD_SUBMISSIONS_PER_HOUR_PLATFORM` / `LEAD_SUBMISSIONS_PER_DAY_PER_EMAIL` | Optional (defaults 30 / 3) | Abuse ceilings for public lead submissions. |
 | `TEAM_INVITATION_TTL_HOURS` | Optional (default 72) | Lifetime of a team invitation link. |
+| `INVITATION_IDENTITY_MODE` | Phase 1Q-R. `disabled` until D3 is approved; then `nhost_userinfo` | Evidence that an invitee owns the invited, verified email. `disabled` refuses every acceptance (503). |
+| `NHOST_AUTH_URL` | Required for `nhost_userinfo`: `https://<subdomain>.auth.<region>.nhost.run/v1` | The API calls `GET /user` with the caller's own token. Not a secret. Missing → acceptance stays disabled. |
+| `SELF_SERVICE_ORGANIZATION_LIMIT` | Optional (default 2) | Unapproved organizations one identity may create. |
+| `PUBLIC_CONTACT_EMAIL` | Optional; owner-provided | Shown to prospects while lead capture is off. |
 | `ONBOARDING_KNOWLEDGE_SETUP_ENABLED` | Phase 1Q. Unset / `false` | When `true`, organizations still in setup may ingest knowledge (paid embeddings) before approval. Off keeps every AI spend behind operator approval. |
 
 ## Render worker service (`cxops-worker`)
