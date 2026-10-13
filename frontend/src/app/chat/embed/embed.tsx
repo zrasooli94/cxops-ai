@@ -15,10 +15,17 @@ import {
   closePublicChatSession,
   fetchPublicChatConfig,
   fetchPublicChatState,
+  fetchPublicChatUpdates,
   PublicChatApiError,
   requestPublicChatHuman,
   sendPublicChatMessage,
 } from "@/lib/public-chat/client";
+import {
+  cursorOf,
+  LEGACY_POLL_INTERVAL_MS,
+  mergeMessages,
+  nextPollDelay,
+} from "@/lib/public-chat/updates";
 import type {
   PublicChatConfigResponse,
   PublicChatMessageRead,
@@ -69,7 +76,10 @@ type WidgetState =
   | "error"
   | "closed";
 
-const POLL_INTERVAL_MS = 20_000;
+// Polling is paced by the server's ``poll_after_ms`` hint (Phase 1P.9): about
+// 1 s while an AI reply is pending, slower when idle, slower again in a hidden
+// tab. Older backends without /sessions/updates fall back to the original 20 s
+// full-state poll.
 
 const WELCOME_FALLBACK =
   "Welcome to CXOps support.";
@@ -263,7 +273,18 @@ export function PublicChatWidget({
   const sessionTokenRef =
     useRef<string | null>(null);
   const pollRef =
-    useRef<ReturnType<typeof setInterval> | null>(null);
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest messages for the cursor, read inside timers without re-subscribing.
+  const messagesRef =
+    useRef<PublicChatMessageRead[]>([]);
+  // False once the backend is known to lack /sessions/updates.
+  const updatesSupportedRef =
+    useRef(true);
+  const pollNowRef =
+    useRef<(() => void) | null>(null);
+  // An accepted message whose AI reply has not arrived yet.
+  const [awaitingReply, setAwaitingReply] =
+    useState(false);
   const connectInflightRef =
     useRef(false);
 
@@ -276,10 +297,61 @@ export function PublicChatWidget({
 
   const clearPoll = useCallback(() => {
     if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
+      clearTimeout(pollRef.current);
       pollRef.current = null;
     }
   }, []);
+
+  const applyStatus = useCallback(
+    (status: string): WidgetState => {
+      if (status === "human_requested") {
+        setState("human_requested");
+        return "human_requested";
+      }
+      if (status === "human_assigned") {
+        setState("human_assigned");
+        return "human_assigned";
+      }
+      if (status === "closed") {
+        setState("closed");
+        return "closed";
+      }
+      setState("ai_active");
+      return "ai_active";
+    },
+    [],
+  );
+
+  // One poll: incremental updates when available, else the full state.
+  // Returns the server's suggested delay before the next poll.
+  const pollOnce = useCallback(
+    async (token: string): Promise<number> => {
+      if (updatesSupportedRef.current) {
+        const updates = await fetchPublicChatUpdates(
+          token,
+          cursorOf(messagesRef.current),
+        );
+        if (updates) {
+          if (updates.messages.length > 0) {
+            setMessages((previous) =>
+              mergeMessages(previous, updates.messages),
+            );
+          }
+          setAwaitingReply(updates.turns.length > 0);
+          applyStatus(updates.status);
+          return updates.poll_after_ms;
+        }
+        updatesSupportedRef.current = false;
+      }
+      const nextState =
+        await fetchPublicChatState(token);
+      setMessages(nextState.messages);
+      setAwaitingReply(false);
+      applyStatus(nextState.status);
+      return LEGACY_POLL_INTERVAL_MS;
+    },
+    [applyStatus],
+  );
 
   const loadState = useCallback(
     async (token: string): Promise<WidgetState> => {
@@ -489,7 +561,14 @@ export function PublicChatWidget({
           embeddingOriginRef.current,
           clientMessageId(),
           trimmed,
+          fetch,
+          "async",
         );
+        if (result.processing_state === "accepted") {
+          // Stored; the reply follows through /sessions/updates.
+          setAwaitingReply(true);
+          pollNowRef.current?.();
+        }
         const reply = result.reply;
         if (reply) {
           setMessages((previous) => [
@@ -639,6 +718,10 @@ export function PublicChatWidget({
   }, [sessionToken]);
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
     if (
       state !== "ai_active" &&
       state !== "human_requested" &&
@@ -651,15 +734,53 @@ export function PublicChatWidget({
       return;
     }
 
-    clearPoll();
-    pollRef.current = setInterval(() => {
-      loadState(token).catch(() => {
-        // Poll failures are transient; the next tick retries.
-      });
-    }, POLL_INTERVAL_MS);
+    let cancelled = false;
+    let inflight = false;
+    let delay = LEGACY_POLL_INTERVAL_MS;
 
-    return clearPoll;
-  }, [state, clearPoll, loadState]);
+    const schedule = (ms: number) => {
+      clearPoll();
+      if (!cancelled) {
+        pollRef.current = setTimeout(tick, ms);
+      }
+    };
+    const tick = () => {
+      if (cancelled || inflight) {
+        return;
+      }
+      inflight = true;
+      pollOnce(token)
+        .then((hint) => {
+          delay = hint;
+        })
+        .catch(() => {
+          // Poll failures are transient; back off to the idle pace and retry.
+          delay = LEGACY_POLL_INTERVAL_MS;
+        })
+        .finally(() => {
+          inflight = false;
+          schedule(nextPollDelay(delay, document.hidden));
+        });
+    };
+    const onVisibility = () => {
+      if (!document.hidden) {
+        schedule(0);
+      }
+    };
+
+    // A just-accepted message asks for a reply check without waiting for the
+    // idle interval.
+    pollNowRef.current = () => schedule(nextPollDelay(1_000, document.hidden));
+    document.addEventListener("visibilitychange", onVisibility);
+    schedule(nextPollDelay(delay, document.hidden));
+
+    return () => {
+      cancelled = true;
+      pollNowRef.current = null;
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearPoll();
+    };
+  }, [state, clearPoll, pollOnce]);
 
   useEffect(() => {
     const isPanel =
@@ -907,7 +1028,7 @@ export function PublicChatWidget({
             </li>
           );
         })}
-        {sending && (
+        {(sending || awaitingReply) && (
           <li
             style={{
               alignSelf: "flex-start",
@@ -916,7 +1037,7 @@ export function PublicChatWidget({
               fontStyle: "italic",
             }}
           >
-            …sending
+            {sending ? "…sending" : "…typing"}
           </li>
         )}
       </ul>

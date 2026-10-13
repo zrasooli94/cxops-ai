@@ -99,6 +99,8 @@ function actionStatusBadge(status: string) {
   }
 }
 
+const INBOX_REFRESH_MS = 15_000;
+
 export default function PublicChatPage() {
   const { can, organizationId } = useAuthorization();
   const canRead = can(CAPABILITIES.TICKET_READ);
@@ -140,12 +142,16 @@ export default function PublicChatPage() {
   // guarded setters above.
   const visibleWorkbench = visiblePilotWorkbench(workbench, organizationId);
 
-  const loadSessions = useCallback(async () => {
+  // ``quiet`` refreshes (the background auto-refresh) skip the loading state
+  // so the queue does not flicker every interval.
+  const loadSessions = useCallback(async (quiet = false) => {
     const requestOrganizationId = organizationId;
-    setForOrganization(requestOrganizationId, (prev) => ({
-      ...prev,
-      loading: true,
-    }));
+    if (!quiet) {
+      setForOrganization(requestOrganizationId, (prev) => ({
+        ...prev,
+        loading: true,
+      }));
+    }
     try {
       const result = await fetchHandoffSessions();
       setForOrganization(requestOrganizationId, (prev) => ({
@@ -158,10 +164,12 @@ export default function PublicChatPage() {
         error: err instanceof Error ? err.message : "Failed to load sessions",
       }));
     } finally {
-      setForOrganization(requestOrganizationId, (prev) => ({
-        ...prev,
-        loading: false,
-      }));
+      if (!quiet) {
+        setForOrganization(requestOrganizationId, (prev) => ({
+          ...prev,
+          loading: false,
+        }));
+      }
     }
   }, [organizationId, setForOrganization]);
 
@@ -225,6 +233,25 @@ export default function PublicChatPage() {
     void loadSessions();
     void loadSummary();
   }, [organizationId, canRead, loadSessions, loadSummary]);
+
+  // Phase 1P.9: keep the handoff queue current without a manual refresh. Only
+  // while the tab is visible (a hidden dashboard costs nothing), and once
+  // immediately when it becomes visible again. Reads only, tenant-guarded by
+  // loadSessions, re-armed on organization change.
+  useEffect(() => {
+    if (!canRead) return;
+    const timer = setInterval(() => {
+      if (!document.hidden) void loadSessions(true);
+    }, INBOX_REFRESH_MS);
+    const onVisibility = () => {
+      if (!document.hidden) void loadSessions(true);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [canRead, loadSessions]);
 
   const selectSummaryWindow = (next: SummaryWindow) => {
     if (next === summaryWindow) return;

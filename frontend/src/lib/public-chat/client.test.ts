@@ -8,6 +8,7 @@ import {
   EMBEDDING_ORIGIN_HEADER,
   fetchPublicChatConfig,
   fetchPublicChatState,
+  fetchPublicChatUpdates,
   PublicChatApiError,
   requestPublicChatHuman,
   sendPublicChatMessage,
@@ -385,6 +386,67 @@ describe(
       assert.equal(
         CHAT_SESSION_STORAGE_KEY,
         "cxops.chat.session.v1",
+      );
+    });
+  },
+);
+describe(
+  "async delivery and updates (Phase 1P.9)",
+  () => {
+    it("sends delivery=async only when asked", async () => {
+      const calls: Array<{ url: RequestInfo | URL; init: RequestInit | undefined }> = [];
+      const sendResult: PublicChatMessageSendResponse = {
+        message_id: 5,
+        reply: null,
+        status: "ai_active",
+        handoff: false,
+        processing_state: "accepted",
+      };
+      await sendPublicChatMessage(
+        "t", null, "m-1", "hi",
+        recordingFetcher(calls, jsonResponse(sendResult)), "async",
+      );
+      await sendPublicChatMessage(
+        "t", null, "m-2", "hi",
+        recordingFetcher(calls, jsonResponse(sendResult)),
+      );
+      assert.equal(JSON.parse(String(calls[0].init?.body)).delivery, "async");
+      assert.equal("delivery" in JSON.parse(String(calls[1].init?.body)), false);
+    });
+
+    it("reads updates after a cursor with the session bearer", async () => {
+      const calls: Array<{ url: RequestInfo | URL; init: RequestInit | undefined }> = [];
+      const payload = {
+        status: "ai_active",
+        messages: [],
+        turns: [{ message_id: 5, state: "processing" }],
+        cursor: 5,
+        poll_after_ms: 1000,
+      };
+      const result = await fetchPublicChatUpdates(
+        "tok", 5, recordingFetcher(calls, jsonResponse(payload)),
+      );
+      assert.deepEqual(result, payload);
+      assert.equal(String(calls[0].url), "/api/public/chat/sessions/updates?after_id=5");
+      const headers = calls[0].init?.headers as Record<string, string>;
+      assert.equal(headers.authorization, "Bearer tok");
+    });
+
+    it("returns null on an older backend without the endpoint", async () => {
+      const calls: Array<{ url: RequestInfo | URL; init: RequestInit | undefined }> = [];
+      const result = await fetchPublicChatUpdates(
+        "tok", 0, recordingFetcher(calls, jsonResponse({ detail: "Not Found" }, 404)),
+      );
+      assert.equal(result, null);
+    });
+
+    it("surfaces session errors instead of falling back", async () => {
+      const calls: Array<{ url: RequestInfo | URL; init: RequestInit | undefined }> = [];
+      await assert.rejects(
+        fetchPublicChatUpdates(
+          "tok", 0, recordingFetcher(calls, jsonResponse({ detail: "Session expired." }, 401)),
+        ),
+        PublicChatApiError,
       );
     });
   },
