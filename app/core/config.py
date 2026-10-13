@@ -185,7 +185,11 @@ class Settings(BaseSettings):
     # pooled connection across the model call (its lease connection, which also
     # carries the analysis lock); its job session is released around model
     # calls. Keep this below the pool size (see agent_analysis_max_concurrency).
-    public_chat_turn_max_concurrency: int = 4
+    # 6 is the measured optimum on a 0.5-CPU / 512 MB instance with the default
+    # 5 + 10 pool (Phase 1P.9R certification): vs 4, queue-wait p95 -24% at the
+    # same CPU and pool waits; 8 is no faster because the analysis slots
+    # (pool - turns - 2 = 5) become the limit.
+    public_chat_turn_max_concurrency: int = 6
     public_chat_turn_max_concurrency_per_tenant: int = 2
     # A turn still "processing" after this long is treated as abandoned (API
     # instance restarted mid-turn) and may be re-claimed. Reply de-duplication

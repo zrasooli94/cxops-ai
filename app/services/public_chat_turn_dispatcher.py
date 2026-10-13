@@ -52,6 +52,7 @@ DEFER_DELAY_SECONDS = 1
 # visitor polls (covers a lost in-process task, e.g. an instance restart).
 PENDING_GRACE_SECONDS = 3
 RECOVERY_PAGE_SIZE = 200
+QUEUED_POLL_MAX_MS = 5000
 # Start-up recovery is retried (the database may still be waking up).
 STARTUP_RECOVERY_BACKOFF_SECONDS = (0, 5, 30, 120, 600)
 
@@ -197,6 +198,18 @@ class TurnDispatcher:
     @property
     def inflight(self) -> int:
         return len(self._inflight)
+
+    def queued_poll_after_ms(self) -> int:
+        """Suggested visitor poll interval while a turn waits for a slot.
+
+        Roughly one model call per "wave" of ``max_concurrency`` turns ahead,
+        so with a long backlog each waiting visitor polls proportionally less
+        often (1 s when idle, at most 5 s). Under a burst on a 0.5-CPU
+        instance, fixed 1 s polling from every waiting visitor was itself the
+        dominant CPU and connection load (Phase 1P.9R certification).
+        """
+        waves = -(-len(self._inflight) // max(1, self._max_concurrency))
+        return int(min(QUEUED_POLL_MAX_MS, 1000 * max(1, waves)))
 
     # -- execution --------------------------------------------------------
 

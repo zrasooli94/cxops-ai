@@ -1501,7 +1501,14 @@ class PublicChatService:
         from app.services.public_chat_turn_dispatcher import turn_dispatcher
 
         turn_dispatcher.recover(jobs)
-        pending = bool(turns)
+        if any(turn["state"] == "processing" for turn in turns):
+            poll_after_ms = 1000  # the model is answering now
+        elif turns:
+            # Phase 1P.9R: a queued turn waits for a slot; polling every
+            # second would only add load. Pace by this process's backlog.
+            poll_after_ms = turn_dispatcher.queued_poll_after_ms()
+        else:
+            poll_after_ms = 3000 if messages else 10000
         return {
             "status": session.status,
             "messages": [
@@ -1515,7 +1522,7 @@ class PublicChatService:
             ],
             "turns": turns,
             "cursor": max([after_id, *(m.id for m in messages)]),
-            "poll_after_ms": 1000 if pending else (3000 if messages else 10000),
+            "poll_after_ms": poll_after_ms,
         }
 
     @staticmethod

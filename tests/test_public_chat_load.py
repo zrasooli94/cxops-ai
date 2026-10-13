@@ -113,7 +113,7 @@ async def test_concurrent_tenants_all_replied_once_in_order_and_isolated(
         assert state["turns"] == []
 
     assert max(probe.max_active.values()) <= 2, "per-tenant concurrency cap exceeded"
-    assert probe.global_max <= 4, "global concurrency cap exceeded"
+    assert probe.global_max <= turn_dispatcher._max_concurrency, "global concurrency cap exceeded"
     assert sorted(probe.calls) == sorted(org for org, _ in tenants)
     assert set(probe.calls.values()) == {MESSAGES_PER_SESSION}, "a tenant was starved"
     # Acceptance never waits for the model: all messages were accepted well
