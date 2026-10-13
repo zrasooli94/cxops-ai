@@ -70,3 +70,22 @@ describe("staff inbox auto-refresh (public-chat/page.tsx)", () => {
     assert.match(staffPage, /removeEventListener\("visibilitychange", onVisibility\)/);
   });
 });
+
+describe("widget first load (layout + smooth-scroll gate)", () => {
+  const layout = readFileSync(join(FRONTEND_ROOT, "src", "app", "layout.tsx"), "utf8");
+  const gate = readFileSync(
+    join(FRONTEND_ROOT, "src", "components", "smooth-scroll-gate.tsx"),
+    "utf8",
+  );
+
+  it("never imports gsap/lenis statically from the root layout", () => {
+    assert.ok(!layout.includes('from "@/components/smooth-scroll"'));
+    assert.match(layout, /<SmoothScrollGate \/>/);
+  });
+
+  it("loads smooth scrolling lazily and never on the widget route", () => {
+    assert.match(gate, /dynamic\(\(\) => import\("\.\/smooth-scroll"\), \{ ssr: false \}\)/);
+    assert.match(gate, /pathname\.startsWith\("\/chat\/embed"\)/);
+    assert.match(gate, /if \(isWidgetRoute\(pathname\)\) \{\s*return null;/);
+  });
+});
