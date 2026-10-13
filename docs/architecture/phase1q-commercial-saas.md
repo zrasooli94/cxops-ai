@@ -179,16 +179,16 @@ Residual risks (accepted, documented):
 
 | Check | Result |
 |---|---|
-| Backend pytest, Python 3.12 (disposable Postgres, `-m "not integration"`) | 2266 passed (final sequential run; see PR) |
-| Backend pytest, Python 3.11 | 2265 passed (before the last 1-test addition) |
-| New Phase 1Q backend tests | 34 + 1 E2E journey + 2 CLI |
+| Backend pytest, Python 3.12 (disposable Postgres, `-m "not integration"`) | 2267 passed |
+| Backend pytest, Python 3.11 | 2267 passed |
+| New Phase 1Q backend tests | 37 + 1 E2E journey + 2 CLI |
 | Ruff / mypy (`app`) | clean |
 | Frontend unit (`npm test`, all) | 794 passed |
 | `test:auth` / `test:session` (CI) | 618 / 100 passed |
 | ESLint, `next typegen` + `tsc --noEmit` | clean |
 | `next build` | passes; marketing pages static |
 | Docker: API image | built |
-| Docker: frontend image | see PR (registry pull timeout locally on first attempt) |
+| Docker: frontend image | built |
 | Migration up/down/up + `alembic check` | clean |
 | Browser (real pane): desktop + 375 px mobile, no horizontal overflow on any public page | verified |
 
