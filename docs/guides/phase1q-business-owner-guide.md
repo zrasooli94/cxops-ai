@@ -10,8 +10,11 @@ link (`…/invite#token=…`). Open it, sign in with the account for the invited
 email address, and click **Accept invitation**. Links work once and expire
 after 72 hours — ask for a new one if yours has expired.
 
-> You need a CXOps sign-in for the invited address. If you do not have one,
-> your CXOps contact will set it up.
+> You need a CXOps sign-in for the invited address, and that address must be
+> verified (you will have received a verification or sign-in email for it). If
+> you are signed in with a different or unverified account, the invitation is
+> refused but stays valid - sign in with the right account and try again. If
+> you do not have a sign-in yet, your CXOps contact will set it up.
 
 ## 2. Setup (Your business → Setup)
 
@@ -75,7 +78,9 @@ Sections you are not permitted to see say "Not available for your role".
 | Viewer | Read-only conversations and reports |
 
 * Invitations: enter an email and role; **copy the link shown once** and send
-  it yourself (automatic invitation emails are not available yet). Revoke a
+  it yourself (automatic invitation emails are not available yet). Only the
+  person whose verified sign-in matches that address can accept it; a
+  forwarded link does not work for anyone else. Revoke a
   pending invitation at any time. Re-inviting the same address replaces the
   old link.
 * You can only give roles below your own (owners can give any role). Nobody

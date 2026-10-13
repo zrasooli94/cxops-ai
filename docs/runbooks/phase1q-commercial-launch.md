@@ -26,21 +26,14 @@ marked 🔒 needs explicit owner approval at the time it is run.
 Not flags, always on after deploy (inert without data): operator console
 (needs a grant), setup wizard, team management, owner overview, lifecycle gate.
 
-## 2. Deployment prerequisites (in order)
+## 2. Deployment
 
-1. 🔒 Review and merge the PR (CI green).
-2. 🔒 **Migration** `1p9b0001 → 1q0a0001` on Neon, using the existing migration
-   procedure (`scripts/run_migrations.sh`, migration lock, direct endpoint).
-   Additive; existing tenants become `active`. Verify `alembic current` =
-   `1q0a0001`.
-3. 🔒 Deploy API (Render) then frontend (Vercel). The API's schema gate and
-   `validate_production_config.py` expect head `1q0a0001`; deploying code
-   before the migration fails preflight (by design).
-4. Smoke: `/health`, `/ready`, `/version`; RISPU widget still answers (its org
-   is `active`); `/me/authorization` for an RISPU staff user shows
-   `organization_status: active` and unchanged capabilities.
-5. 🔒 Grant the first platform operator (§3).
-6. Leave `PUBLIC_LEAD_CAPTURE_ENABLED=false` until §7 is approved.
+**Follow [phase1q-release-runbook.md](phase1q-release-runbook.md).** Render
+and Vercel deploy `master` automatically, so the migration runs from the
+reviewed release SHA *before* the merge, after a Neon recovery branch and a
+read-only preflight; the merge happens once, afterwards. (An earlier version
+of this section said "merge, then migrate" - that order is wrong.) The release
+window ends with every commercial gate still off and no operator granted.
 
 ## 2a. Phase 1Q-R additions (before the first customer)
 
@@ -102,6 +95,15 @@ Duplicate submissions from one address fold into the open lead
 
 ## 5. Tenant onboarding and approval
 
+**Preconditions (each a separate owner approval):** release deployed; a
+platform operator granted (§3); invitation identity active
+(`INVITATION_IDENTITY_MODE=nhost_userinfo`, release runbook §8) - without it
+the owner cannot accept the invitation; the invitee has a verified Nhost
+account for the invited address; legal pages published; price agreed outside
+the product. Public lead capture is **not** required: record the request in
+`/operator` → **Record a request**, move it to approved, then
+**Create workspace and owner invitation** and send the link yourself.
+
 1. Owner completes **Setup** (business, domains, chatbot, optional knowledge
    prep, install snippet) and clicks **Submit for approval** →
    `pending_review`.
@@ -124,7 +126,7 @@ removes write capabilities; **Reinstate** restores `active`.
 
 | Situation | Action |
 |---|---|
-| UI or API defect, data fine | Redeploy `32dc64f` (API + frontend). The previous release ignores the new columns/tables. Leave the database at `1q0a0001`. |
+| UI or API defect, data fine | Revert the merge commit on master (Render/Vercel redeploy the previous code). The previous release ignores the new columns/tables. Leave the database at `1q0a0001`. If tenants are already in onboarding/pending/suspended, see the caveat in the release runbook §6 first. |
 | A tenant misbehaves | Operator → Suspend (immediate), or owner/staff kill switch (disable widget / empty origins). |
 | Leads spam | Set `PUBLIC_LEAD_CAPTURE_ENABLED=false` (Render env change → restart). Optionally lower the hourly ceiling. |
 | Must remove 1Q schema | 🔒 `alembic downgrade 1p9b0001` **deletes all leads, invitations and operator grants** and the lifecycle columns. Only after a code rollback and with a backup. |

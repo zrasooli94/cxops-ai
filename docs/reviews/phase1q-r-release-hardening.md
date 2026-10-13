@@ -144,27 +144,12 @@ estimate; lead capture — no paid call; invitations — one Nhost `/user` call 
 acceptance (Nhost free tier). Provider-side hard limits (OpenAI project limit)
 remain the final authority and must be set ≤ the platform ceiling (owner).
 
-## 6. Production rollout order (owner approval at each 🔒)
+## 6. Production rollout order
 
-1. 🔒 Review and merge PR #19 (CI green).
-2. 🔒 Back up Neon; run migration `1p9b0001 → 1q0a0001` with the existing
-   locked migration procedure; verify `alembic current`.
-3. 🔒 Deploy Render API (env: leave `PUBLIC_LEAD_CAPTURE_ENABLED=false`,
-   `INVITATION_IDENTITY_MODE=disabled`, `ONBOARDING_KNOWLEDGE_SETUP_ENABLED=false`).
-4. 🔒 Deploy Vercel frontend (no `CXOPS_WIDGET_FRAME_ANCESTORS` change yet).
-5. Smoke: health/ready/version; RISPU widget unchanged; RISPU staff
-   `/me/authorization` shows `active` and unchanged capabilities; marketing
-   pages render; `/early-access` shows "opens soon".
-6. 🔒 Audit legacy organizations whose `external_id` was set through
-   self-service before this release (query in the launch runbook).
-7. 🔒 Grant the first platform operator (CLI, `--apply`).
-8. 🔒 D3: decide the Nhost identity workflow; then set
-   `INVITATION_IDENTITY_MODE=nhost_userinfo` + `NHOST_AUTH_URL` and restart.
-9. 🔒 Set the OpenAI project hard limit ≤ `PLATFORM_MONTHLY_AI_BUDGET_USD`.
-10. 🔒 Publish privacy policy / terms (legal review) and set
-    `PUBLIC_CONTACT_EMAIL`; only then consider D2 (lead capture).
-11. Per customer: provision → setup → approve → 🔒 add domains to
-    `CXOPS_WIDGET_FRAME_ANCESTORS` and redeploy → owner enables chatbot.
+Superseded: see [`docs/runbooks/phase1q-release-runbook.md`](../runbooks/phase1q-release-runbook.md)
+(migrate from the release SHA before merging; Neon recovery branch; RISPU
+checks; data-preserving rollback). The previous merge-first list here was
+unsafe because Render and Vercel deploy `master` automatically.
 
 ## 7. First paying customer — recommendation
 
