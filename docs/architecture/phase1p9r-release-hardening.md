@@ -1,7 +1,9 @@
 # Phase 1P.9R — Commercial SaaS release hardening
 
-Branch `feat/phase1p9r-release-hardening`, stacked on PR #15
-(`feat/phase1p9-saas-foundation`). Nothing here is merged, deployed, migrated
+Developed on `feat/phase1p9r-release-hardening` (#16, stacked on #15) and
+released **only** through the combined release branch
+`release/phase1p9-async-public-chat` → `master` (never #15 and #16
+separately - see the runbook §0). Nothing here is merged, deployed, migrated
 or activated. Operations, budget and rollout: see
 [the readiness runbook](../runbooks/phase1p9r-release-readiness.md).
 
