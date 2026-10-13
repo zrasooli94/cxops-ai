@@ -1,0 +1,752 @@
+{
+  "environment": {
+    "server": "uvicorn (keep-alive 30 s) in docker --cpus 0.5 --memory 512m (Render Starter shape); driver on host; final defaults",
+    "driver": "Darwin arm64 python 3.12.13",
+    "decision_seconds": 2.0,
+    "retrieval_seconds": 0.3,
+    "pool": "QueuePool 5 + 10 overflow, pre_ping (application default)",
+    "transport": "real HTTP to uvicorn (single worker process)"
+  },
+  "workloads": [
+    {
+      "workload": "1_tenants_two_messages_each",
+      "messages": 2,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 6.14,
+      "ack_ms": {
+        "p50": 32.0,
+        "p95": 32.0,
+        "max": 32.0,
+        "n": 2
+      },
+      "reply_visible_ms": {
+        "p50": 3071.8,
+        "p95": 3071.8,
+        "max": 3071.8,
+        "n": 2
+      },
+      "staff_visible_ms_modelled": {
+        "p50": null,
+        "p95": null,
+        "max": null,
+        "n": 0
+      },
+      "poll_interval_hint_ms": {
+        "p50": 1000,
+        "p95": 3000,
+        "max": 3000,
+        "n": 8
+      },
+      "db_ms_per_message": 65.5,
+      "db_statements_per_message": 79.5,
+      "queue_wait_ms": {
+        "p50": 48.4,
+        "p95": 48.4,
+        "max": 48.4,
+        "n": 2
+      },
+      "ai_decision_ms": {
+        "p50": 2349.1,
+        "p95": 2349.1,
+        "max": 2349.1,
+        "n": 2
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.0,
+        "p95": 301.0,
+        "max": 301.0,
+        "n": 2
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 13.7,
+        "n": 45
+      },
+      "pool_peak_checked_out": 2,
+      "model_calls": 2,
+      "cpu_seconds": 0.15,
+      "cpu_utilisation_of_one_core": 0.024,
+      "rss_mb_max_sampled": 220.7,
+      "peak_rss_mb_process_lifetime": 220.4,
+      "all_reply_visible_ms": {
+        "p50": 3071.8,
+        "p95": 3071.8,
+        "max": 3071.8,
+        "n": 2
+      },
+      "violations": {}
+    },
+    {
+      "workload": "5_tenants_two_messages_each",
+      "messages": 10,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 6.39,
+      "ack_ms": {
+        "p50": 71.8,
+        "p95": 149.7,
+        "max": 149.7,
+        "n": 10
+      },
+      "reply_visible_ms": {
+        "p50": 3183.1,
+        "p95": 3274.6,
+        "max": 3274.6,
+        "n": 9
+      },
+      "staff_visible_ms_modelled": {
+        "p50": 17410.7,
+        "p95": 17410.7,
+        "max": 17410.7,
+        "n": 1
+      },
+      "poll_interval_hint_ms": {
+        "p50": 1000,
+        "p95": 3000,
+        "max": 3000,
+        "n": 36
+      },
+      "db_ms_per_message": 155.9,
+      "db_statements_per_message": 72.9,
+      "queue_wait_ms": {
+        "p50": 133.1,
+        "p95": 197.6,
+        "max": 197.6,
+        "n": 9
+      },
+      "ai_decision_ms": {
+        "p50": 2359.2,
+        "p95": 2405.6,
+        "max": 2405.6,
+        "n": 9
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.1,
+        "p95": 304.4,
+        "max": 304.4,
+        "n": 8
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 13.2,
+        "max": 67.1,
+        "n": 205
+      },
+      "pool_peak_checked_out": 10,
+      "model_calls": 9,
+      "cpu_seconds": 0.6,
+      "cpu_utilisation_of_one_core": 0.093,
+      "rss_mb_max_sampled": 223.5,
+      "peak_rss_mb_process_lifetime": 223.1,
+      "all_reply_visible_ms": {
+        "p50": 3183.1,
+        "p95": 3274.6,
+        "max": 3274.6,
+        "n": 10
+      },
+      "violations": {}
+    },
+    {
+      "workload": "20_tenants_two_messages_each",
+      "messages": 40,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 15.81,
+      "ack_ms": {
+        "p50": 307.5,
+        "p95": 592.8,
+        "max": 676.0,
+        "n": 40
+      },
+      "reply_visible_ms": {
+        "p50": 7064.1,
+        "p95": 10746.3,
+        "max": 10747.6,
+        "n": 35
+      },
+      "staff_visible_ms_modelled": {
+        "p50": 10106.9,
+        "p95": 20282.9,
+        "max": 20282.9,
+        "n": 5
+      },
+      "poll_interval_hint_ms": {
+        "p50": 3000,
+        "p95": 4000,
+        "max": 4000,
+        "n": 145
+      },
+      "db_ms_per_message": 235.0,
+      "db_statements_per_message": 71.6,
+      "queue_wait_ms": {
+        "p50": 4219.2,
+        "p95": 7243.1,
+        "max": 7311.5,
+        "n": 35
+      },
+      "ai_decision_ms": {
+        "p50": 2342.8,
+        "p95": 2401.4,
+        "max": 2404.5,
+        "n": 35
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.0,
+        "p95": 310.3,
+        "max": 328.5,
+        "n": 30
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 67.6,
+        "max": 423.9,
+        "n": 805
+      },
+      "pool_peak_checked_out": 15,
+      "model_calls": 35,
+      "cpu_seconds": 2.03,
+      "cpu_utilisation_of_one_core": 0.129,
+      "rss_mb_max_sampled": 227.4,
+      "peak_rss_mb_process_lifetime": 226.6,
+      "all_reply_visible_ms": {
+        "p50": 6051.7,
+        "p95": 9215.3,
+        "max": 10747.6,
+        "n": 40
+      },
+      "violations": {}
+    },
+    {
+      "workload": "50_tenants_two_messages_each",
+      "messages": 100,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 37.98,
+      "ack_ms": {
+        "p50": 261.1,
+        "p95": 1341.9,
+        "max": 1369.2,
+        "n": 100
+      },
+      "reply_visible_ms": {
+        "p50": 16314.1,
+        "p95": 21757.4,
+        "max": 22756.9,
+        "n": 88
+      },
+      "staff_visible_ms_modelled": {
+        "p50": 18725.1,
+        "p95": 30763.8,
+        "max": 30763.8,
+        "n": 12
+      },
+      "poll_interval_hint_ms": {
+        "p50": 5000,
+        "p95": 5000,
+        "max": 5000,
+        "n": 410
+      },
+      "db_ms_per_message": 200.1,
+      "db_statements_per_message": 73.3,
+      "queue_wait_ms": {
+        "p50": 13057.9,
+        "p95": 17785.3,
+        "max": 19010.3,
+        "n": 88
+      },
+      "ai_decision_ms": {
+        "p50": 2340.0,
+        "p95": 2573.3,
+        "max": 2596.8,
+        "n": 88
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.3,
+        "p95": 308.6,
+        "max": 321.4,
+        "n": 76
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 162.5,
+        "max": 848.1,
+        "n": 2068
+      },
+      "pool_peak_checked_out": 15,
+      "model_calls": 88,
+      "cpu_seconds": 5.01,
+      "cpu_utilisation_of_one_core": 0.132,
+      "rss_mb_max_sampled": 232.8,
+      "peak_rss_mb_process_lifetime": 232.0,
+      "all_reply_visible_ms": {
+        "p50": 16058.1,
+        "p95": 21757.4,
+        "max": 22756.9,
+        "n": 100
+      },
+      "violations": {}
+    },
+    {
+      "workload": "noisy_tenant_20_sessions_plus_10_quiet",
+      "messages": 30,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 28.34,
+      "ack_ms": {
+        "p50": 833.7,
+        "p95": 1073.7,
+        "max": 1157.2,
+        "n": 30
+      },
+      "reply_visible_ms": {
+        "p50": 11864.3,
+        "p95": 28299.6,
+        "max": 28331.9,
+        "n": 30
+      },
+      "staff_visible_ms_modelled": {
+        "p50": null,
+        "p95": null,
+        "max": null,
+        "n": 0
+      },
+      "poll_interval_hint_ms": {
+        "p50": 3000,
+        "p95": 4000,
+        "max": 5000,
+        "n": 189
+      },
+      "db_ms_per_message": 436.4,
+      "db_statements_per_message": 87.9,
+      "queue_wait_ms": {
+        "p50": 8368.0,
+        "p95": 24838.9,
+        "max": 25026.1,
+        "n": 30
+      },
+      "ai_decision_ms": {
+        "p50": 2352.3,
+        "p95": 2487.2,
+        "max": 2512.0,
+        "n": 30
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.4,
+        "p95": 304.7,
+        "max": 308.1,
+        "n": 30
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 107.3,
+        "max": 525.6,
+        "n": 759
+      },
+      "pool_peak_checked_out": 15,
+      "model_calls": 30,
+      "cpu_seconds": 2.06,
+      "cpu_utilisation_of_one_core": 0.073,
+      "rss_mb_max_sampled": 233.8,
+      "peak_rss_mb_process_lifetime": 233.3,
+      "noisy_reply_visible_ms": {
+        "p50": 15983.8,
+        "p95": 28331.9,
+        "max": 28331.9,
+        "n": 20
+      },
+      "quiet_reply_visible_ms": {
+        "p50": 6971.4,
+        "p95": 6979.6,
+        "max": 6979.6,
+        "n": 10
+      },
+      "violations": {}
+    },
+    {
+      "workload": "one_tenant_10_concurrent_with_2_lost_response_retries",
+      "messages": 10,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 12.76,
+      "ack_ms": {
+        "p50": 378.1,
+        "p95": 585.5,
+        "max": 585.5,
+        "n": 10
+      },
+      "reply_visible_ms": {
+        "p50": 7632.0,
+        "p95": 12753.9,
+        "max": 12753.9,
+        "n": 10
+      },
+      "staff_visible_ms_modelled": {
+        "p50": null,
+        "p95": null,
+        "max": null,
+        "n": 0
+      },
+      "poll_interval_hint_ms": {
+        "p50": 2000,
+        "p95": 3000,
+        "max": 3000,
+        "n": 62
+      },
+      "db_ms_per_message": 518.6,
+      "db_statements_per_message": 105.6,
+      "queue_wait_ms": {
+        "p50": 5124.3,
+        "p95": 9920.9,
+        "max": 9920.9,
+        "n": 10
+      },
+      "ai_decision_ms": {
+        "p50": 2349.8,
+        "p95": 2415.3,
+        "max": 2415.3,
+        "n": 10
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.0,
+        "p95": 307.3,
+        "max": 307.3,
+        "n": 10
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 78.3,
+        "n": 272
+      },
+      "pool_peak_checked_out": 14,
+      "model_calls": 10,
+      "cpu_seconds": 0.78,
+      "cpu_utilisation_of_one_core": 0.061,
+      "rss_mb_max_sampled": 234.0,
+      "peak_rss_mb_process_lifetime": 233.4,
+      "burst_reply_visible_ms": {
+        "p50": 7632.0,
+        "p95": 12753.9,
+        "max": 12753.9,
+        "n": 10
+      },
+      "violations": {}
+    },
+    {
+      "workload": "allowance_exhaustion_10_tenants_limit_1_turn",
+      "messages": 30,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 6.64,
+      "ack_ms": {
+        "p50": 58.9,
+        "p95": 388.1,
+        "max": 390.8,
+        "n": 30
+      },
+      "reply_visible_ms": {
+        "p50": 2193.4,
+        "p95": 5439.8,
+        "max": 5439.8,
+        "n": 20
+      },
+      "staff_visible_ms_modelled": {
+        "p50": 9567.5,
+        "p95": 11411.2,
+        "max": 11411.2,
+        "n": 10
+      },
+      "poll_interval_hint_ms": {
+        "p50": 2000,
+        "p95": 3000,
+        "max": 3000,
+        "n": 60
+      },
+      "db_ms_per_message": 176.6,
+      "db_statements_per_message": 47.0,
+      "queue_wait_ms": {
+        "p50": 161.0,
+        "p95": 2808.3,
+        "max": 2808.3,
+        "n": 20
+      },
+      "ai_decision_ms": {
+        "p50": 2375.3,
+        "p95": 2458.8,
+        "max": 2458.8,
+        "n": 10
+      },
+      "rag_retrieval_ms": {
+        "p50": 300.9,
+        "p95": 302.8,
+        "max": 302.8,
+        "n": 10
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 90.4,
+        "n": 390
+      },
+      "pool_peak_checked_out": 12,
+      "model_calls": 10,
+      "cpu_seconds": 0.99,
+      "cpu_utilisation_of_one_core": 0.149,
+      "rss_mb_max_sampled": 234.4,
+      "peak_rss_mb_process_lifetime": 233.9,
+      "budget_reply_visible_ms": {
+        "p50": 1163.7,
+        "p95": 5438.9,
+        "max": 5439.8,
+        "n": 30
+      },
+      "expected_model_calls": 10,
+      "violations": {}
+    },
+    {
+      "workload": "long_conversation_40_turns",
+      "messages": 40,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 122.14,
+      "ack_ms": {
+        "p50": 20.3,
+        "p95": 24.7,
+        "max": 26.7,
+        "n": 40
+      },
+      "reply_visible_ms": {
+        "p50": 3050.9,
+        "p95": 3064.1,
+        "max": 3097.5,
+        "n": 40
+      },
+      "staff_visible_ms_modelled": {
+        "p50": null,
+        "p95": null,
+        "max": null,
+        "n": 0
+      },
+      "poll_interval_hint_ms": {
+        "p50": 1000,
+        "p95": 3000,
+        "max": 3000,
+        "n": 160
+      },
+      "db_ms_per_message": 46.3,
+      "db_statements_per_message": 78.1,
+      "queue_wait_ms": {
+        "p50": 22.7,
+        "p95": 28.5,
+        "max": 29.1,
+        "n": 40
+      },
+      "ai_decision_ms": {
+        "p50": 2338.9,
+        "p95": 2360.3,
+        "max": 2484.6,
+        "n": 40
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.3,
+        "p95": 304.1,
+        "max": 305.7,
+        "n": 40
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 0.0,
+        "n": 881
+      },
+      "pool_peak_checked_out": 2,
+      "model_calls": 40,
+      "cpu_seconds": 2.3,
+      "cpu_utilisation_of_one_core": 0.019,
+      "rss_mb_max_sampled": 235.2,
+      "peak_rss_mb_process_lifetime": 234.4,
+      "long_reply_visible_ms": {
+        "p50": 3050.9,
+        "p95": 3064.1,
+        "max": 3097.5,
+        "n": 40
+      },
+      "violations": {}
+    },
+    {
+      "workload": "crash_all_inflight_turns_20_tenants",
+      "messages": 20,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 11.92,
+      "ack_ms": {
+        "p50": 522.2,
+        "p95": 613.9,
+        "max": 613.9,
+        "n": 20
+      },
+      "reply_visible_ms": {
+        "p50": 6791.9,
+        "p95": 11917.0,
+        "max": 11917.0,
+        "n": 20
+      },
+      "staff_visible_ms_modelled": {
+        "p50": null,
+        "p95": null,
+        "max": null,
+        "n": 0
+      },
+      "poll_interval_hint_ms": {
+        "p50": 1000,
+        "p95": 4000,
+        "max": 4000,
+        "n": 105
+      },
+      "db_ms_per_message": 474.9,
+      "db_statements_per_message": 92.3,
+      "queue_wait_ms": {
+        "p50": 3408.1,
+        "p95": 8450.7,
+        "max": 8453.9,
+        "n": 26
+      },
+      "ai_decision_ms": {
+        "p50": 2383.8,
+        "p95": 2477.5,
+        "max": 2500.7,
+        "n": 26
+      },
+      "rag_retrieval_ms": {
+        "p50": 302.4,
+        "p95": 311.3,
+        "max": 311.3,
+        "n": 20
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 80.3,
+        "max": 297.0,
+        "n": 522
+      },
+      "pool_peak_checked_out": 15,
+      "model_calls": 20,
+      "cpu_seconds": 1.55,
+      "cpu_utilisation_of_one_core": 0.13,
+      "rss_mb_max_sampled": 235.5,
+      "peak_rss_mb_process_lifetime": 234.9,
+      "crash_reply_visible_ms": {
+        "p50": 6791.9,
+        "p95": 11917.0,
+        "max": 11917.0,
+        "n": 20
+      },
+      "cancelled": 20,
+      "recovered": 20,
+      "violations": {},
+      "jobs_completed": 20,
+      "jobs_total": 20
+    },
+    {
+      "workload": "sweep_turn_concurrency_6_20_tenants",
+      "messages": 20,
+      "failures": 0,
+      "failure_types": [],
+      "send_failure_rate": 0.0,
+      "wall_s": 10.82,
+      "ack_ms": {
+        "p50": 547.2,
+        "p95": 653.6,
+        "max": 653.6,
+        "n": 20
+      },
+      "reply_visible_ms": {
+        "p50": 5844.9,
+        "p95": 10809.6,
+        "max": 10809.6,
+        "n": 20
+      },
+      "staff_visible_ms_modelled": {
+        "p50": null,
+        "p95": null,
+        "max": null,
+        "n": 0
+      },
+      "poll_interval_hint_ms": {
+        "p50": 3000,
+        "p95": 4000,
+        "max": 4000,
+        "n": 78
+      },
+      "db_ms_per_message": 361.5,
+      "db_statements_per_message": 80.7,
+      "queue_wait_ms": {
+        "p50": 3002.9,
+        "p95": 7624.6,
+        "max": 7624.6,
+        "n": 20
+      },
+      "ai_decision_ms": {
+        "p50": 2363.3,
+        "p95": 2532.9,
+        "max": 2532.9,
+        "n": 20
+      },
+      "rag_retrieval_ms": {
+        "p50": 301.8,
+        "p95": 313.7,
+        "max": 313.7,
+        "n": 20
+      },
+      "pool_wait_ms": {
+        "p50": 0.0,
+        "p95": 75.2,
+        "max": 323.9,
+        "n": 458
+      },
+      "pool_peak_checked_out": 15,
+      "model_calls": 20,
+      "cpu_seconds": 1.33,
+      "cpu_utilisation_of_one_core": 0.123,
+      "rss_mb_max_sampled": 235.4,
+      "peak_rss_mb_process_lifetime": 235.0,
+      "sweep_reply_visible_ms": {
+        "p50": 5844.9,
+        "p95": 10809.6,
+        "max": 10809.6,
+        "n": 20
+      },
+      "turn_concurrency": 6,
+      "analysis_slots": 7,
+      "violations": {}
+    }
+  ],
+  "cost_estimate": {
+    "basis": "ESTIMATE from assumed token counts x configured list prices",
+    "assumed_tokens": {
+      "decision": [
+        2500,
+        350
+      ],
+      "rag": [
+        1500,
+        250
+      ]
+    },
+    "usd_per_turn_decision_only": 0.000585,
+    "usd_per_turn_with_rag": 0.00096,
+    "usd_per_1000_turns_with_rag": 0.96,
+    "reservation_per_turn_usd": 0.01
+  }
+}
