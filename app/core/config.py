@@ -167,6 +167,28 @@ class Settings(BaseSettings):
     public_chat_max_messages_per_minute_per_config: int = 600
     public_chat_new_sessions_per_hour_per_config: int = 120
 
+    # Phase 1P.9: asynchronous public-chat turns. The visitor's message is
+    # accepted and persisted immediately; the AI turn runs as a durable,
+    # tenant-bound job processed in-process by the API (bounded concurrency)
+    # with the scheduled worker as a backstop. ``async`` is opt-in per request
+    # (``delivery: "async"``), so older widgets keep the synchronous contract.
+    public_chat_async_enabled: bool = True
+    # Each running turn holds three pooled connections for the whole model call
+    # (job session, per-session turn lease, the agent's analysis lock), so keep
+    # 3 x this value well below the engine pool (default 5 + 10 overflow) or
+    # turns and requests can starve each other of connections.
+    public_chat_turn_max_concurrency: int = 4
+    public_chat_turn_max_concurrency_per_tenant: int = 2
+    # A turn still "processing" after this long is treated as abandoned (API
+    # instance restarted mid-turn) and may be re-claimed. Reply de-duplication
+    # guarantees a re-run can never post a second customer message.
+    public_chat_turn_stale_seconds: int = 120
+    # Default monthly AI allowance per tenant when its widget configuration has
+    # no override. Exhausting either limit routes new turns to a human (no
+    # model call); messages are still accepted.
+    public_chat_default_monthly_ai_turns: int = 3000
+    public_chat_default_monthly_ai_budget_usd: float = 5.0
+
     @field_validator("public_chat_session_token_entropy_bytes", mode="after")
     @classmethod
     def _public_chat_token_entropy_bounded(cls, value: int) -> int:
@@ -186,6 +208,26 @@ class Settings(BaseSettings):
     def _public_chat_limits_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Public chat per-config limits must be positive")
+        return value
+
+    @field_validator(
+        "public_chat_turn_max_concurrency",
+        "public_chat_turn_max_concurrency_per_tenant",
+        "public_chat_turn_stale_seconds",
+        "public_chat_default_monthly_ai_turns",
+        mode="after",
+    )
+    @classmethod
+    def _public_chat_turn_limits_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Public chat turn limits must be positive")
+        return value
+
+    @field_validator("public_chat_default_monthly_ai_budget_usd", mode="after")
+    @classmethod
+    def _public_chat_budget_non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("public_chat_default_monthly_ai_budget_usd must be >= 0")
         return value
 
     @field_validator(

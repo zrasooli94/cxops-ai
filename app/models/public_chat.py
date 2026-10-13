@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
     func,
@@ -92,6 +93,17 @@ class PublicChatConfiguration(Base):
     public_widget_key_hash: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
+    )
+
+    # Phase 1P.9: optional per-tenant monthly AI allowance. ``NULL`` falls back
+    # to the platform defaults in settings.
+    monthly_ai_turn_limit: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    monthly_ai_budget_usd: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
     )
 
     grounded_auto_reply_enabled: Mapped[bool] = mapped_column(
