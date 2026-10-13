@@ -146,3 +146,34 @@ def test_settings_reject_unknown_mode_and_plain_http(monkeypatch):
     with pytest.raises(ValidationError):
         Settings(nhost_auth_url="http://auth.example.com/v1")
     assert Settings(nhost_auth_url="http://localhost:1337/v1").nhost_auth_url
+
+
+@pytest.mark.asyncio
+async def test_userinfo_redirect_is_refused_and_not_followed():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"location": "https://evil.example/collect"})
+
+    with pytest.raises(IdentityVerificationUnavailableError):
+        await _verifier(handler).verify(_principal(), "t")
+    assert calls == [f"{AUTH_URL}/user"]  # the token never reached the redirect target
+
+
+def test_nhost_auth_url_rejects_credentials_query_and_fragment():
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    for bad in (
+        "https://user:pw@auth.example.com/v1",
+        "https://auth.example.com/v1?x=1",
+        "https://auth.example.com/v1#frag",
+        "ftp://auth.example.com/v1",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(nhost_auth_url=bad)
+    assert Settings(nhost_auth_url="https://x.auth.ap-southeast-1.nhost.run/v1/").nhost_auth_url == (
+        "https://x.auth.ap-southeast-1.nhost.run/v1"
+    )

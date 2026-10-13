@@ -116,8 +116,10 @@ class NhostUserInfoIdentityVerifier:
         self, principal: AuthenticatedPrincipal, access_token: str
     ) -> VerifiedIdentity:
         try:
+            # Never follow redirects: the caller's access token must only ever
+            # be sent to the configured Nhost Auth URL.
             async with httpx.AsyncClient(
-                timeout=self._timeout, transport=self._transport
+                timeout=self._timeout, transport=self._transport, follow_redirects=False
             ) as client:
                 response = await client.get(
                     self._url, headers={"Authorization": f"Bearer {access_token}"}

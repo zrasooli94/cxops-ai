@@ -270,11 +270,18 @@ class Settings(BaseSettings):
     @field_validator("nhost_auth_url", mode="after")
     @classmethod
     def _nhost_auth_url_https(cls, value: str) -> str:
-        if value and not value.startswith("https://"):
-            host = value.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
-            if host not in {"localhost", "127.0.0.1"}:
-                raise ValueError("nhost_auth_url must use https")
-        return value
+        if not value:
+            return value
+        parts = urlsplit(value)
+        if parts.username or parts.password or parts.query or parts.fragment:
+            raise ValueError("nhost_auth_url must not contain credentials, a query or a fragment")
+        if not parts.hostname:
+            raise ValueError("nhost_auth_url must include a host")
+        if parts.scheme != "https" and not (
+            parts.scheme == "http" and parts.hostname in {"localhost", "127.0.0.1"}
+        ):
+            raise ValueError("nhost_auth_url must use https")
+        return value.rstrip("/")
 
     @field_validator(
         "lead_submissions_per_hour_platform",
