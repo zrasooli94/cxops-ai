@@ -127,6 +127,21 @@ class Settings(BaseSettings):
                 raise ValueError(f"{label} must use https in production")
         return self
 
+    # Phase 1R: identical query text embeds to the identical vector, so a
+    # grounded turn (which retrieves for the agent and again for the answer)
+    # reuses one provider call. Process-local, keyed by a digest, never
+    # persisted; 0 disables it.
+    embedding_query_cache_size: int = 128
+    embedding_query_cache_ttl_seconds: float = 300.0
+
+    # Phase 1R: the start-up schema check runs before the port binds, so a
+    # hung database connect would hold the whole service unreachable for the
+    # driver's default 60 s. Short attempts with a retry recover from a
+    # scaling-to-zero database much sooner than one long wait.
+    schema_gate_attempt_timeout_seconds: float = 10.0
+    schema_gate_max_attempts: int = 4
+    schema_gate_retry_delay_seconds: float = 1.0
+
     rag_top_k: int = 5
     rag_min_similarity: float = 0.35
     rag_similarity_margin: float = 0.12

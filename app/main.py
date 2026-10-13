@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,7 @@ from prometheus_client import (
 )
 
 from app.api.router import api_router
+from app.core.build_info import uptime_seconds
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
 from app.core.rbac import AuthorizationError, MissingCapabilityError
@@ -34,7 +36,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     # Phase 1P.9R: refuse to serve on a schema this build does not support
     # (raises in production; uvicorn then exits before binding its port).
+    started = time.perf_counter()
     await check_schema(engine)
+    log.info(
+        "startup_complete",
+        schema_gate_ms=round((time.perf_counter() - started) * 1000, 1),
+        process_uptime_s=uptime_seconds(),
+    )
 
     task = asyncio.get_running_loop().create_task(turn_dispatcher.run_maintenance())
     try:
