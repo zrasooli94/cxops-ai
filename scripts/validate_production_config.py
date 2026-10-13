@@ -344,6 +344,23 @@ def check_database(cfg, reporter: Reporter) -> None:
             "points at localhost; production must use a non-local PostgreSQL database",
         )
 
+    # Phase 1P.9R: reply delivery, chat turns and agent analysis all rely on
+    # SESSION-level advisory locks held across several transactions on one
+    # connection. A transaction-mode pooler (Neon's ``-pooler`` hosts are
+    # PgBouncer in transaction mode) may run each transaction on a different
+    # server connection, so a lock can be taken on one backend and "released"
+    # on another - silently breaking the duplicate-send and per-session
+    # ordering guarantees. Production must use Neon's direct endpoint.
+    if "-pooler" in host:
+        reporter.fail(
+            "DATABASE_URL",
+            "points at a Neon pooler endpoint (transaction-mode PgBouncer); "
+            "session-level advisory locks are unsafe there. Use the direct "
+            "endpoint (the same host without '-pooler').",
+        )
+    else:
+        reporter.ok("DATABASE_URL", "direct (non-pooler) endpoint for session-level advisory locks")
+
     # Settings.normalize_database_url rewrites ``sslmode=`` to ``ssl=``, so both
     # spellings have to be understood here.
     #

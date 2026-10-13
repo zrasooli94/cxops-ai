@@ -760,3 +760,28 @@ def test_migration_check_only_issues_read_only_alembic_commands():
 def test_script_is_executable_with_a_shebang():
     assert SCRIPT.read_text(encoding="utf-8").startswith("#!")
     assert os.access(SCRIPT, os.X_OK)
+
+
+def test_neon_pooler_endpoint_fails_the_advisory_lock_requirement() -> None:
+    """Phase 1P.9R: session-level advisory locks need the direct endpoint."""
+    reporter = _reporter()
+    pooled = SimpleNamespace(
+        database_url=(
+            "postgresql+asyncpg://u:p@ep-calm-sun-123456-pooler.ap-southeast-1.aws.neon.tech"
+            "/cxops?ssl=require"
+        )
+    )
+    validator.check_database(pooled, reporter)
+    assert reporter.failures == 1
+    assert any("pooler" in line for line in reporter.lines)
+
+    reporter = _reporter()
+    direct = SimpleNamespace(
+        database_url=(
+            "postgresql+asyncpg://u:p@ep-calm-sun-123456.ap-southeast-1.aws.neon.tech"
+            "/cxops?ssl=require"
+        )
+    )
+    validator.check_database(direct, reporter)
+    assert reporter.failures == 0
+    assert any("direct (non-pooler)" in line for line in reporter.lines)
