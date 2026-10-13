@@ -116,7 +116,14 @@ async def _advisory_lease(
             if not state_known:
                 await conn.invalidate()
             elif acquired:
-                await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+                # Phase 1P.9R: release EVERY session-level lock on this
+                # dedicated connection, not just the lease key. A chat turn
+                # also takes the agent's analysis lock here; if that blocking
+                # lock call was cancelled right as the server granted it, a
+                # key-only unlock would return the connection to the pool
+                # still holding it.
+                await conn.rollback()
+                await conn.execute(text("SELECT pg_advisory_unlock_all()"))
                 await conn.commit()
         except BaseException:
             log.warning("advisory_lease_unlock_failed", key_label=label)

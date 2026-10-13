@@ -21,7 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.core.config import settings
 from app.core.database import engine
-from app.core.db_connection import AnalysisCapacity, release_idle_connection
+from app.core.db_connection import (
+    AnalysisCapacity,
+    dedicated_lock_connection,
+    release_idle_connection,
+)
 from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_auto_approval,
@@ -2267,7 +2271,7 @@ Choose the safest next action.
                     return await self._locked_critical_section(
                         lock_conn, lock_key, db, critical_kwargs
                     )
-                async with engine.connect() as own_lock_conn:
+                async with dedicated_lock_connection(engine) as own_lock_conn:
                     return await self._locked_critical_section(
                         own_lock_conn, lock_key, db, critical_kwargs
                     )

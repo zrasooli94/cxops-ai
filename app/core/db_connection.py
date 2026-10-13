@@ -23,8 +23,8 @@ import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import Select, TextClause, event
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import Select, TextClause, event, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 from sqlalchemy.orm import ORMExecuteState, Session
 
 _WROTE = "cxops_txn_wrote"
@@ -80,6 +80,32 @@ async def release_idle_connection(db: AsyncSession) -> bool:
         return False
     await db.commit()
     return True
+
+
+@asynccontextmanager
+async def dedicated_lock_connection(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """A pooled connection used only to hold session-level advisory locks.
+
+    On exit every advisory lock it holds is released before it returns to the
+    pool; if that cannot be confirmed (cancellation, broken connection) the
+    connection is invalidated, which ends its server session and releases the
+    locks there. A blocking ``pg_advisory_lock`` cancelled just as the server
+    grants it can therefore never leak a lock into the pool.
+    """
+    conn = await engine.connect()
+    try:
+        yield conn
+    finally:
+        try:
+            await conn.rollback()
+            await conn.execute(text("SELECT pg_advisory_unlock_all()"))
+            await conn.commit()
+        except BaseException as exc:
+            await conn.invalidate()
+            if not isinstance(exc, Exception):
+                raise  # cancellation / interpreter exit: propagate
+        finally:
+            await conn.close()
 
 
 def pool_capacity(engine: object) -> int | None:
