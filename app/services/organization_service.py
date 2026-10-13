@@ -1,10 +1,20 @@
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.rbac import OrganizationRole
-from app.models.organization import LIFECYCLE_ONBOARDING, Organization
+from app.models.organization import (
+    LIFECYCLE_ONBOARDING,
+    LIFECYCLE_PENDING_REVIEW,
+    Organization,
+)
 from app.models.organization_membership import OrganizationMembership
 from app.repositories.organization_repository import OrganizationRepository
 from app.schemas.organization import OrganizationCreate
+
+
+class SelfServiceOrganizationLimitError(Exception):
+    """Too many unapproved self-service organizations for one identity."""
 
 
 class OrganizationService:
@@ -23,10 +33,29 @@ class OrganizationService:
         enable its widget, or reach external business actions until a platform
         operator approves it.
         """
+        # Phase 1Q-R: cap unapproved self-service organizations per identity.
+        pending = await db.scalar(
+            select(func.count())
+            .select_from(OrganizationMembership)
+            .join(Organization, Organization.id == OrganizationMembership.organization_id)
+            .where(
+                OrganizationMembership.subject == subject,
+                OrganizationMembership.role == OrganizationRole.OWNER.value,
+                Organization.lifecycle_status.in_(
+                    (LIFECYCLE_ONBOARDING, LIFECYCLE_PENDING_REVIEW)
+                ),
+            )
+        )
+        if int(pending or 0) >= get_settings().self_service_organization_limit:
+            raise SelfServiceOrganizationLimitError(
+                "You already have organizations waiting for approval. "
+                "Finish or withdraw those before creating another."
+            )
+        # ``external_id`` is the operator manifest's tenant slug; it is never
+        # client-chosen (the route rejects it), so it is not copied here.
         organization = Organization(
             name=data.name,
             industry=data.industry,
-            external_id=data.external_id,
             lifecycle_status=LIFECYCLE_ONBOARDING,
         )
         db.add(organization)

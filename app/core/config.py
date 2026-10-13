@@ -246,6 +246,9 @@ class Settings(BaseSettings):
     # Nhost Auth base URL, e.g. https://<subdomain>.auth.<region>.nhost.run/v1
     nhost_auth_url: str = ""
     invitation_identity_timeout_seconds: float = 5.0
+    # Phase 1Q-R: how many not-yet-approved organizations one identity may
+    # create through self-service POST /organizations (abuse / name squatting).
+    self_service_organization_limit: int = 2
 
     @field_validator("invitation_identity_mode", mode="after")
     @classmethod

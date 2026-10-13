@@ -316,6 +316,20 @@ async def build_plan(
             ACTION_CREATE,
             f"create tenant {manifest.slug!r} ({manifest.name!r})",
         )
+    elif getattr(organization, "lifecycle_status", "active") != "active":
+        # Phase 1Q-R: a slug held by an organization that is not active was
+        # created outside this reviewed path (self-service or provisioning).
+        # Adopting it would hand the manifest's widget, knowledge and
+        # integrations to whoever owns that organization.
+        plan.organization_exists = True
+        plan.organization_id = organization.id
+        plan.add(
+            "organization",
+            ACTION_ERROR,
+            f"tenant {manifest.slug!r} exists with lifecycle "
+            f"{organization.lifecycle_status!r}; refusing to configure an "
+            "organization this manifest did not create. Review its members first.",
+        )
     else:
         plan.organization_exists = True
         plan.organization_id = organization.id
@@ -520,6 +534,10 @@ async def apply_plan(
         db.add(organization)
         await db.flush()
     else:
+        if getattr(organization, "lifecycle_status", "active") != "active":
+            raise OnboardingConflictError(
+                f"tenant {manifest.slug!r} is not active; refusing to configure it"
+            )
         organization.name = manifest.name
         organization.industry = manifest.industry
         await db.flush()
