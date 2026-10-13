@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant, RequireCapability
+from app.api.deps import AIBudget, CurrentTenant, RequireCapability
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.ai_evaluation_repository import AIEvaluationRepository
@@ -260,6 +260,7 @@ async def list_evaluation_run_cases(
 
 @router.post(
     "/runs/rag",
+    dependencies=[AIBudget],
     response_model=EvaluationRunQueuedResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -293,6 +294,7 @@ async def start_rag_evaluation(
 
 @router.post(
     "/runs/agent",
+    dependencies=[AIBudget],
     response_model=EvaluationRunQueuedResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )

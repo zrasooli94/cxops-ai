@@ -290,6 +290,42 @@ class TenantAIAllowanceService:
         )
 
 
+async def staff_ai_spend_refusal(
+    db: AsyncSession, *, organization_id: int, now: datetime | None = None
+) -> str | None:
+    """Phase 1Q-R: gate for staff-triggered AI calls (agent analysis,
+    knowledge answer/search/ingestion, evaluations).
+
+    Public-chat turns reserve against the allowance; staff calls did not, so
+    an active tenant's staff could spend without limit. Their cost is logged
+    to the same tenant ledger, so the same month-to-date figures apply: the
+    call is refused once the tenant's estimated budget or the platform
+    ceiling is used up. Returns a refusal reason, or None when allowed.
+    """
+    moment = now or datetime.now(UTC)
+    period_start = month_start(moment)
+    configuration = (
+        await db.execute(
+            select(PublicChatConfiguration)
+            .where(PublicChatConfiguration.organization_id == organization_id)
+            .order_by(PublicChatConfiguration.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    _turns, budget = limits_for(configuration)
+    tenant = await TenantAIAllowanceService._usage(
+        db, organization_id=organization_id, period_start=period_start, now=moment
+    )
+    if tenant.spent_usd + tenant.outstanding_usd >= budget:
+        return "budget_reached"
+    platform = await TenantAIAllowanceService._usage(
+        db, organization_id=None, period_start=period_start, now=moment
+    )
+    if platform.spent_usd + platform.outstanding_usd >= settings.platform_monthly_ai_budget_usd:
+        return "platform_budget_reached"
+    return None
+
+
 class TenantUsageService:
     """Tenant-scoped usage and service-health summary for staff (Phase 1P.9)."""
 

@@ -381,3 +381,49 @@ async def test_no_endpoint_echoes_widget_key_material(db, client):
     for response in responses:
         assert response.status_code == 200, response.text[:200]
         assert key not in response.text and digest not in response.text
+
+
+# ----------------------------------------------------------------------
+# Unbounded paid usage: staff-triggered AI calls are budget-gated
+# ----------------------------------------------------------------------
+
+STAFF_AI_ROUTES = [
+    ("POST", "/agent/tickets/1/analyze", None),
+    ("POST", "/knowledge/search", {"query": "hello"}),
+    ("POST", "/knowledge/answer", {"question": "hello"}),
+    ("POST", "/knowledge/documents", {"title": "t", "content": "c"}),
+    ("POST", "/evaluations/runs/agent", {}),
+    ("POST", "/evaluations/runs/rag", {}),
+]
+
+
+@pytest.mark.asyncio
+async def test_staff_ai_calls_refused_once_tenant_budget_is_spent(db, client):
+    from app.models.ai_request_log import AIRequestLog
+
+    spent, owner, _ = await _org(db, status="active", widget=True)
+    fresh, fresh_owner, _ = await _org(db, status="active", widget=True)
+    # The default budget is $5; log $6 of estimated spend for one tenant.
+    db.add(
+        AIRequestLog(
+            organization_id=spent.id,
+            request_id=uuid.uuid4().hex,
+            feature="rag_answer",
+            model="fake",
+            status="success",
+            question="q",
+            estimated_cost_usd=6.0,
+            latency_ms=1.0,
+        )
+    )
+    await db.commit()
+    async with client:
+        for method, path, body in STAFF_AI_ROUTES:
+            r = await client.request(method, path, json=body, headers=_auth(owner, spent.id))
+            assert r.status_code == 429, (path, r.status_code, r.text[:120])
+        # Another tenant is unaffected by the first tenant's spend: its
+        # request passes the gate (any later status, never 429).
+        r = await client.post(
+            "/knowledge/search", json={"query": ""}, headers=_auth(fresh_owner, fresh.id)
+        )
+        assert r.status_code != 429

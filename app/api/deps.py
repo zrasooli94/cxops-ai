@@ -284,6 +284,36 @@ PlatformOperator = Annotated[
 ]
 
 
+async def require_ai_budget(
+    authz: CurrentAuthorization,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Phase 1Q-R: refuse staff-triggered AI calls once the tenant's monthly
+    estimated AI budget or the platform ceiling is used up (HTTP 429)."""
+    from app.services.tenant_ai_allowance_service import staff_ai_spend_refusal
+
+    reason = await staff_ai_spend_refusal(db, organization_id=authz.organization_id)
+    if reason is None:
+        return
+    log.warning(
+        "staff_ai_spend_refused",
+        organization_id=authz.organization_id,
+        subject=authz.subject,
+        reason=reason,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=(
+            "This workspace's monthly AI budget is used up."
+            if reason == "budget_reached"
+            else "AI features are paused for the rest of the month."
+        ),
+    )
+
+
+AIBudget = Depends(require_ai_budget)
+
+
 async def verify_ticket_event_signature(request: Request) -> bytes:
     """Machine-authentication dependency for the generic ticket-event webhook.
 

@@ -11,7 +11,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant, RequireCapability
+from app.api.deps import AIBudget, CurrentTenant, RequireCapability
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.knowledge_repository import (
@@ -79,6 +79,7 @@ def serialize_document(
 
 @router.post(
     "/documents",
+    dependencies=[AIBudget],
     response_model=KnowledgeIngestionResult,
     status_code=status.HTTP_201_CREATED,
 )
@@ -191,6 +192,7 @@ async def delete_document(
 
 @router.post(
     "/search",
+    dependencies=[AIBudget],
     response_model=list[KnowledgeSearchResult],
 )
 async def search_knowledge(
@@ -209,6 +211,7 @@ async def search_knowledge(
 
 @router.post(
     "/documents/upload",
+    dependencies=[AIBudget],
     response_model=KnowledgeFileIngestionResult,
     status_code=status.HTTP_201_CREATED,
 )
@@ -266,6 +269,7 @@ async def upload_document(
 
 @router.post(
     "/answer",
+    dependencies=[AIBudget],
     response_model=RAGAnswerResponse,
 )
 async def answer_from_knowledge(
