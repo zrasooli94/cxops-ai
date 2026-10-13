@@ -246,3 +246,76 @@ def test_worker_refuses_to_consume_jobs_on_an_older_schema(monkeypatch):
     with pytest.raises(schema_gate.SchemaBehindError):
         worker.main(["--once"])
     assert consumed == []
+
+
+@pytest.mark.asyncio
+async def test_activating_one_tenant_never_enables_async_for_another(
+    db, client, org_scope, monkeypatch
+):
+    """RISPU-first activation: the platform switch is on, only the activated
+    tenant's widget gets asynchronous turns; every other tenant - even one
+    whose widget already sends ``delivery: "async"`` - stays synchronous."""
+    chat._stub(monkeypatch)
+    _platform(monkeypatch, True)
+    rispu_org, rispu_token = await chat._setup(db, client, org_scope, async_turns_enabled=True)
+    other_org, other_token = await chat._setup(db, client, org_scope, async_turns_enabled=False)
+
+    rispu = await chat._send(client, rispu_token, "Hello from RISPU")
+    other = await chat._send(client, other_token, "Hello from another business")
+    await turn_dispatcher.drain()
+
+    assert rispu.json()["processing_state"] == "accepted"
+    assert other.json()["processing_state"] == "completed"
+    assert len(await chat._jobs(db, rispu_org)) == 1
+    assert await chat._jobs(db, other_org) == []
+    flags = dict(
+        (
+            await db.execute(
+                select(
+                    PublicChatConfiguration.organization_id,
+                    PublicChatConfiguration.async_turns_enabled,
+                ).where(PublicChatConfiguration.organization_id.in_((rispu_org, other_org)))
+            )
+        ).all()
+    )
+    assert flags == {rispu_org: True, other_org: False}
+
+
+@pytest.mark.asyncio
+async def test_tenant_activation_tool_is_dry_run_by_default_and_scoped(db, org_scope):
+    from scripts.set_tenant_async_turns import apply_change
+
+    target_org = await org_scope()
+    other_org = await org_scope()
+    await base._make_widget_config(db, target_org)
+    await base._make_widget_config(db, other_org)
+    target_id, other_id = target_org.id, other_org.id
+
+    dry = await apply_change(
+        db, organization_id=target_id, enable=True, turn_limit=3000, budget_usd=5.0, apply=False
+    )
+    assert dry[-1].startswith("dry run")
+    applied = await apply_change(
+        db, organization_id=target_id, enable=True, turn_limit=None, budget_usd=None, apply=True
+    )
+    assert applied[-1] == "applied"
+    db.expire_all()
+    flags = dict(
+        (
+            await db.execute(
+                select(
+                    PublicChatConfiguration.organization_id,
+                    PublicChatConfiguration.async_turns_enabled,
+                ).where(PublicChatConfiguration.organization_id.in_((target_id, other_id)))
+            )
+        ).all()
+    )
+    assert flags == {target_id: True, other_id: False}
+    limits = (
+        await db.execute(
+            select(PublicChatConfiguration.monthly_ai_turn_limit).where(
+                PublicChatConfiguration.organization_id == target_id
+            )
+        )
+    ).scalar_one()
+    assert limits is None  # the dry run's limit change was not written
