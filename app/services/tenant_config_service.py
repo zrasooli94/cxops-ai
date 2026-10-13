@@ -347,9 +347,13 @@ class TenantConfigService:
         rows = {row.provider: row for row in result.scalars().all()}
 
         payload: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for definition in business_tool_registry.definitions():
-            if definition.provider is None:
+            # One entry per provider, not per tool: a provider with several
+            # tools used to be listed once per tool (duplicate UI rows).
+            if definition.provider is None or definition.provider in seen:
                 continue
+            seen.add(definition.provider)
             row = rows.get(definition.provider)
             payload.append(
                 {

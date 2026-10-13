@@ -1209,3 +1209,30 @@ async def test_knowledge_setup_flag_unlocks_only_knowledge(db, client, monkeypat
         body = (await client.get("/me/authorization", headers=_auth(owner, org.id))).json()
     assert "knowledge.manage" in body["capabilities"]
     assert "agent.run" not in body["capabilities"]
+
+
+@pytest.mark.asyncio
+async def test_ai_reservation_refused_for_unapproved_or_suspended_tenant(db):
+    """The allowance reservation is the chokepoint before every public-chat
+    model call: a non-active tenant gets no reservation (-> human handoff)."""
+    from app.services.tenant_ai_allowance_service import TenantAIAllowanceService
+
+    for status in ("onboarding", "pending_review", "suspended"):
+        org, _owner, _key = await _org(db, status=status, widget=True)
+        org_id = org.id
+        decision = await TenantAIAllowanceService.reserve(
+            db,
+            organization_id=org_id,
+            configuration=None,
+            key=f"p1q-test:{org_id}:{uuid.uuid4().hex}",
+        )
+        assert decision.allowed is False, status
+        assert decision.reason == "organization_not_active"
+    active, _owner, _key = await _org(db, status="active", widget=True)
+    allowed = await TenantAIAllowanceService.reserve(
+        db,
+        organization_id=active.id,
+        configuration=None,
+        key=f"p1q-test:{active.id}:{uuid.uuid4().hex}",
+    )
+    assert allowed.allowed is True

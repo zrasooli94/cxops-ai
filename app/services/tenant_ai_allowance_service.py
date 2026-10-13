@@ -52,7 +52,7 @@ STATUS_SETTLED = "settled"
 class AllowanceDecision:
     allowed: bool
     # "within_allowance" | "already_reserved" | "turn_limit_reached"
-    # | "budget_reached" | "platform_budget_reached"
+    # | "budget_reached" | "platform_budget_reached" | "organization_not_active"
     reason: str
     turns_used: int
     turn_limit: int
@@ -162,6 +162,28 @@ class TenantAIAllowanceService:
 
         await db.execute(select(func.pg_advisory_xact_lock(AI_BUDGET_LOCK_KEY)))
         try:
+            # Phase 1Q: only an operator-approved (``active``) organization may
+            # spend AI allowance. Checked here - the one chokepoint before every
+            # public-chat model call - so a turn accepted just before a tenant
+            # was suspended still cannot reach the model.
+            from app.models.organization import LIFECYCLE_ACTIVE, Organization
+
+            organization_status = await db.scalar(
+                select(Organization.lifecycle_status).where(
+                    Organization.id == organization_id
+                )
+            )
+            if organization_status != LIFECYCLE_ACTIVE:
+                await db.commit()
+                return AllowanceDecision(
+                    allowed=False,
+                    reason="organization_not_active",
+                    turns_used=0,
+                    turn_limit=turn_limit,
+                    cost_used_usd=0.0,
+                    budget_usd=budget,
+                    period_start=period_start,
+                )
             existing = (
                 await db.execute(
                     select(AIUsageReservation).where(
