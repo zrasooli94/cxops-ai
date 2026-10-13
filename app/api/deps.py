@@ -1,3 +1,5 @@
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -16,6 +18,10 @@ from app.services.authorization_service import (
     AuthorizationMembershipMissingError,
     AuthorizationRoleInvalidError,
     resolve_authorization_context,
+)
+from app.services.platform_operator_service import (
+    PlatformOperatorContext,
+    PlatformOperatorService,
 )
 from app.services.tenant_service import (
     TenantAccessDeniedError,
@@ -245,6 +251,132 @@ def RequireCapability(capability: Capability | str):
         return authz
 
     return _require
+
+
+async def get_platform_operator(
+    principal: CurrentPrincipal,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    request: Request,
+) -> PlatformOperatorContext:
+    """Phase 1Q: require platform-operator authority.
+
+    Resolved only from the ``platform_operators`` table by the verified
+    ``sub``. Tenant roles, organization selection headers, email addresses and
+    JWT role claims are never consulted, so a tenant owner cannot pass this.
+    Denials are 403 with a generic message and are logged.
+    """
+    operator = await PlatformOperatorService.resolve(db, principal.subject)
+    if operator is None:
+        log.warning(
+            "platform_operator_denied",
+            subject=principal.subject,
+            request_id=get_request_id(),
+            route=request.url.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform operator access required",
+        )
+    return operator
+
+
+PlatformOperator = Annotated[
+    PlatformOperatorContext,
+    Depends(get_platform_operator),
+]
+
+
+async def _settle_staff_reservation(key: str) -> None:
+    """Release a staff reservation: its logged cost (if any) replaces the
+    estimate. Uses its own short session; never raises into the response."""
+    from app.core import database
+    from app.services.tenant_ai_allowance_service import TenantAIAllowanceService
+
+    try:
+        async with database.AsyncSessionLocal() as session:
+            await TenantAIAllowanceService.settle(session, key=key)
+    except Exception:  # noqa: BLE001 - a lost settle only expires by TTL
+        log.warning("staff_ai_reservation_settle_failed", reservation_key=key)
+
+
+def StaffAIBudget(estimate_setting: str = "staff_ai_reserved_cost_usd"):
+    """Phase 1Q-R: admission control for staff-triggered AI calls.
+
+    Reserves the estimated cost of the call through the same ledger and
+    advisory lock as public-chat turns (TenantAIAllowanceService.reserve), so
+    concurrent requests - on any API instance - cannot jointly overspend the
+    tenant budget or the platform ceiling. The reservation is released when
+    the request ends (success, error or cancellation); a crashed process's
+    reservation expires by TTL. Both database touches use short-lived
+    sessions, so no connection is held for the reservation during the model
+    call. Staff reservations do not count as public-chat turns.
+    """
+
+    async def _reserve(
+        authz: CurrentAuthorization,
+    ) -> AsyncIterator[None]:
+        from sqlalchemy import select
+
+        from app.core import database
+        from app.models.public_chat import PublicChatConfiguration
+        from app.services.tenant_ai_allowance_service import (
+            TenantAIAllowanceService,
+            staff_reservation_key,
+        )
+
+        settings = get_settings()
+        key = staff_reservation_key(authz.organization_id)
+        async with database.AsyncSessionLocal() as session:
+            configuration = (
+                await session.execute(
+                    select(PublicChatConfiguration)
+                    .where(PublicChatConfiguration.organization_id == authz.organization_id)
+                    .order_by(PublicChatConfiguration.id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            # The config read and the reservation share one transaction:
+            # reserve() takes the advisory lock before reading usage, and
+            # commits (releasing the lock) before the model call starts.
+            decision = await TenantAIAllowanceService.reserve(
+                session,
+                organization_id=authz.organization_id,
+                configuration=configuration,
+                key=key,
+                estimate_usd=float(getattr(settings, estimate_setting)),
+                count_as_turn=False,
+            )
+        if not decision.allowed:
+            log.warning(
+                "staff_ai_spend_refused",
+                organization_id=authz.organization_id,
+                subject=authz.subject,
+                reason=decision.reason,
+            )
+            if decision.reason == "organization_not_active":
+                # Same answer as the lifecycle capability mask.
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions"
+                )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "AI features are paused for the rest of the month."
+                    if decision.reason == "platform_budget_reached"
+                    else "This workspace's monthly AI budget is used up."
+                ),
+            )
+        try:
+            yield
+        finally:
+            # Shielded so a client disconnect (cancellation) cannot skip it.
+            await asyncio.shield(_settle_staff_reservation(key))
+
+    return _reserve
+
+
+AIBudget = Depends(StaffAIBudget())
+AIEvaluationBudget = Depends(StaffAIBudget("staff_ai_evaluation_reserved_cost_usd"))
 
 
 async def verify_ticket_event_signature(request: Request) -> bytes:

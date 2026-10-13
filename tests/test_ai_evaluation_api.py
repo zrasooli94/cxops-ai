@@ -50,6 +50,7 @@ from app.models.ai_evaluation_baseline import AIEvaluationBaseline
 from app.models.ai_evaluation_case import AIEvaluationCase
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
+from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.integration_job import IntegrationJob
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
@@ -188,6 +189,10 @@ async def two_orgs(db):
             delete(AIEvaluationBaseline).where(AIEvaluationBaseline.organization_id.in_(org_ids))
         )
         await db.execute(delete(IntegrationJob).where(IntegrationJob.organization_id.in_(org_ids)))
+        # Phase 1Q-R: staff AI calls leave settled budget reservations.
+        await db.execute(
+            delete(AIUsageReservation).where(AIUsageReservation.organization_id.in_(org_ids))
+        )
         await db.execute(
             delete(OrganizationMembership).where(
                 OrganizationMembership.organization_id.in_(org_ids)

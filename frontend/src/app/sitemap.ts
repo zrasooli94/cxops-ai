@@ -23,23 +23,20 @@ function baseUrl(): string {
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const origin = baseUrl();
-  return [
-    {
-      url: `${origin}/`,
-      changeFrequency: "weekly",
-      priority: 1,
-    },
-    {
-      url: `${origin}/platform`,
-      changeFrequency: "weekly",
-      priority: 0.95,
-    },
-    {
-      url: `${origin}/platform/evaluating-ai-support-platforms`,
-      changeFrequency: "monthly",
-      priority: 0.9,
-    },
-    // /login and all (control-center) routes are intentionally excluded from sitemap
-    // They are protected/auth pages that should not be indexed
+  const pages: [string, number, "weekly" | "monthly"][] = [
+    ["/", 1, "weekly"],
+    ["/features", 0.95, "weekly"],
+    ["/how-it-works", 0.9, "monthly"],
+    ["/solutions", 0.9, "monthly"],
+    ["/early-access", 0.9, "monthly"],
+    ["/faq", 0.8, "monthly"],
+    ["/platform/evaluating-ai-support-platforms", 0.7, "monthly"],
   ];
+  // /login, /invite, /operator and all (control-center) routes are excluded:
+  // they are authenticated pages that should not be indexed.
+  return pages.map(([path, priority, changeFrequency]) => ({
+    url: `${origin}${path}`,
+    changeFrequency,
+    priority,
+  }));
 }

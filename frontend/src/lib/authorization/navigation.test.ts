@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { CAPABILITIES } from "./capabilities.ts";
 import { createAuthorizationView } from "./helpers.ts";
 import {
+  BUSINESS_NAVIGATION,
   type ControlCenterRoute,
   DASHBOARD_NAVIGATION,
   filterNavigationByCapabilities,
@@ -307,6 +308,10 @@ describe("control-center route requirements", () => {
     ["/simulations", CAPABILITIES.TRANSFORMATION_SIMULATION_READ],
     ["/automotive-pilot", CAPABILITIES.TICKET_READ],
     ["/experiments", CAPABILITIES.TRANSFORMATION_EXPERIMENT_READ],
+    ["/workspace", null],
+    ["/setup", CAPABILITIES.ORGANIZATION_READ],
+    ["/team", CAPABILITIES.MEMBER_READ],
+    ["/settings/public-chat", CAPABILITIES.INTEGRATION_MANAGE],
   ];
 
   for (const [route, requirement] of expected) {
@@ -319,6 +324,23 @@ describe("control-center route requirements", () => {
     const known = new Set<string>(Object.values(CAPABILITIES));
     for (const requirement of Object.values(ROUTE_REQUIREMENTS)) {
       assert.ok(requirement === null || known.has(requirement));
+    }
+  });
+
+  it("business navigation follows capabilities (Phase 1Q)", () => {
+    const hrefs = (caps: string[]) => {
+      const view = createAuthorizationView({ organization_id: 1, role: "x", capabilities: caps });
+      return filterNavigationByCapabilities(BUSINESS_NAVIGATION, view.can).map((i) => i.href);
+    };
+    assert.deepEqual(hrefs([]), ["/workspace"]);
+    assert.deepEqual(hrefs([CAPABILITIES.ORGANIZATION_READ, CAPABILITIES.MEMBER_READ]), [
+      "/workspace",
+      "/setup",
+      "/team",
+    ]);
+    assert.ok(hrefs([CAPABILITIES.INTEGRATION_MANAGE]).includes("/settings/public-chat"));
+    for (const item of BUSINESS_NAVIGATION) {
+      assert.equal(item.requiredCapability, ROUTE_REQUIREMENTS[item.href]);
     }
   });
 

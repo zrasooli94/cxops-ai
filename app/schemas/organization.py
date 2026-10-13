@@ -15,5 +15,8 @@ class OrganizationRead(BaseModel):
     industry: str | None
     external_id: str | None
     created_at: datetime
+    # Phase 1Q: commercial lifecycle (onboarding, pending_review, active,
+    # suspended). Pre-1Q clients ignore it.
+    lifecycle_status: str = "active"
 
     model_config = ConfigDict(from_attributes=True)

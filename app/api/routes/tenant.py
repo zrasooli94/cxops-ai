@@ -100,4 +100,5 @@ async def get_my_authorization(
         organization_id=authz.organization_id,
         role=authz.role.value,
         capabilities=sorted(c.value for c in authz.capabilities),
+        organization_status=authz.organization_status,
     )

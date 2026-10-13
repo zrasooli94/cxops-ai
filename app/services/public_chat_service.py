@@ -52,6 +52,7 @@ from app.models.ai_request_log import AIRequestLog
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.integration_job import IntegrationJob
+from app.models.organization import LIFECYCLE_ACTIVE, Organization
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
 from app.models.ticket import Ticket
 from app.repositories.agent_run_repository import AgentRunRepository
@@ -306,9 +307,27 @@ class PublicChatService:
             raise PublicChatConfigurationNotFoundError(
                 "The widget configuration was not found."
             )
+        await PublicChatService._require_live(db, configuration)
+        return configuration
+
+    @staticmethod
+    async def _require_live(
+        db: AsyncSession,
+        configuration: PublicChatConfiguration,
+    ) -> None:
+        """The widget serves visitors only while it is switched on AND its
+        organization is approved (Phase 1Q lifecycle ``active``). Both checks
+        run on every session create and every message, so disabling the widget
+        or suspending the tenant takes effect immediately for open sessions."""
         if not configuration.enabled:
             raise PublicChatWidgetDisabledError("The widget is disabled.")
-        return configuration
+        status = await db.scalar(
+            select(Organization.lifecycle_status).where(
+                Organization.id == configuration.organization_id
+            )
+        )
+        if status != LIFECYCLE_ACTIVE:
+            raise PublicChatWidgetDisabledError("The widget is disabled.")
 
     @staticmethod
     def validate_embedding_origin(
@@ -749,6 +768,7 @@ class PublicChatService:
             raise PublicChatConfigurationNotFoundError(
                 "The widget configuration was not found."
             )
+        await cls._require_live(db, configuration)
         cls.validate_embedding_origin(configuration, embedding_origin)
 
         if len(text) > configuration.max_message_length:

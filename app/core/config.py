@@ -220,6 +220,81 @@ class Settings(BaseSettings):
     # for its duration; bounding them keeps the pool from deadlocking.
     agent_analysis_max_concurrency: int = 8
 
+    # Phase 1Q: commercial onboarding.
+    #
+    # Public early-access / demo-request submissions. Default OFF: releasing
+    # lead capture in production is a separate owner approval. While off, the
+    # public endpoint answers 503 and stores nothing.
+    public_lead_capture_enabled: bool = False
+    # Abuse ceilings for lead submissions. The platform-wide cap is the robust
+    # bound (it does not depend on a client IP the API cannot verify); the
+    # per-email cap stops one address from flooding the review queue.
+    lead_submissions_per_hour_platform: int = 30
+    lead_submissions_per_day_per_email: int = 3
+    # Team invitations: single-use, hashed at rest, and short-lived.
+    team_invitation_ttl_hours: int = 72
+    # Knowledge ingestion calls the paid embedding API. A tenant that has not
+    # been approved (lifecycle_status != active) may upload knowledge during
+    # setup only when this is on. Default OFF: approval gates every AI spend.
+    onboarding_knowledge_setup_enabled: bool = False
+    # Phase 1Q-R: evidence that the person accepting an invitation owns the
+    # invited, verified email address. "disabled" (default) refuses every
+    # acceptance; "nhost_userinfo" asks Nhost Auth's /user endpoint with the
+    # caller's own token; "jwt_claims" requires signed email + email_verified
+    # claims. See app/services/identity_verification.py.
+    invitation_identity_mode: str = "disabled"
+    # Nhost Auth base URL, e.g. https://<subdomain>.auth.<region>.nhost.run/v1
+    nhost_auth_url: str = ""
+    invitation_identity_timeout_seconds: float = 5.0
+    # Phase 1Q-R: how many not-yet-approved organizations one identity may
+    # create through self-service POST /organizations (abuse / name squatting).
+    self_service_organization_limit: int = 2
+    # Phase 1Q-R: estimated cost reserved before a staff-triggered AI call
+    # and held until it finishes (its logged cost then replaces the estimate).
+    # Evaluation runs make many model calls, so they reserve more.
+    staff_ai_reserved_cost_usd: float = 0.02
+    staff_ai_evaluation_reserved_cost_usd: float = 0.5
+    # Optional public address shown to prospects while lead capture is off.
+    # Empty = no address shown (the owner has not provided one).
+    public_contact_email: str = ""
+
+    @field_validator("invitation_identity_mode", mode="after")
+    @classmethod
+    def _identity_mode_known(cls, value: str) -> str:
+        if value not in {"disabled", "nhost_userinfo", "jwt_claims"}:
+            raise ValueError(
+                "invitation_identity_mode must be disabled, nhost_userinfo or jwt_claims"
+            )
+        return value
+
+    @field_validator("nhost_auth_url", mode="after")
+    @classmethod
+    def _nhost_auth_url_https(cls, value: str) -> str:
+        if not value:
+            return value
+        parts = urlsplit(value)
+        if parts.username or parts.password or parts.query or parts.fragment:
+            raise ValueError("nhost_auth_url must not contain credentials, a query or a fragment")
+        if not parts.hostname:
+            raise ValueError("nhost_auth_url must include a host")
+        if parts.scheme != "https" and not (
+            parts.scheme == "http" and parts.hostname in {"localhost", "127.0.0.1"}
+        ):
+            raise ValueError("nhost_auth_url must use https")
+        return value.rstrip("/")
+
+    @field_validator(
+        "lead_submissions_per_hour_platform",
+        "lead_submissions_per_day_per_email",
+        "team_invitation_ttl_hours",
+        mode="after",
+    )
+    @classmethod
+    def _commercial_limits_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Lead and invitation limits must be positive")
+        return value
+
     @field_validator("public_chat_session_token_entropy_bytes", mode="after")
     @classmethod
     def _public_chat_token_entropy_bounded(cls, value: int) -> int:
@@ -259,6 +334,8 @@ class Settings(BaseSettings):
     @field_validator(
         "public_chat_default_monthly_ai_budget_usd",
         "public_chat_turn_reserved_cost_usd",
+        "staff_ai_reserved_cost_usd",
+        "staff_ai_evaluation_reserved_cost_usd",
         "platform_monthly_ai_budget_usd",
         mode="after",
     )

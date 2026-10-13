@@ -11,7 +11,10 @@ from app.repositories.organization_membership_repository import (
 )
 from app.repositories.organization_repository import OrganizationRepository
 from app.schemas.organization import OrganizationCreate, OrganizationRead
-from app.services.organization_service import OrganizationService
+from app.services.organization_service import (
+    OrganizationService,
+    SelfServiceOrganizationLimitError,
+)
 
 router = APIRouter(
     prefix="/organizations",
@@ -41,7 +44,22 @@ async def create_organization(
 ):
     # Atomic creation: organization + creator membership in one transaction.
     # This is tenant bootstrap, NOT RBAC (no roles assigned).
-    return await OrganizationService.create_with_membership(db, data, principal.subject)
+    if data.external_id is not None:
+        # Phase 1Q-R: external_id is the operator manifest's tenant slug. A
+        # client-chosen value could squat a customer's slug before the
+        # operator onboards it.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="external_id is assigned by CXOps and cannot be set here",
+        )
+    try:
+        return await OrganizationService.create_with_membership(
+            db, data, principal.subject, email=principal.email
+        )
+    except SelfServiceOrganizationLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+        ) from exc
 
 
 @router.get(

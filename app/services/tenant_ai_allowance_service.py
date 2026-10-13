@@ -44,6 +44,12 @@ AI_BUDGET_LOCK_KEY = 0x4149_4255_4447_4554  # "AIBUDGET"
 # fixed estimate per settled turn keeps them inside the budget arithmetic.
 UNMETERED_COST_PER_TURN_USD = 0.0001
 
+# Phase 1Q-R: staff-triggered AI calls (agent analysis, knowledge, evaluations)
+# reserve through the same ledger with this key prefix. They count toward
+# money (tenant budget + platform ceiling) but never toward the public-chat
+# monthly *turn* limit.
+STAFF_KEY_PREFIX = "staff-ai:"
+
 STATUS_RESERVED = "reserved"
 STATUS_SETTLED = "settled"
 
@@ -52,7 +58,7 @@ STATUS_SETTLED = "settled"
 class AllowanceDecision:
     allowed: bool
     # "within_allowance" | "already_reserved" | "turn_limit_reached"
-    # | "budget_reached" | "platform_budget_reached"
+    # | "budget_reached" | "platform_budget_reached" | "organization_not_active"
     reason: str
     turns_used: int
     turn_limit: int
@@ -116,8 +122,10 @@ class TenantAIAllowanceService:
         log_query = select(
             func.coalesce(func.sum(AIRequestLog.estimated_cost_usd), 0.0)
         ).where(AIRequestLog.created_at >= period_start)
+        is_staff = AIUsageReservation.reservation_key.like(f"{STAFF_KEY_PREFIX}%")
         reservation_query = select(
-            func.count(),
+            # Public-chat turns only; staff reservations are not turns.
+            func.count().filter(~is_staff),
             func.count().filter(AIUsageReservation.status == STATUS_SETTLED),
             func.coalesce(
                 func.sum(AIUsageReservation.estimated_cost_usd).filter(
@@ -149,19 +157,52 @@ class TenantAIAllowanceService:
         configuration: PublicChatConfiguration | None,
         key: str,
         now: datetime | None = None,
+        estimate_usd: float | None = None,
+        count_as_turn: bool = True,
     ) -> AllowanceDecision:
         """Admit (and reserve) one AI turn, or refuse it. Commits.
 
         Must be called with no uncommitted work on ``db``: it commits to make
         the reservation visible to every other instance and release the lock.
+
+        ``count_as_turn=False`` (staff calls) skips the public-chat turn limit;
+        the tenant budget, platform ceiling and lifecycle checks still apply.
         """
         moment = now or datetime.now(UTC)
         period_start = month_start(moment)
         turn_limit, budget = limits_for(configuration)
-        estimate = settings.public_chat_turn_reserved_cost_usd
+        estimate = (
+            settings.public_chat_turn_reserved_cost_usd if estimate_usd is None else estimate_usd
+        )
 
         await db.execute(select(func.pg_advisory_xact_lock(AI_BUDGET_LOCK_KEY)))
         try:
+            # Phase 1Q: only an operator-approved (``active``) organization may
+            # spend AI allowance. Checked here - the one chokepoint before every
+            # public-chat model call - so a turn accepted just before a tenant
+            # was suspended still cannot reach the model.
+            from app.models.organization import LIFECYCLE_ACTIVE, Organization
+
+            organization_status = await db.scalar(
+                select(Organization.lifecycle_status).where(
+                    Organization.id == organization_id
+                )
+            )
+            if organization_status != LIFECYCLE_ACTIVE:
+                usage = await cls._usage(
+                    db, organization_id=organization_id, period_start=period_start, now=moment
+                )
+                await db.commit()
+                return AllowanceDecision(
+                    allowed=False,
+                    reason="organization_not_active",
+                    turns_used=usage.turns,
+                    turn_limit=turn_limit,
+                    cost_used_usd=usage.spent_usd,
+                    budget_usd=budget,
+                    period_start=period_start,
+                    outstanding_usd=usage.outstanding_usd,
+                )
             existing = (
                 await db.execute(
                     select(AIUsageReservation).where(
@@ -174,7 +215,7 @@ class TenantAIAllowanceService:
             )
             if existing is not None:
                 reason, allowed = "already_reserved", True
-            elif tenant.turns >= turn_limit:
+            elif count_as_turn and tenant.turns >= turn_limit:
                 reason, allowed = "turn_limit_reached", False
             elif tenant.spent_usd + tenant.outstanding_usd + estimate > budget:
                 reason, allowed = "budget_reached", False
@@ -262,6 +303,12 @@ class TenantAIAllowanceService:
             period_start=period_start,
             outstanding_usd=usage.outstanding_usd,
         )
+
+
+def staff_reservation_key(organization_id: int) -> str:
+    import uuid
+
+    return f"{STAFF_KEY_PREFIX}{organization_id}:{uuid.uuid4().hex}"
 
 
 class TenantUsageService:

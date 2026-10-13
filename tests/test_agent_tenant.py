@@ -50,6 +50,7 @@ from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.agent_run import AgentRun
 from app.models.ai_request_log import AIRequestLog
+from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.integration_job import IntegrationJob
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
@@ -344,6 +345,10 @@ async def two_orgs(db):
     if org_ids:
         # Telemetry/log rows reference organizations; delete before org teardown.
         await db.execute(delete(AIRequestLog).where(AIRequestLog.organization_id.in_(org_ids)))
+        # Phase 1Q-R: staff AI calls leave settled budget reservations.
+        await db.execute(
+            delete(AIUsageReservation).where(AIUsageReservation.organization_id.in_(org_ids))
+        )
         await db.execute(
             delete(OrganizationMembership).where(
                 OrganizationMembership.organization_id.in_(org_ids)

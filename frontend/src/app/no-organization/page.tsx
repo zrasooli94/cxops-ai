@@ -3,6 +3,8 @@ import Link from "next/link";
 import { Building2 } from "lucide-react";
 import { requireControlCenterAuth } from "@/lib/auth/control-center";
 
+import { PendingInvitationNotice } from "./pending-invitation";
+
 export const metadata: Metadata = {
   title: "No organization access | CXOps AI",
   robots: {
@@ -29,12 +31,20 @@ export default async function NoOrganizationPage() {
           Contact your administrator to request access.
         </p>
 
+        <PendingInvitationNotice />
+
         <div className="mt-8 space-y-3">
           <Link
             href="/select-organization"
             className="block w-full rounded-full bg-[#111827] px-5 py-3.5 text-sm font-medium text-white shadow-[0_12px_30px_rgba(17,24,39,0.15)] transition hover:-translate-y-0.5 hover:bg-gradient-to-r hover:from-[#765cff] hover:to-[#508cff]"
           >
             Check again
+          </Link>
+          <Link
+            href="/early-access"
+            className="block w-full rounded-full border border-slate-200 bg-white px-5 py-3.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            Request access for your business
           </Link>
           <form
             action="/login"

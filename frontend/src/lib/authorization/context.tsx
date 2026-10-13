@@ -23,6 +23,8 @@ import type { AuthorizationInfo } from "@/lib/authorization/types";
 export interface AuthorizationValue {
   organizationId: number;
   role: string;
+  /** Commercial lifecycle: "active" once approved by CXOps. UX only. */
+  organizationStatus: string;
   capabilities: readonly string[];
   can: (capability: Capability) => boolean;
   canAny: (capabilities: readonly Capability[]) => boolean;

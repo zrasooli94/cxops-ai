@@ -580,6 +580,9 @@ async def test_business_integrations_are_listed_with_enabled_state(db, client):
     assert response.status_code == 200, response.text
     providers = response.json()["integrations"]
     assert any(p["provider"] == "a1_cash_for_cars" for p in providers)
+    # Phase 1Q regression: one row per provider, not one per tool.
+    names = [p["provider"] for p in providers]
+    assert len(names) == len(set(names)), names
     for entry in providers:
         assert "config" not in entry or not any(
             "secret" in key for key in entry["config"]

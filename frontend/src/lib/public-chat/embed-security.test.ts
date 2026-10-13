@@ -219,7 +219,8 @@ describe("canonical origin for generated metadata", () => {
   });
 
   it("keeps the embed route out of the index", () => {
-    assert.match(robotsSource, /disallow: \["\/login", "\/chat\/embed"\]/);
+    // Phase 1Q appends /invite and /operator; the embed must stay disallowed.
+    assert.match(robotsSource, /disallow: \["\/login", "\/chat\/embed"[,\]]/);
     assert.match(embedPageSource, /index: false/);
     assert.match(embedPageSource, /follow: false/);
   });

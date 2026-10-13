@@ -88,6 +88,23 @@ class UnsupportedProviderError(TenantConfigError):
     pass
 
 
+class OrganizationNotApprovedError(TenantConfigError):
+    """Phase 1Q: going live needs an ``active`` (operator-approved) tenant."""
+
+
+async def _require_active_organization(db: AsyncSession, organization_id: int) -> None:
+    from app.models.organization import LIFECYCLE_ACTIVE, Organization
+
+    status = await db.scalar(
+        select(Organization.lifecycle_status).where(Organization.id == organization_id)
+    )
+    if status != LIFECYCLE_ACTIVE:
+        raise OrganizationNotApprovedError(
+            "This workspace has not been approved yet. The chatbot and business "
+            "integrations can be switched on after CXOps approves it."
+        )
+
+
 def _validate_origins(origins: list[str]) -> list[str]:
     """Re-validate the exact-origin allowlist at the service boundary.
 
@@ -249,6 +266,8 @@ class TenantConfigService:
             raw = changes["enabled"]
             if not isinstance(raw, bool):
                 raise TenantConfigError("enabled must be true or false")
+            if raw and not config.enabled:
+                await _require_active_organization(db, organization_id)
             if config.enabled != raw:
                 config.enabled = raw
                 changed.append("enabled")
@@ -328,9 +347,13 @@ class TenantConfigService:
         rows = {row.provider: row for row in result.scalars().all()}
 
         payload: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for definition in business_tool_registry.definitions():
-            if definition.provider is None:
+            # One entry per provider, not per tool: a provider with several
+            # tools used to be listed once per tool (duplicate UI rows).
+            if definition.provider is None or definition.provider in seen:
                 continue
+            seen.add(definition.provider)
             row = rows.get(definition.provider)
             payload.append(
                 {
@@ -364,6 +387,9 @@ class TenantConfigService:
                 f"unknown provider {provider!r}; known providers: "
                 + ", ".join(sorted(known_providers))
             )
+
+        if enabled:
+            await _require_active_organization(db, organization_id)
 
         # set_provider_enabled only flushes; the commit is this service's job so
         # the audit event and the row move together.

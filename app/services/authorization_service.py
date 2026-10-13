@@ -6,8 +6,10 @@ source of truth for the role; no request payload, header, cookie, or JWT claim
 can influence the result.
 """
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.principal import AuthenticatedPrincipal
 from app.core.rbac import (
@@ -15,6 +17,7 @@ from app.core.rbac import (
     OrganizationRole,
 )
 from app.core.tenant import TenantContext
+from app.models.organization import Organization
 from app.repositories.organization_membership_repository import (
     OrganizationMembershipRepository,
 )
@@ -88,15 +91,28 @@ async def resolve_authorization_context(
             f"Invalid organization role: {membership.role}"
         ) from exc
 
+    # Phase 1Q: the organization's lifecycle narrows the role's capabilities
+    # until a platform operator approves it. A missing row cannot happen with
+    # the FK in place; treat it as not approved (fail closed).
+    organization_status = await db.scalar(
+        select(Organization.lifecycle_status).where(
+            Organization.id == tenant.organization_id
+        )
+    )
+    status_value = str(organization_status) if organization_status else "onboarding"
+
     log.info(
         "authorization_resolved",
         subject=principal.subject,
         organization_id=tenant.organization_id,
         role=role.value,
+        organization_status=status_value,
     )
 
     return AuthorizationContext(
         organization_id=tenant.organization_id,
         subject=principal.subject,
         role=role,
+        organization_status=status_value,
+        knowledge_setup_enabled=get_settings().onboarding_knowledge_setup_enabled,
     )

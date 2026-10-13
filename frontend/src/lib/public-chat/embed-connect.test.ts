@@ -218,8 +218,15 @@ describe("config prefetch before any click", () => {
       prefetchEnd,
     );
     assert.ok(
-      prefetchBlock.includes(".catch(() => {"),
-      "the prefetch must swallow failures",
+      prefetchBlock.includes(".catch((error: unknown) => {"),
+      "the prefetch must catch failures",
+    );
+    // Phase 1Q-R: only a definite refusal (403/404: widget off, tenant not
+    // live) hides the launcher; transient failures keep the default launcher.
+    assert.ok(
+      prefetchBlock.includes("isWidgetRefusal(error)") &&
+        prefetchBlock.includes("setUnavailable(true)"),
+      "only a refusal may mark the widget unavailable",
     );
     assert.ok(
       !prefetchBlock.includes("setErrorMessage"),
@@ -495,3 +502,27 @@ describe("end-conversation failure safety (Phase 1P.6.1 correction)", () => {
     }
   });
 });
+
+describe("refused widget (Phase 1Q-R)", () => {
+  it("treats only 403/404 as a refusal", () => {
+    const helper = embedSource.slice(
+      embedSource.indexOf("function isWidgetRefusal"),
+      embedSource.indexOf("function clientMessageId"),
+    );
+    assert.ok(helper.includes("error.status === 403 || error.status === 404"));
+  });
+
+  it("does not resume a stored session when config is refused", () => {
+    const openStart = embedSource.indexOf("const open = useCallback");
+    const block = embedSource.slice(openStart, openStart + 4000);
+    assert.ok(block.includes("isWidgetRefusal(configResult.reason)"));
+    assert.ok(block.includes("discardSession();\n          throw configResult.reason;"));
+  });
+
+  it("renders no launcher once the widget is unavailable", () => {
+    assert.ok(
+      embedSource.includes("if (unavailable && !panelOpen) {\n    // Nothing to offer"),
+    );
+  });
+});
+

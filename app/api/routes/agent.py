@@ -10,7 +10,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentTenant, RequireCapability
+from app.api.deps import AIBudget, CurrentTenant, RequireCapability
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
 from app.repositories.agent_run_repository import (
@@ -96,6 +96,7 @@ def serialize_run(
 
 @router.post(
     "/tickets/{ticket_id}/analyze",
+    dependencies=[AIBudget],
     response_model=AgentAnalysisResponse,
 )
 async def analyze_ticket(

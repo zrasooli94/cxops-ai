@@ -19,14 +19,14 @@ const siteUrl =
   "https" + "://" + "cxops-ai.vercel.app";
 
 const siteDescription =
-  "CXOps AI is a demonstration customer experience operations platform for support-ticket workflows, RAG-assisted knowledge retrieval, AI agents, human approvals, execution audit trails, and operational observability.";
+  "CXOps AI is an AI website assistant for businesses: it answers visitors from your own knowledge, hands conversations to your team when a person is needed, and keeps AI spending within limits you set.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
 
   title: {
     default:
-      "CXOps AI | Customer Experience Operations & RAG Platform",
+      "CXOps AI | AI website assistant with human handoff",
     template:
       "%s | CXOps AI",
   },
@@ -46,7 +46,7 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "CXOps AI",
     title:
-      "CXOps AI | Customer Experience Operations & RAG Platform",
+      "CXOps AI | AI website assistant with human handoff",
     description:
       siteDescription,
   },
@@ -54,7 +54,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary",
     title:
-      "CXOps AI | Customer Experience Operations & RAG Platform",
+      "CXOps AI | AI website assistant with human handoff",
     description:
       siteDescription,
   },
@@ -87,12 +87,12 @@ const structuredData = {
     siteDescription,
 
   featureList: [
-    "Support ticket workflows",
-    "RAG-assisted knowledge retrieval",
-    "AI agent workflows",
-    "Human approval controls",
-    "Execution audit trails",
-    "Operational observability",
+    "Website chat assistant",
+    "Answers grounded in business knowledge",
+    "Human handoff queue",
+    "Team workspaces and roles",
+    "Exact-domain widget allowlists",
+    "Monthly AI usage limits",
   ],
 };
 

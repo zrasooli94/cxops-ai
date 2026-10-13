@@ -46,6 +46,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.ai_request_log import AIRequestLog
+from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
@@ -245,6 +246,10 @@ async def two_orgs(db):
             )
         )
     if org_ids:
+        # Phase 1Q-R: staff AI calls leave settled budget reservations.
+        await db.execute(
+            delete(AIUsageReservation).where(AIUsageReservation.organization_id.in_(org_ids))
+        )
         await db.execute(
             delete(OrganizationMembership).where(
                 OrganizationMembership.organization_id.in_(org_ids)

@@ -138,10 +138,10 @@ export default function EvaluationGuidePage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
 
-      <main className="min-h-screen bg-[#f7f8fc] text-slate-950">
+      <div className="bg-[#f7f8fc] text-slate-950">
         <div className="mx-auto max-w-6xl px-6 py-16 lg:px-10 lg:py-24">
-          <Link href="/platform" className="text-sm font-medium text-violet-600">
-            ← CXOps AI platform
+          <Link href="/features" className="text-sm font-medium text-violet-600">
+            ← CXOps AI features
           </Link>
 
           <header className="mt-10 max-w-4xl">
@@ -210,12 +210,13 @@ export default function EvaluationGuidePage() {
 
           <section className="mt-20 rounded-3xl border border-slate-200 bg-white p-7 lg:p-10">
             <h2 className="text-2xl font-semibold tracking-[-0.025em]">
-              How the CXOps AI demonstration approaches execution control
+              How CXOps AI approaches execution control
             </h2>
             <p className="mt-5 max-w-4xl leading-7 text-slate-600">
-              CXOps AI is a demonstration and testing environment, not a claim
-              of production equivalence with the vendors above. Its purpose is
-              to make a controlled support workflow inspectable end to end.
+              CXOps AI is an early-access product, and this section describes
+              its own controls - not a claim of equivalence with the vendors
+              above. The aim is a support workflow whose every step can be
+              inspected.
             </p>
             <ul className="mt-7 grid gap-3 md:grid-cols-2">
               {cxopsControls.map((item) => (
@@ -225,14 +226,11 @@ export default function EvaluationGuidePage() {
               ))}
             </ul>
             <div className="mt-8 flex flex-wrap gap-3">
-              <Link href="/approvals" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-medium text-white">
-                Inspect human approvals
+              <Link href="/features#controls" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-medium text-white">
+                See the security controls
               </Link>
-              <Link href="/runs" className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-medium">
-                Inspect the audit trail
-              </Link>
-              <Link href="/observability" className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-medium">
-                Inspect observability
+              <Link href="/early-access" className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-medium">
+                Request a demo
               </Link>
             </div>
           </section>
@@ -258,7 +256,7 @@ export default function EvaluationGuidePage() {
             </p>
           </section>
         </div>
-      </main>
+      </div>
     </>
   );
 }

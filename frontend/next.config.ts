@@ -1,5 +1,10 @@
 import type { NextConfig } from "next";
 
+import {
+  mergeFrameAncestors,
+  parseFrameAncestors,
+} from "./src/lib/widget/frame-ancestors";
+
 /**
  * Origins permitted to embed the public chat widget in an iframe.
  *
@@ -16,13 +21,40 @@ import type { NextConfig } from "next";
  * would let an unrelated tenant frame this widget and read its key out of the
  * URL. Add a host here only when a tenant's real domain is known.
  */
-const WIDGET_FRAME_ANCESTORS = [
+const BASE_WIDGET_FRAME_ANCESTORS = [
   "'self'",
   "https://a1cashforcars.com.au",
   "https://www.a1cashforcars.com.au",
   "https://rispu.com",
   "https://www.rispu.com",
 ];
+
+/**
+ * Phase 1Q: approved tenants' domains without a code change.
+ *
+ * CXOPS_WIDGET_FRAME_ANCESTORS lists additional exact https origins (comma or
+ * space separated). It is read when the config is evaluated - i.e. at build
+ * time for the static headers below - so adding a domain is an environment
+ * change plus a redeploy, which is the review point for a new customer going
+ * live. Wildcards, http, paths and malformed values are rejected and named in
+ * the build log; they never reach the header.
+ */
+const extraFrameAncestors = parseFrameAncestors(process.env.CXOPS_WIDGET_FRAME_ANCESTORS, {
+  // A local test website (http://localhost:PORT) may frame the widget under
+  // `next dev` only; `next build` runs with NODE_ENV=production and rejects it.
+  allowLoopbackHttp: process.env.NODE_ENV !== "production",
+});
+if (extraFrameAncestors.rejected.length > 0) {
+  console.warn(
+    "CXOPS_WIDGET_FRAME_ANCESTORS: ignored invalid entries (exact https origins only): " +
+      extraFrameAncestors.rejected.join(", "),
+  );
+}
+
+const WIDGET_FRAME_ANCESTORS = mergeFrameAncestors(
+  BASE_WIDGET_FRAME_ANCESTORS,
+  extraFrameAncestors.origins,
+);
 
 /**
  * Internal API location, read by the server-side BFF and Control Center
