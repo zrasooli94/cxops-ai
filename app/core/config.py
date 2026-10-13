@@ -249,6 +249,11 @@ class Settings(BaseSettings):
     # Phase 1Q-R: how many not-yet-approved organizations one identity may
     # create through self-service POST /organizations (abuse / name squatting).
     self_service_organization_limit: int = 2
+    # Phase 1Q-R: estimated cost reserved before a staff-triggered AI call
+    # and held until it finishes (its logged cost then replaces the estimate).
+    # Evaluation runs make many model calls, so they reserve more.
+    staff_ai_reserved_cost_usd: float = 0.02
+    staff_ai_evaluation_reserved_cost_usd: float = 0.5
     # Optional public address shown to prospects while lead capture is off.
     # Empty = no address shown (the owner has not provided one).
     public_contact_email: str = ""
@@ -322,6 +327,8 @@ class Settings(BaseSettings):
     @field_validator(
         "public_chat_default_monthly_ai_budget_usd",
         "public_chat_turn_reserved_cost_usd",
+        "staff_ai_reserved_cost_usd",
+        "staff_ai_evaluation_reserved_cost_usd",
         "platform_monthly_ai_budget_usd",
         mode="after",
     )

@@ -44,6 +44,12 @@ AI_BUDGET_LOCK_KEY = 0x4149_4255_4447_4554  # "AIBUDGET"
 # fixed estimate per settled turn keeps them inside the budget arithmetic.
 UNMETERED_COST_PER_TURN_USD = 0.0001
 
+# Phase 1Q-R: staff-triggered AI calls (agent analysis, knowledge, evaluations)
+# reserve through the same ledger with this key prefix. They count toward
+# money (tenant budget + platform ceiling) but never toward the public-chat
+# monthly *turn* limit.
+STAFF_KEY_PREFIX = "staff-ai:"
+
 STATUS_RESERVED = "reserved"
 STATUS_SETTLED = "settled"
 
@@ -116,8 +122,10 @@ class TenantAIAllowanceService:
         log_query = select(
             func.coalesce(func.sum(AIRequestLog.estimated_cost_usd), 0.0)
         ).where(AIRequestLog.created_at >= period_start)
+        is_staff = AIUsageReservation.reservation_key.like(f"{STAFF_KEY_PREFIX}%")
         reservation_query = select(
-            func.count(),
+            # Public-chat turns only; staff reservations are not turns.
+            func.count().filter(~is_staff),
             func.count().filter(AIUsageReservation.status == STATUS_SETTLED),
             func.coalesce(
                 func.sum(AIUsageReservation.estimated_cost_usd).filter(
@@ -149,16 +157,23 @@ class TenantAIAllowanceService:
         configuration: PublicChatConfiguration | None,
         key: str,
         now: datetime | None = None,
+        estimate_usd: float | None = None,
+        count_as_turn: bool = True,
     ) -> AllowanceDecision:
         """Admit (and reserve) one AI turn, or refuse it. Commits.
 
         Must be called with no uncommitted work on ``db``: it commits to make
         the reservation visible to every other instance and release the lock.
+
+        ``count_as_turn=False`` (staff calls) skips the public-chat turn limit;
+        the tenant budget, platform ceiling and lifecycle checks still apply.
         """
         moment = now or datetime.now(UTC)
         period_start = month_start(moment)
         turn_limit, budget = limits_for(configuration)
-        estimate = settings.public_chat_turn_reserved_cost_usd
+        estimate = (
+            settings.public_chat_turn_reserved_cost_usd if estimate_usd is None else estimate_usd
+        )
 
         await db.execute(select(func.pg_advisory_xact_lock(AI_BUDGET_LOCK_KEY)))
         try:
@@ -200,7 +215,7 @@ class TenantAIAllowanceService:
             )
             if existing is not None:
                 reason, allowed = "already_reserved", True
-            elif tenant.turns >= turn_limit:
+            elif count_as_turn and tenant.turns >= turn_limit:
                 reason, allowed = "turn_limit_reached", False
             elif tenant.spent_usd + tenant.outstanding_usd + estimate > budget:
                 reason, allowed = "budget_reached", False
@@ -290,40 +305,10 @@ class TenantAIAllowanceService:
         )
 
 
-async def staff_ai_spend_refusal(
-    db: AsyncSession, *, organization_id: int, now: datetime | None = None
-) -> str | None:
-    """Phase 1Q-R: gate for staff-triggered AI calls (agent analysis,
-    knowledge answer/search/ingestion, evaluations).
+def staff_reservation_key(organization_id: int) -> str:
+    import uuid
 
-    Public-chat turns reserve against the allowance; staff calls did not, so
-    an active tenant's staff could spend without limit. Their cost is logged
-    to the same tenant ledger, so the same month-to-date figures apply: the
-    call is refused once the tenant's estimated budget or the platform
-    ceiling is used up. Returns a refusal reason, or None when allowed.
-    """
-    moment = now or datetime.now(UTC)
-    period_start = month_start(moment)
-    configuration = (
-        await db.execute(
-            select(PublicChatConfiguration)
-            .where(PublicChatConfiguration.organization_id == organization_id)
-            .order_by(PublicChatConfiguration.id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    _turns, budget = limits_for(configuration)
-    tenant = await TenantAIAllowanceService._usage(
-        db, organization_id=organization_id, period_start=period_start, now=moment
-    )
-    if tenant.spent_usd + tenant.outstanding_usd >= budget:
-        return "budget_reached"
-    platform = await TenantAIAllowanceService._usage(
-        db, organization_id=None, period_start=period_start, now=moment
-    )
-    if platform.spent_usd + platform.outstanding_usd >= settings.platform_monthly_ai_budget_usd:
-        return "platform_budget_reached"
-    return None
+    return f"{STAFF_KEY_PREFIX}{organization_id}:{uuid.uuid4().hex}"
 
 
 class TenantUsageService:
