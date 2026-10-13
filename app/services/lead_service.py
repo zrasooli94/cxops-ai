@@ -57,6 +57,11 @@ from app.services.team_service import TeamService
 log = get_logger(__name__)
 
 CONSENT_VERSION = "2026-10-early-access-v1"
+# Leads an operator records from another channel (call, email) carry this
+# marker instead of a website consent version: the prospect's agreement to be
+# contacted was obtained outside the form and is the operator's to document.
+OPERATOR_ENTERED_CONSENT = "operator-entered"
+
 # The exact wording a visitor agrees to. The website renders this text from
 # the API, so the stored ``consent_version`` always identifies what was shown.
 # Changing the wording requires a new CONSENT_VERSION.
@@ -338,6 +343,65 @@ class LeadService:
             to_status=lead.status,
             notes_changed=notes_provided,
         )
+        return _lead_payload(lead)
+
+    @classmethod
+    async def create_by_operator(
+        cls,
+        db: AsyncSession,
+        *,
+        operator_subject: str,
+        company_name: str,
+        contact_name: str,
+        email: str,
+        website: str | None,
+        industry: str,
+        inquiry: str | None,
+    ) -> dict[str, Any]:
+        """Record a request taken through another channel (call, email).
+
+        Independent of ``public_lead_capture_enabled``: this is how the first
+        customers are onboarded while public capture stays off. The consent
+        basis is recorded as operator-entered, so it is never confused with
+        the website form's consent wording.
+        """
+        normalized = normalize_email(email)
+        existing = (
+            await db.execute(
+                select(SalesLead).where(
+                    SalesLead.email_normalized == normalized,
+                    SalesLead.status.in_(LEAD_OPEN_STATUSES),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise LeadConflictError(
+                f"An open request already exists for this address (lead #{existing.id})."
+            )
+        now = datetime.now(UTC)
+        lead = SalesLead(
+            company_name=company_name.strip(),
+            contact_name=contact_name.strip(),
+            email=email.strip(),
+            email_normalized=normalized,
+            website=website,
+            industry=industry,
+            inquiry=(inquiry or "").strip() or None,
+            consent_version=OPERATOR_ENTERED_CONSENT,
+            consented_at=now,
+            status=LEAD_STATUS_REVIEWING,
+            status_changed_at=now,
+            status_changed_by=operator_subject,
+            last_submitted_at=now,
+        )
+        db.add(lead)
+        try:
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise LeadConflictError("An open request already exists for this address.") from exc
+        await db.refresh(lead)
+        log.info("lead_created_by_operator", lead_id=lead.id, operator_subject=operator_subject)
         return _lead_payload(lead)
 
     @staticmethod

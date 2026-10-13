@@ -75,6 +75,29 @@ class LeadSubmission(BaseModel):
             raise ValueError(str(exc)) from exc
 
 
+class OperatorLeadCreate(BaseModel):
+    """A request recorded by an operator (no website consent checkbox)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company_name: str = Field(min_length=1, max_length=200)
+    contact_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr = Field(max_length=320)
+    website: str | None = Field(default=None, max_length=255)
+    industry: LeadIndustry
+    inquiry: str | None = Field(default=None, max_length=2000)
+
+    _strip_names = field_validator("company_name", "contact_name")(_strip_required)
+
+    @field_validator("website")
+    @classmethod
+    def _website(cls, value: str | None) -> str | None:
+        try:
+            return normalize_website(value)
+        except CommercialValidationError as exc:
+            raise ValueError(str(exc)) from exc
+
+
 class LeadUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

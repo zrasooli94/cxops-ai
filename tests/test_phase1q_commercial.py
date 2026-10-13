@@ -1467,3 +1467,25 @@ async def test_retention_purge_is_dry_run_by_default(db):
     assert applied["declined"] >= 1
     db.expunge_all()
     assert await db.get(SalesLead, lead_id) is None
+
+
+@pytest.mark.asyncio
+async def test_operator_can_record_a_lead_while_public_capture_is_off(db, client):
+    operator = await _operator(db)
+    org, owner, _ = await _org(db)
+    body = {
+        "company_name": "Phone Enquiry Co",
+        "contact_name": "Pat",
+        "email": f"pat-{uuid.uuid4().hex[:6]}@{LEAD_DOMAIN}",
+        "industry": "local_services",
+    }
+    async with client:
+        assert (await client.post("/public/leads", json={**_lead_payload()})).status_code == 503
+        denied = await client.post("/platform-admin/leads", json=body, headers=_auth(owner, org.id))
+        assert denied.status_code == 403
+        created = await client.post("/platform-admin/leads", json=body, headers=_auth(operator))
+        assert created.status_code == 201, created.text
+        assert created.json()["status"] == "reviewing"
+        assert created.json()["consent_version"] == "operator-entered"
+        duplicate = await client.post("/platform-admin/leads", json=body, headers=_auth(operator))
+        assert duplicate.status_code == 409

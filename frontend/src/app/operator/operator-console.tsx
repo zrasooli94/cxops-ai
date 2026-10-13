@@ -200,6 +200,13 @@ function LeadsPanel() {
   const lead = data?.leads.find((item) => item.id === selected) ?? null;
 
   return (
+    <div className="space-y-5">
+    <RecordLeadForm
+      onCreated={(id) => {
+        setFilter("reviewing");
+        setSelected(id);
+      }}
+    />
     <div className="grid gap-5 lg:grid-cols-[1fr_1.1fr]">
       <Card title="Early-access requests">
         <div className="mb-4 flex flex-wrap gap-1.5">
@@ -263,6 +270,110 @@ function LeadsPanel() {
         </Card>
       )}
     </div>
+    </div>
+  );
+}
+
+function RecordLeadForm({ onCreated }: { onCreated: (id: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    company_name: "",
+    contact_name: "",
+    email: "",
+    website: "",
+    industry: "other",
+    inquiry: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (key: keyof typeof form, value: string) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  if (!open) {
+    return (
+      <button className={buttonSecondary} onClick={() => setOpen(true)}>
+        Record a request from a call or email
+      </button>
+    );
+  }
+  return (
+    <Card title="Record a request">
+      <p className="mb-4 text-xs leading-5 text-slate-500">
+        For prospects who contacted CXOps directly. Only record people who agreed to be
+        contacted about their request; the record is marked as operator-entered.
+      </p>
+      <form
+        className="grid gap-3 sm:grid-cols-2"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            const created = await requestJson<{ id: number }>("/platform-admin/leads", {
+              method: "POST",
+              body: {
+                ...form,
+                website: form.website.trim() || null,
+                inquiry: form.inquiry.trim() || null,
+              },
+            });
+            setOpen(false);
+            onCreated(created.id);
+          } catch (exc) {
+            setError(errorText(exc));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {(
+          [
+            ["company_name", "Business name", "text"],
+            ["contact_name", "Contact name", "text"],
+            ["email", "Email", "email"],
+            ["website", "Website (optional)", "text"],
+          ] as const
+        ).map(([key, label, type]) => (
+          <label key={key} className="block text-xs font-medium text-slate-700">
+            {label}
+            <input
+              className={inputClass}
+              type={type}
+              required={key !== "website"}
+              value={form[key]}
+              onChange={(e) => set(key, e.target.value)}
+            />
+          </label>
+        ))}
+        <label className="block text-xs font-medium text-slate-700">
+          Type of business
+          <select className={inputClass} value={form.industry} onChange={(e) => set("industry", e.target.value)}>
+            {LEAD_INDUSTRIES.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-xs font-medium text-slate-700 sm:col-span-2">
+          Notes from the prospect (optional)
+          <textarea className={inputClass} rows={2} maxLength={2000} value={form.inquiry} onChange={(e) => set("inquiry", e.target.value)} />
+        </label>
+        {error ? (
+          <div className="sm:col-span-2">
+            <Notice tone="bad">{error}</Notice>
+          </div>
+        ) : null}
+        <div className="flex gap-2 sm:col-span-2">
+          <button type="submit" className={buttonPrimary} disabled={busy}>
+            Save request
+          </button>
+          <button type="button" className={buttonSecondary} onClick={() => setOpen(false)}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Card>
   );
 }
 

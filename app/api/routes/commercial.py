@@ -42,6 +42,7 @@ from app.schemas.commercial import (
     LeadUpdate,
     LifecycleActionRequest,
     MemberRoleUpdate,
+    OperatorLeadCreate,
     WidgetCreateRequest,
     WidgetSetupUpdate,
 )
@@ -128,6 +129,25 @@ async def list_leads(
 ) -> dict[str, Any]:
     try:
         return await LeadService.list_leads(db, status=status_filter)
+    except LeadError as exc:
+        _fail(exc)
+
+
+@platform_router.post("/leads", status_code=status.HTTP_201_CREATED)
+async def create_lead_by_operator(
+    payload: OperatorLeadCreate, db: DatabaseSession, operator: PlatformOperator
+) -> dict[str, Any]:
+    try:
+        return await LeadService.create_by_operator(
+            db,
+            operator_subject=operator.subject,
+            company_name=payload.company_name,
+            contact_name=payload.contact_name,
+            email=str(payload.email),
+            website=payload.website,
+            industry=payload.industry,
+            inquiry=payload.inquiry,
+        )
     except LeadError as exc:
         _fail(exc)
 

@@ -42,6 +42,31 @@ Not flags, always on after deploy (inert without data): operator console
 5. 🔒 Grant the first platform operator (§3).
 6. Leave `PUBLIC_LEAD_CAPTURE_ENABLED=false` until §7 is approved.
 
+## 2a. Phase 1Q-R additions (before the first customer)
+
+* Invitation acceptance is **off** until `INVITATION_IDENTITY_MODE` is set
+  (D3). Recommended: `nhost_userinfo` with
+  `NHOST_AUTH_URL=https://<subdomain>.auth.<region>.nhost.run/v1`.
+* Audit legacy self-service slugs before granting operators. Organizations
+  whose `external_id` was chosen through self-service `POST /organizations`
+  before 1Q-R could squat a manifest slug. Review every row this returns:
+
+  ```sql
+  SELECT o.id, o.name, o.external_id, o.created_at, count(m.id) AS members
+  FROM organizations o
+  LEFT JOIN organization_memberships m ON m.organization_id = o.id
+  WHERE o.external_id IS NOT NULL
+  GROUP BY o.id
+  ORDER BY o.created_at;
+  ```
+
+  Every row should correspond to a reviewed `config/tenants/*.yaml`
+  manifest (RISPU, A1). Anything else: suspend it and investigate.
+* With lead capture off, record prospects with **Record a request** in
+  `/operator` (consent marked `operator-entered`).
+* Apply the proposed retention with `python -m scripts.purge_expired_leads`
+  (dry run; `--apply` 🔒) once the policy is approved.
+
 ## 3. Platform operators
 
 ```bash
@@ -112,7 +137,7 @@ removes write capabilities; **Reinstate** restores `active`.
 |---|---|---|
 | D1 | Merge + deploy Phase 1Q (migration `1q0a0001`, API, frontend) | 🔒 pending |
 | D2 | Enable `PUBLIC_LEAD_CAPTURE_ENABLED` (public lead form) | 🔒 pending — also decide lead-data retention (suggest 12 months for declined) and add a privacy notice link |
-| D3 | How invitees get an Nhost account: operator creates users in Nhost, or enable Nhost email sign-up (needs email verification + an in-app sign-up page) | 🔒 pending (affects Nhost production config) |
+| D3 | How invitees get a *verified* Nhost account (operator-created user + verification/reset link, or Nhost email sign-up with verification) **and** enabling `INVITATION_IDENTITY_MODE=nhost_userinfo` + `NHOST_AUTH_URL`. Until then invitations cannot be accepted (fail closed). | 🔒 pending |
 | D4 | Invitation/lead email delivery provider (e.g. transactional email) | Not built; paid service decision |
 | D5 | Public pricing / plans / trial terms | Not set; site says "pricing on request" |
 | D6 | Payment provider (e.g. Stripe), tax, invoicing | Not built; no charges possible |
