@@ -40,6 +40,21 @@ cached customer-side script); `/sessions/state` and `/updates` stay readable
 for a visitor's *own* session after suspension (history only; no AI, no new
 messages) by the existing kill-switch contract.
 
+## 1a. Verification results (HEAD of this hardening)
+
+| Check | Result |
+|---|---|
+| Backend pytest, Python 3.12 (`-m "not integration"`, disposable Postgres) | 2299 passed |
+| Backend pytest, Python 3.11 | 2299 passed |
+| New 1Q-R backend tests | identity 14, adversarial 12, invitation/lead/privacy 9, E2E journey extended |
+| Ruff (`app tests scripts alembic`), mypy (`app`) | clean |
+| Frontend `npm test` / `test:auth` / `test:session` | 799 / 620 / 100 passed |
+| ESLint, `next typegen` + `tsc --noEmit`, `next build` | clean / pass |
+| Docker API + frontend images | built |
+| Alembic base → head → 1p9b0001 → head, `alembic check` (fresh DB) | clean, head `1q0a0001`, no new migration in 1Q-R |
+| Gitleaks 8.30.1: PR range, working tree, full history | no leaks |
+| Widget first load vs master (same machine) | 578.6 / 177.1 KiB (raw/gzip) vs 576.0 / 176.8; no gsap/lenis |
+
 ## 2. Invitation identity verification — evidence
 
 * Unit (fake Nhost Auth via `httpx.MockTransport`): success uses the caller's
