@@ -10,6 +10,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.db_connection import release_idle_connection
 from app.services.ai_observability_service import (
     AIObservabilityService,
 )
@@ -226,6 +227,8 @@ Answer the question and cite the supporting sources.
         # 7. Generate answer
         # -------------------------------------------------
 
+        # Phase 1P.9R: no pooled connection is held across the model call.
+        await release_idle_connection(db)
         response = await self.llm.ainvoke(
             [
                 SystemMessage(content=system_prompt.strip()),
@@ -288,6 +291,7 @@ QUESTION:
 KNOWLEDGE BASE CONTEXT:
 {context}
 """
+            await release_idle_connection(db)
             repair_response = await self.llm.ainvoke(
                 [
                     SystemMessage(content=system_prompt.strip()),

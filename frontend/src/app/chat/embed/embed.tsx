@@ -21,6 +21,11 @@ import {
   sendPublicChatMessage,
 } from "@/lib/public-chat/client";
 import {
+  clientMessageIdForSend,
+  sendWithRetry,
+  type PendingSend,
+} from "@/lib/public-chat/send-retry";
+import {
   cursorOf,
   LEGACY_POLL_INTERVAL_MS,
   mergeMessages,
@@ -282,6 +287,11 @@ export function PublicChatWidget({
     useRef(true);
   const pollNowRef =
     useRef<(() => void) | null>(null);
+  // Phase 1P.9R: the last send that failed ambiguously. Resending the same
+  // text reuses its client_message_id, so a message the server did store is
+  // never stored twice.
+  const pendingSendRef =
+    useRef<PendingSend | null>(null);
   // An accepted message whose AI reply has not arrived yet.
   const [awaitingReply, setAwaitingReply] =
     useState(false);
@@ -555,15 +565,30 @@ export function PublicChatWidget({
         optimistic,
       ]);
 
+      const messageId = clientMessageIdForSend(
+        trimmed,
+        pendingSendRef.current,
+        clientMessageId,
+      );
+      pendingSendRef.current = {
+        text: trimmed,
+        clientMessageId: messageId,
+      };
+
       try {
-        const result = await sendPublicChatMessage(
-          token,
-          embeddingOriginRef.current,
-          clientMessageId(),
-          trimmed,
-          fetch,
-          "async",
+        // Ambiguous failures (network drop, 5xx, 409 in flight, 429 busy)
+        // are retried with the SAME id; the server de-duplicates.
+        const result = await sendWithRetry(() =>
+          sendPublicChatMessage(
+            token,
+            embeddingOriginRef.current,
+            messageId,
+            trimmed,
+            fetch,
+            "async",
+          ),
         );
+        pendingSendRef.current = null;
         if (result.processing_state === "accepted") {
           // Stored; the reply follows through /sessions/updates.
           setAwaitingReply(true);

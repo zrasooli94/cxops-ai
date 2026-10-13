@@ -30,6 +30,7 @@ client = base.client
 db = base.db
 org_scope = base.org_scope
 _phase1p_namespace_isolated = base._phase1p_namespace_isolated
+_async_platform_on = chat._async_platform_on
 
 MODEL_LATENCY = 0.05
 MESSAGES_PER_SESSION = 2
@@ -131,7 +132,9 @@ async def test_noisy_tenant_cannot_starve_others(db, client, org_scope, monkeypa
     _stub_with_probe(monkeypatch, probe, latency=0.1)
     noisy = await org_scope()
     noisy_org = noisy.id
-    _cfg, noisy_key = await base._make_widget_config(db, noisy, max_messages_per_minute=60)
+    _cfg, noisy_key = await base._make_widget_config(
+        db, noisy, max_messages_per_minute=60, async_turns_enabled=True
+    )
     noisy_tokens = [
         (await base._create_session(client, noisy_key))["session"]["token"] for _ in range(12)
     ]

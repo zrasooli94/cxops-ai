@@ -805,8 +805,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def _require_compatible_schema() -> None:
+    """Phase 1P.9R: the worker must not consume jobs on a schema older than
+    this build requires (raises in production, before any claim)."""
+    from app.core.database import engine
+    from app.core.schema_gate import check_schema
+
+    async def _check() -> None:
+        try:
+            await check_schema(engine)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_check())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    _require_compatible_schema()
 
     if args.once:
         # No metrics listener, deliberately. One-shot runs live for seconds in

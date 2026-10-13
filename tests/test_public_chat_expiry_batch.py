@@ -72,6 +72,7 @@ NOW = BASE_EXPIRY + timedelta(days=1)
 _PURGE_TABLES = [
     "ticket_events",
     "agent_action_events",
+    "ai_usage_reservations",
     "ai_request_logs",
     "integration_jobs",
     "agent_runs",

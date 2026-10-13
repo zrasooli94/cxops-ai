@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core import database
 from app.core.logging import get_logger
@@ -68,8 +69,34 @@ async def chat_turn_lease(session_id: int) -> AsyncIterator[bool]:
 
 
 @asynccontextmanager
+async def chat_turn_lease_connection(session_id: int) -> AsyncIterator[AsyncConnection | None]:
+    """Like ``chat_turn_lease`` but yields the lock-owning connection (or
+    ``None`` when the lease is busy).
+
+    Phase 1P.9R: the turn reuses this connection for the agent's analysis lock
+    instead of checking out a second pooled connection for the whole model
+    call. Session-level advisory locks are per connection, so both locks keep
+    their exact semantics and are released when the connection is closed (or
+    invalidated) no matter how the turn ends.
+    """
+    async with _advisory_lease(chat_turn_lease_key(session_id), label=session_id) as (
+        held,
+        conn,
+    ):
+        yield conn if held else None
+
+
+@asynccontextmanager
 async def advisory_lease(key: int, *, label: int) -> AsyncIterator[bool]:
     """Non-blocking session-level advisory lock on a dedicated connection."""
+    async with _advisory_lease(key, label=label) as (held, _conn):
+        yield held
+
+
+@asynccontextmanager
+async def _advisory_lease(
+    key: int, *, label: int
+) -> AsyncIterator[tuple[bool, AsyncConnection]]:
     conn = await database.engine.connect()
     acquired = False
     # Until the lock call has returned we cannot know whether the server
@@ -83,7 +110,7 @@ async def advisory_lease(key: int, *, label: int) -> AsyncIterator[bool]:
         state_known = True
         # End the implicit transaction; the session-level lock survives it.
         await conn.commit()
-        yield acquired
+        yield acquired, conn
     finally:
         try:
             if not state_known:

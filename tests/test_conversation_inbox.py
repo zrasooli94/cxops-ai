@@ -172,6 +172,7 @@ async def org_scope(db):
             "ticket_events",
             "agent_action_events",
             "knowledge_chunks",
+            "ai_usage_reservations",
             "ai_request_logs",
             "integration_jobs",
             "agent_runs",

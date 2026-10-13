@@ -23,23 +23,20 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Resume public-chat turns interrupted by a restart (Phase 1P.9).
+    """Resume public-chat turns interrupted by a restart, then sweep hourly.
 
-    One bounded query at start-up, run in the background so a slow or
-    unreachable database never delays the process from serving. No periodic
-    polling: later recovery is driven by visitors polling for their replies.
+    Runs in the background so a slow or unreachable database never delays the
+    process from serving (Phase 1P.9, hardened in 1P.9R).
     """
+    from app.core.database import engine
+    from app.core.schema_gate import check_schema
     from app.services.public_chat_turn_dispatcher import turn_dispatcher
 
-    async def _resume() -> None:
-        try:
-            resumed = await turn_dispatcher.recover_on_startup()
-            if resumed:
-                log.info("public_chat_turns_resumed_on_startup", count=resumed)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("public_chat_turn_startup_recovery_failed", error_type=type(exc).__name__)
+    # Phase 1P.9R: refuse to serve on a schema this build does not support
+    # (raises in production; uvicorn then exits before binding its port).
+    await check_schema(engine)
 
-    task = asyncio.get_running_loop().create_task(_resume())
+    task = asyncio.get_running_loop().create_task(turn_dispatcher.run_maintenance())
     try:
         yield
     finally:

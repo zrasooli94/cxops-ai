@@ -11,6 +11,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -104,6 +105,16 @@ class PublicChatConfiguration(Base):
     monthly_ai_budget_usd: Mapped[float | None] = mapped_column(
         Numeric(10, 2),
         nullable=True,
+    )
+
+    # Phase 1P.9R: per-tenant activation of asynchronous AI turns. Effective
+    # only when settings.public_chat_async_enabled is also on (platform gate)
+    # and the widget asks for ``delivery: "async"``. Defaults to off.
+    async_turns_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
     )
 
     grounded_auto_reply_enabled: Mapped[bool] = mapped_column(

@@ -36,6 +36,17 @@ db = base.db
 org_scope = base.org_scope
 _phase1p_namespace_isolated = base._phase1p_namespace_isolated
 
+@pytest.fixture(autouse=True)
+def _async_platform_on(monkeypatch):
+    """Phase 1P.9R: async turns are off by default (platform + tenant gates);
+    these tests exercise the activated path."""
+    # The services hold the settings object they imported; the auth fixture
+    # rebinds app.core.config.settings, so patch the services' object.
+    from app.services import public_chat_service
+
+    monkeypatch.setattr(public_chat_service.settings, "public_chat_async_enabled", True)
+
+
 NO_ACTION = AgentDecision(
     action="no_action",
     reason="Informational greeting; nothing to do.",
@@ -110,6 +121,7 @@ async def _jobs(db, org_id):
 
 
 async def _setup(db, client, org_scope, **config):
+    config.setdefault("async_turns_enabled", True)
     org = await org_scope()
     org_id = org.id
     _cfg, key = await base._make_widget_config(db, org, **config)
@@ -358,7 +370,7 @@ async def test_exhausted_usd_budget_hands_off_and_other_tenants_continue(
             input_tokens=0,
             output_tokens=0,
             total_tokens=0,
-            estimated_cost_usd=999.0,
+            estimated_cost_usd=6.0,  # over the $5 tenant default only
             latency_ms=0.0,
             sources=[],
         )
