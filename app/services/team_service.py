@@ -47,6 +47,7 @@ from app.services.commercial_common import (
     normalize_email,
     sha256_hex,
 )
+from app.services.identity_verification import VerifiedIdentity
 
 log = get_logger(__name__)
 
@@ -458,15 +459,28 @@ class TeamService:
         db: AsyncSession,
         *,
         token: str,
-        subject: str,
-        principal_email: str | None,
+        identity: VerifiedIdentity,
     ) -> dict[str, Any]:
+        """Redeem ``token`` for the *verified* identity.
+
+        ``identity`` comes from :mod:`app.services.identity_verification`: the
+        provider has confirmed that ``identity.subject`` owns the verified
+        address ``identity.email``. The invitation is bound to its recipient,
+        so a forwarded link fails here even though the token is valid.
+        Missing or unverified evidence never reaches this method (the
+        verifier refuses first), so there is no "no email -> skip" path.
+        """
+        subject = identity.subject
         invitation = await cls._pending_by_token(db, token)
         if invitation is None:
             raise InvitationInvalidError()
-        # When the identity provider vouches for an email address, it must be
-        # the invited one: a forwarded link cannot be redeemed by someone else.
-        if principal_email and normalize_email(principal_email) != invitation.email_normalized:
+        if identity.email != invitation.email_normalized:
+            log.warning(
+                "team_invitation_recipient_mismatch",
+                organization_id=invitation.organization_id,
+                invitation_id=invitation.id,
+                subject=subject,
+            )
             raise TeamPermissionError(
                 "This invitation was issued to a different email address. "
                 "Sign in with the invited account."

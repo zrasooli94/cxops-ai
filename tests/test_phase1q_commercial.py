@@ -96,6 +96,9 @@ def _configure(monkeypatch):
         "ENVIRONMENT": "development",
         "PUBLIC_LEAD_CAPTURE_ENABLED": "false",
         "ONBOARDING_KNOWLEDGE_SETUP_ENABLED": "false",
+        # Signed email + email_verified claims are the identity evidence in
+        # this module; the userinfo and disabled modes are tested separately.
+        "INVITATION_IDENTITY_MODE": "jwt_claims",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -152,7 +155,7 @@ async def _purge() -> None:
         await session.commit()
 
 
-def _token(sub: str, *, email: str | None = None) -> str:
+def _token(sub: str, *, email: str | None = None, verified: bool = True) -> str:
     now = int(datetime.now(UTC).timestamp())
     payload = {
         "sub": sub,
@@ -163,11 +166,14 @@ def _token(sub: str, *, email: str | None = None) -> str:
     }
     if email is not None:
         payload["email"] = email
+        payload["email_verified"] = verified
     return jwt.encode(payload, os.environ["AUTH_JWT_SECRET"], algorithm="HS256")
 
 
-def _auth(sub: str, org_id: int | None = None, *, email: str | None = None) -> dict:
-    headers = {"Authorization": f"Bearer {_token(sub, email=email)}"}
+def _auth(
+    sub: str, org_id: int | None = None, *, email: str | None = None, verified: bool = True
+) -> dict:
+    headers = {"Authorization": f"Bearer {_token(sub, email=email, verified=verified)}"}
     if org_id is not None:
         headers[TENANT_HEADER] = str(org_id)
     return headers
@@ -963,7 +969,6 @@ async def test_invitation_accept_is_single_use(db, client):
     org, owner, _ = await _org(db)
     email = f"agent-{uuid.uuid4().hex[:6]}@shop.example"
     invitee = _subject()
-    other = _subject()
     async with client:
         issued = await _invite(client, owner, org, email, "agent")
         assert issued.status_code == 201, issued.text
@@ -984,10 +989,16 @@ async def test_invitation_accept_is_single_use(db, client):
         assert accepted.status_code == 200, accepted.text
         assert accepted.json()["organization_id"] == org.id
 
-        reused = await client.post(
-            "/invitations/accept", json={"token": token}, headers=_auth(other)
+        # Replay by the same person and by a second verified owner of the same
+        # address: the token is spent.
+        again = await client.post(
+            "/invitations/accept", json={"token": token}, headers=_auth(invitee, email=email)
         )
-        assert reused.status_code == 404
+        assert again.status_code == 404
+        second = await client.post(
+            "/invitations/accept", json={"token": token}, headers=_auth(_subject(), email=email)
+        )
+        assert second.status_code == 404
 
         authz = await client.get("/me/authorization", headers=_auth(invitee, org.id))
         assert authz.json()["role"] == "agent"
@@ -1001,7 +1012,7 @@ async def test_invitation_tokens_cannot_be_guessed_expired_or_revoked(db, client
         guessed = await client.post(
             "/invitations/accept",
             json={"token": "inv_" + secrets.token_urlsafe(32)},
-            headers=_auth(invitee),
+            headers=_auth(invitee, email="anyone@shop.example"),
         )
         assert guessed.status_code == 404
 
@@ -1013,7 +1024,9 @@ async def test_invitation_tokens_cannot_be_guessed_expired_or_revoked(db, client
         )
         await db.commit()
         expired = await client.post(
-            "/invitations/accept", json={"token": expiring["token"]}, headers=_auth(invitee)
+            "/invitations/accept",
+            json={"token": expiring["token"]},
+            headers=_auth(invitee, email="exp@shop.example"),
         )
         assert expired.status_code == 404
         listed = (await client.get("/team/invitations", headers=_auth(owner, org.id))).json()
@@ -1027,7 +1040,9 @@ async def test_invitation_tokens_cannot_be_guessed_expired_or_revoked(db, client
         )
         assert revoked.status_code == 200
         use_revoked = await client.post(
-            "/invitations/accept", json={"token": revoking["token"]}, headers=_auth(invitee)
+            "/invitations/accept",
+            json={"token": revoking["token"]},
+            headers=_auth(invitee, email="rev@shop.example"),
         )
         assert use_revoked.status_code == 404
 
@@ -1035,32 +1050,110 @@ async def test_invitation_tokens_cannot_be_guessed_expired_or_revoked(db, client
         first = (await _invite(client, owner, org, "again@shop.example", "agent")).json()
         second = (await _invite(client, owner, org, "again@shop.example", "agent")).json()
         old = await client.post(
-            "/invitations/accept", json={"token": first["token"]}, headers=_auth(invitee)
+            "/invitations/accept",
+            json={"token": first["token"]},
+            headers=_auth(invitee, email="again@shop.example"),
         )
         assert old.status_code == 404
         new = await client.post(
-            "/invitations/accept", json={"token": second["token"]}, headers=_auth(invitee)
+            "/invitations/accept",
+            json={"token": second["token"]},
+            headers=_auth(invitee, email="again@shop.example"),
         )
         assert new.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_invitation_bound_to_verified_email_when_present(db, client):
+async def test_invitation_requires_verified_matching_identity(db, client):
+    """Phase 1Q-R: the token alone is never enough. Missing, unverified or
+    mismatched identity evidence is refused and the invitation stays usable
+    by its real recipient."""
     org, owner, _ = await _org(db)
     async with client:
         token = (await _invite(client, owner, org, "right@shop.example", "agent")).json()["token"]
-        wrong = await client.post(
-            "/invitations/accept",
-            json={"token": token},
-            headers=_auth(_subject(), email="someone-else@shop.example"),
+        cases = {
+            # Authenticated, but the token carries no email at all.
+            "missing": _auth(_subject()),
+            # Email present but not verified by the identity provider.
+            "unverified": _auth(_subject(), email="right@shop.example", verified=False),
+            # Forwarded link: someone else's verified address.
+            "forwarded": _auth(_subject(), email="someone-else@shop.example"),
+        }
+        for label, headers in cases.items():
+            r = await client.post("/invitations/accept", json={"token": token}, headers=headers)
+            assert r.status_code == 403, (label, r.text)
+        members = await db.scalar(
+            select(func.count())
+            .select_from(OrganizationMembership)
+            .where(OrganizationMembership.organization_id == org.id)
         )
-        assert wrong.status_code == 403
+        assert members == 1  # only the owner; nothing was redeemed
         right = await client.post(
             "/invitations/accept",
             json={"token": token},
             headers=_auth(_subject(), email="RIGHT@shop.example"),
         )
         assert right.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_owner_invitation_from_provisioning_is_recipient_bound(db, monkeypatch):
+    _enable_leads(monkeypatch, INVITATION_IDENTITY_MODE="jwt_claims")
+    operator = await _operator(db)
+    payload = _lead_payload(company_name=f"{ORG_PREFIX}{uuid.uuid4().hex[:6]}")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        await c.post("/public/leads", json=payload)
+        lead = (
+            await db.execute(
+                select(SalesLead).where(SalesLead.email_normalized == payload["email"].lower())
+            )
+        ).scalar_one()
+        lead.status = "approved"
+        await db.commit()
+        provisioned = (
+            await c.post(
+                f"/platform-admin/leads/{lead.id}/provision", json={}, headers=_auth(operator)
+            )
+        ).json()
+        token = provisioned["owner_invitation"]["token"]
+        hijack = await c.post(
+            "/invitations/accept",
+            json={"token": token},
+            headers=_auth(_subject(), email="attacker@evil.example"),
+        )
+        assert hijack.status_code == 403
+        anonymous = await c.post(
+            "/invitations/accept", json={"token": token}, headers=_auth(_subject())
+        )
+        assert anonymous.status_code == 403
+        owner = await c.post(
+            "/invitations/accept",
+            json={"token": token},
+            headers=_auth(_subject(), email=payload["email"]),
+        )
+        assert owner.status_code == 200
+        assert owner.json()["role"] == "owner"
+
+
+@pytest.mark.asyncio
+async def test_invitation_acceptance_fails_closed_when_identity_not_configured(
+    db, client, monkeypatch
+):
+    monkeypatch.setenv("INVITATION_IDENTITY_MODE", "disabled")
+    reset_settings_cache()
+    org, owner, _ = await _org(db)
+    async with client:
+        token = (await _invite(client, owner, org, "x@shop.example", "agent")).json()["token"]
+        r = await client.post(
+            "/invitations/accept",
+            json={"token": token},
+            headers=_auth(_subject(), email="x@shop.example"),
+        )
+    assert r.status_code == 503
+    pending = await db.scalar(
+        select(OrganizationInvitation.status).where(OrganizationInvitation.organization_id == org.id)
+    )
+    assert pending == "pending"
 
 
 @pytest.mark.asyncio
@@ -1072,7 +1165,11 @@ async def test_concurrent_acceptance_creates_one_membership(db):
     async def accept(subject):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             return (
-                await c.post("/invitations/accept", json={"token": token}, headers=_auth(subject))
+                await c.post(
+                    "/invitations/accept",
+                    json={"token": token},
+                    headers=_auth(subject, email="race@shop.example"),
+                )
             ).status_code
 
     codes = await asyncio.gather(*(accept(_subject()) for _ in range(4)))

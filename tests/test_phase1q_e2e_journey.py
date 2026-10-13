@@ -22,6 +22,7 @@ import types
 import uuid
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
@@ -49,6 +50,7 @@ from app.models.public_chat import PublicChatRateLimitBucket
 from app.schemas.agent import AgentDecision
 from app.services.agent_workflow_service import agent_workflow_service
 from app.services.embedding_service import embedding_service
+from app.services.identity_verification import NhostUserInfoIdentityVerifier
 from app.services.knowledge_search_service import KnowledgeSearchService
 
 ORG_PREFIX = "Phase1Q-journey-"
@@ -178,6 +180,38 @@ class _FakeDecisionLLM:
         }
 
 
+class FakeNhostAuth:
+    """In-process stand-in for Nhost Auth ``GET /v1/user``: returns the user
+    record for whichever access token is presented. Tokens here carry no
+    email claim (like real Nhost tokens), so the API must look the identity
+    up server-side."""
+
+    def __init__(self) -> None:
+        self.users: dict[str, dict] = {}  # sub -> user record
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        sub = jwt.get_unverified_claims(token).get("sub")
+        user = self.users.get(sub)
+        if user is None:
+            return httpx.Response(401, json={"error": "unauthenticated"})
+        return httpx.Response(200, json={"id": sub, **user})
+
+
+@pytest.fixture
+def fake_nhost():
+    from app.api.routes.commercial import get_identity_verifier
+
+    auth = FakeNhostAuth()
+    verifier = NhostUserInfoIdentityVerifier(
+        "https://fake.auth.local-test.nhost.run/v1",
+        transport=httpx.MockTransport(auth.handler),
+    )
+    app.dependency_overrides[get_identity_verifier] = lambda: verifier
+    yield auth
+    app.dependency_overrides.pop(get_identity_verifier, None)
+
+
 @pytest.fixture
 def fake_ai(monkeypatch):
     async def _embed_text(text: str) -> list[float]:
@@ -198,7 +232,7 @@ def fake_ai(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_simulated_customer_journey(fake_ai):
+async def test_simulated_customer_journey(fake_ai, fake_nhost):
     suffix = uuid.uuid4().hex[:6]
     company = f"{ORG_PREFIX}Acme Auto {suffix}"
     owner_email = f"owner-{suffix}@{LEAD_DOMAIN}"
@@ -261,11 +295,29 @@ async def test_simulated_customer_journey(fake_ai):
         invite_token = provisioned.json()["owner_invitation"]["token"]
         evidence.append(f"tenant {org_id} provisioned in onboarding after a 409 name clash")
 
-        # 4. Owner accepts the invitation (Nhost identity -> membership).
+        # 4. Owner accepts the invitation. The JWT carries no email; the API
+        # verifies the identity with (fake) Nhost Auth. First an unverified
+        # account and a different person holding the forwarded link are
+        # refused, then the verified recipient succeeds.
+        fake_nhost.users[owner] = {"email": owner_email, "emailVerified": False}
+        unverified = await c.post(
+            "/invitations/accept",
+            json={"token": invite_token},
+            headers={"Authorization": _bearer(owner)},
+        )
+        assert unverified.status_code == 403
+        fake_nhost.users[outsider] = {"email": f"x-{suffix}@{LEAD_DOMAIN}", "emailVerified": True}
+        forwarded = await c.post(
+            "/invitations/accept",
+            json={"token": invite_token},
+            headers={"Authorization": _bearer(outsider)},
+        )
+        assert forwarded.status_code == 403
+        fake_nhost.users[owner] = {"email": owner_email, "emailVerified": True}
         accepted = await c.post(
             "/invitations/accept",
             json={"token": invite_token},
-            headers={"Authorization": _bearer(owner, owner_email)},
+            headers={"Authorization": _bearer(owner)},
         )
         assert accepted.status_code == 200, accepted.text
         own = {"Authorization": _bearer(owner), TENANT_HEADER: str(org_id)}
@@ -304,6 +356,10 @@ async def test_simulated_customer_journey(fake_ai):
             headers=own,
         )
         assert team_invite.status_code == 201
+        fake_nhost.users[agent_member] = {
+            "email": f"agent-{suffix}@{LEAD_DOMAIN}",
+            "emailVerified": True,
+        }
         joined = await c.post(
             "/invitations/accept",
             json={"token": team_invite.json()["token"]},
@@ -419,5 +475,41 @@ async def test_simulated_customer_journey(fake_ai):
         usage = (await c.get("/platform-admin/usage", headers=op)).json()
         assert any(row["organization_id"] == org_id for row in usage["by_tenant"])
         assert usage["cost_basis"] == "estimated"
+
+        # 11. The team member has restricted permissions.
+        agent_h = {"Authorization": _bearer(agent_member), TENANT_HEADER: str(org_id)}
+        agent_view = (await c.get("/workspace/overview", headers=agent_h)).json()
+        assert agent_view["your_role"] == "agent"
+        assert agent_view["usage"]["available"] is False
+        assert agent_view["conversations"]["available"] is True
+        assert (await c.get("/team/invitations", headers=agent_h)).status_code == 403
+        assert (
+            await c.patch("/staff/tenant-config/public-chat", json={"enabled": False}, headers=agent_h)
+        ).status_code == 403
+        assert (await c.get("/platform-admin/me", headers=agent_h)).status_code == 403
+        evidence.append("agent member: conversations visible; usage, team admin, settings refused")
+
+        # 12. Suspension stops public chat immediately, including the open session.
+        suspend = await c.post(
+            f"/platform-admin/organizations/{org_id}/lifecycle",
+            json={"action": "suspend"},
+            headers=op,
+        )
+        assert suspend.status_code == 200
+        stopped = await c.post(
+            "/public/chat/messages",
+            json={"client_message_id": "journey-2", "text": "Are you there?"},
+            headers=visitor,
+        )
+        assert stopped.status_code == 403
+        new_session = await c.post(
+            "/public/chat/sessions",
+            json={"public_widget_key": widget_key},
+            headers={"x-embedding-origin": SHOP_ORIGIN},
+        )
+        assert new_session.status_code == 403
+        suspended_view = await c.get("/me/authorization", headers=own)
+        assert "integration.manage" not in suspended_view.json()["capabilities"]
+        evidence.append("suspension: open session and new sessions refused (403)")
 
     print("\n".join(f"[journey] {line}" for line in evidence))

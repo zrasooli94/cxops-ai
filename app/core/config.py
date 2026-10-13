@@ -237,6 +237,33 @@ class Settings(BaseSettings):
     # been approved (lifecycle_status != active) may upload knowledge during
     # setup only when this is on. Default OFF: approval gates every AI spend.
     onboarding_knowledge_setup_enabled: bool = False
+    # Phase 1Q-R: evidence that the person accepting an invitation owns the
+    # invited, verified email address. "disabled" (default) refuses every
+    # acceptance; "nhost_userinfo" asks Nhost Auth's /user endpoint with the
+    # caller's own token; "jwt_claims" requires signed email + email_verified
+    # claims. See app/services/identity_verification.py.
+    invitation_identity_mode: str = "disabled"
+    # Nhost Auth base URL, e.g. https://<subdomain>.auth.<region>.nhost.run/v1
+    nhost_auth_url: str = ""
+    invitation_identity_timeout_seconds: float = 5.0
+
+    @field_validator("invitation_identity_mode", mode="after")
+    @classmethod
+    def _identity_mode_known(cls, value: str) -> str:
+        if value not in {"disabled", "nhost_userinfo", "jwt_claims"}:
+            raise ValueError(
+                "invitation_identity_mode must be disabled, nhost_userinfo or jwt_claims"
+            )
+        return value
+
+    @field_validator("nhost_auth_url", mode="after")
+    @classmethod
+    def _nhost_auth_url_https(cls, value: str) -> str:
+        if value and not value.startswith("https://"):
+            host = value.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+            if host not in {"localhost", "127.0.0.1"}:
+                raise ValueError("nhost_auth_url must use https")
+        return value
 
     @field_validator(
         "lead_submissions_per_hour_platform",

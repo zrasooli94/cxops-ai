@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -44,6 +44,11 @@ from app.schemas.commercial import (
     MemberRoleUpdate,
     WidgetCreateRequest,
     WidgetSetupUpdate,
+)
+from app.services.identity_verification import (
+    IdentityVerificationError,
+    IdentityVerifier,
+    build_identity_verifier,
 )
 from app.services.lead_service import LeadError, LeadService
 from app.services.onboarding_service import OnboardingError, OnboardingService
@@ -395,17 +400,29 @@ async def preview_invitation(
         _fail(exc)
 
 
+def get_identity_verifier() -> IdentityVerifier:
+    """Overridable in tests; production behaviour comes from settings."""
+    return build_identity_verifier()
+
+
+IdentityVerifierDep = Annotated[IdentityVerifier, Depends(get_identity_verifier)]
+
+
 @invitation_router.post("/accept")
 async def accept_invitation(
-    payload: InvitationTokenRequest, db: DatabaseSession, principal: CurrentPrincipal
+    payload: InvitationTokenRequest,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    verifier: IdentityVerifierDep,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
+    access_token = (authorization or "").partition(" ")[2].strip()
     try:
-        return await TeamService.accept(
-            db,
-            token=payload.token,
-            subject=principal.subject,
-            principal_email=principal.email,
-        )
+        identity = await verifier.verify(principal, access_token)
+    except IdentityVerificationError as exc:
+        _fail(exc)
+    try:
+        return await TeamService.accept(db, token=payload.token, identity=identity)
     except TeamError as exc:
         _fail(exc)
 
