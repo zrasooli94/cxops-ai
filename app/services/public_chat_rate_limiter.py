@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, update
+from sqlalchemy import CursorResult, delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -119,37 +119,28 @@ class PublicChatRateLimiterDb:
         if limit < 1:
             raise ValueError("Rate limit must be at least 1.")
 
-        result = await db.execute(
-            update(PublicChatRateLimitBucket)
-            .where(
-                PublicChatRateLimitBucket.key_cache == kernel,
-                PublicChatRateLimitBucket.window_start == window_ts,
-                PublicChatRateLimitBucket.count < limit,
-            )
-            .values(
-                count=PublicChatRateLimitBucket.count + 1,
-                updated_at=func.now(),
-            )
-            .returning(PublicChatRateLimitBucket.count)
+        # Phase 1P.9R: one atomic upsert. The previous UPDATE-then-INSERT
+        # ... ON CONFLICT DO NOTHING rejected every request that lost the race
+        # to create a window's bucket (rowcount 0) - under a burst on one
+        # widget, most visitors got "busy" far below the limit. Concurrent
+        # upserts now serialise on the bucket row and each sees the true count.
+        insert_stmt = pg_insert(PublicChatRateLimitBucket).values(
+            key_cache=kernel,
+            window_start=window_ts,
+            count=1,
         )
-        if result.mappings().first() is not None:
-            return True
-
-        result = await db.execute(
-            pg_insert(PublicChatRateLimitBucket)
-            .values(
-                key_cache=kernel,
-                window_start=window_ts,
-                count=1,
-            )
-            .on_conflict_do_nothing(
-                index_elements=[
-                    PublicChatRateLimitBucket.key_cache,
-                    PublicChatRateLimitBucket.window_start,
-                ]
-            )
-        )
-        return bool(cast("CursorResult[Any]", result).rowcount)
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[
+                PublicChatRateLimitBucket.key_cache,
+                PublicChatRateLimitBucket.window_start,
+            ],
+            set_={
+                "count": PublicChatRateLimitBucket.count + 1,
+                "updated_at": func.now(),
+            },
+            where=PublicChatRateLimitBucket.count < limit,
+        ).returning(PublicChatRateLimitBucket.count)
+        return (await db.execute(stmt)).first() is not None
 
     @classmethod
     async def prune(

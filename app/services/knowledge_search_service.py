@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_connection import release_idle_connection
 from app.repositories.knowledge_repository import (
     KnowledgeRepository,
 )
@@ -31,6 +32,9 @@ class KnowledgeSearchService:
             organization_id
         )
 
+        # Phase 1P.9R: the embedding call is a network wait; do not pin a
+        # pooled connection across it.
+        await release_idle_connection(db)
         query_embedding = await embedding_service.embed_text(query)
 
         matches = await KnowledgeRepository.semantic_search_for_tenant(

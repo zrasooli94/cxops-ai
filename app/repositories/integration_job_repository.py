@@ -317,6 +317,34 @@ class IntegrationJobRepository:
         return list(result.scalars().all())
 
     @staticmethod
+    async def list_open_by_type(
+        db: AsyncSession,
+        *,
+        job_type: str,
+        after_id: int,
+        limit: int,
+    ) -> list[IntegrationJob]:
+        """INTERNAL-ONLY: every unfinished job of one type, by id, one page.
+
+        Phase 1P.9R recovery input: pending/retry jobs (due or not) and
+        processing jobs (stale or not); the caller schedules each for when it
+        becomes claimable. Keyset-paged on ``id`` so a large backlog is
+        walked completely without OFFSET scans.
+        """
+        result = await db.execute(
+            select(IntegrationJob)
+            .where(
+                IntegrationJob.job_type == job_type,
+                IntegrationJob.id > after_id,
+                IntegrationJob.status.in_(("pending", "retry", "processing")),
+                IntegrationJob.attempts < IntegrationJob.max_attempts,
+            )
+            .order_by(IntegrationJob.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def claim_by_id(
         db: AsyncSession,
         *,

@@ -17,8 +17,10 @@ Bounded concurrency: a global semaphore plus one per tenant, so one busy
 business cannot take every slot from the others.
 
 Recovery without idle polling: pending or abandoned turns are re-submitted (a)
-when the waiting visitor polls for updates and (b) once at API start-up. The
-scheduled worker processes anything left as a backstop. A turn that still fails
+when the waiting visitor polls for updates, (b) at API start-up - every open
+turn, paged, retried until the database answers, each scheduled for when its
+claim becomes available - and (c) by an hourly in-process sweep (Phase 1P.9R)
+for turns nobody is waiting on. The scheduled worker remains a backstop. A turn that still fails
 permanently is converted into a human handoff, so a visitor is never left
 waiting on a reply that will not come.
 """
@@ -49,6 +51,10 @@ DEFER_DELAY_SECONDS = 1
 # A pending turn this old with nobody working on it is re-dispatched when the
 # visitor polls (covers a lost in-process task, e.g. an instance restart).
 PENDING_GRACE_SECONDS = 3
+RECOVERY_PAGE_SIZE = 200
+QUEUED_POLL_MAX_MS = 5000
+# Start-up recovery is retried (the database may still be waking up).
+STARTUP_RECOVERY_BACKOFF_SECONDS = (0, 5, 30, 120, 600)
 
 
 class TurnDispatcher:
@@ -102,20 +108,86 @@ class TurnDispatcher:
             log.info("public_chat_turns_recovered", count=submitted)
         return submitted
 
-    async def recover_on_startup(self, *, limit: int = 100) -> int:
-        """Resume turns interrupted by a restart. Bounded, one query."""
-        async with AsyncSessionLocal() as db:
-            jobs = await IntegrationJobRepository.list_recoverable(
-                db,
-                job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
-                stale_after_seconds=settings.public_chat_turn_stale_seconds,
-                limit=limit,
-            )
-        count = 0
-        for job in jobs:
-            if job.organization_id is not None:
-                count += int(self.submit(job.id, job.organization_id))
-        return count
+    @staticmethod
+    def _claimable_in(job: IntegrationJob, now: datetime) -> float:
+        """Seconds until ``claim_by_id`` could succeed for this job."""
+        stale = settings.public_chat_turn_stale_seconds
+        if job.status == "processing":
+            if job.locked_at is None:
+                return 0.0
+            age = (now - job.locked_at).total_seconds()
+            # Possibly still running elsewhere (another instance, or this
+            # instance before a restart): re-check right after the claim
+            # turns stale. If it finished meanwhile, the claim simply fails.
+            return max(0.0, stale - age + 1.0)
+        if job.available_at is not None and job.available_at > now:
+            return (job.available_at - now).total_seconds()
+        return 0.0
+
+    async def recover_all(self, *, page_size: int = RECOVERY_PAGE_SIZE) -> int:
+        """Schedule every unfinished turn (Phase 1P.9R).
+
+        Walks the whole backlog in keyset pages (no 100-row ceiling) and
+        schedules each turn for the moment it becomes claimable, so a turn
+        that was mid-model-call when the process died is retried as soon as
+        its claim goes stale - without a visitor polling and without
+        periodic database polling.
+        """
+        after_id = 0
+        scheduled = 0
+        while True:
+            async with AsyncSessionLocal() as db:
+                jobs = await IntegrationJobRepository.list_open_by_type(
+                    db,
+                    job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
+                    after_id=after_id,
+                    limit=page_size,
+                )
+            now = datetime.now(UTC)
+            for job in jobs:
+                if job.organization_id is not None:
+                    scheduled += int(
+                        self.submit(
+                            job.id, job.organization_id, delay=self._claimable_in(job, now)
+                        )
+                    )
+            if len(jobs) < page_size:
+                return scheduled
+            after_id = jobs[-1].id
+
+    async def recover_on_startup(self) -> int:
+        """Resume turns interrupted by a restart (all of them, paged)."""
+        return await self.recover_all()
+
+    async def run_maintenance(self) -> None:
+        """Lifespan task: start-up recovery (retried until it succeeds) and
+        then a low-frequency sweep for turns nobody is waiting on.
+
+        The sweep is one keyset-paged query per ``public_chat_turn_sweep_seconds``
+        (hourly by default) - far from continuous polling, so Neon's
+        scale-to-zero still applies between sweeps.
+        """
+        for delay in STARTUP_RECOVERY_BACKOFF_SECONDS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                resumed = await self.recover_on_startup()
+                log.info("public_chat_turns_resumed_on_startup", count=resumed)
+                break
+            except Exception as exc:  # noqa: BLE001 - retried, then the sweep
+                log.warning(
+                    "public_chat_turn_startup_recovery_failed",
+                    error_type=type(exc).__name__,
+                )
+        interval = settings.public_chat_turn_sweep_seconds
+        while interval > 0:
+            await asyncio.sleep(interval)
+            try:
+                swept = await self.recover_all()
+                if swept:
+                    log.info("public_chat_turns_swept", count=swept)
+            except Exception as exc:  # noqa: BLE001 - next interval retries
+                log.warning("public_chat_turn_sweep_failed", error_type=type(exc).__name__)
 
     async def drain(self, timeout: float = 30.0) -> None:
         """Wait for every scheduled turn (tests, graceful shutdown)."""
@@ -126,6 +198,18 @@ class TurnDispatcher:
     @property
     def inflight(self) -> int:
         return len(self._inflight)
+
+    def queued_poll_after_ms(self) -> int:
+        """Suggested visitor poll interval while a turn waits for a slot.
+
+        Roughly one model call per "wave" of ``max_concurrency`` turns ahead,
+        so with a long backlog each waiting visitor polls proportionally less
+        often (1 s when idle, at most 5 s). Under a burst on a 0.5-CPU
+        instance, fixed 1 s polling from every waiting visitor was itself the
+        dominant CPU and connection load (Phase 1P.9R certification).
+        """
+        waves = -(-len(self._inflight) // max(1, self._max_concurrency))
+        return int(min(QUEUED_POLL_MAX_MS, 1000 * max(1, waves)))
 
     # -- execution --------------------------------------------------------
 

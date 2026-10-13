@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
-import SmoothScroll from "@/components/smooth-scroll";
+import SmoothScrollGate from "@/components/smooth-scroll-gate";
 
 import "./globals.css";
 
@@ -115,7 +115,7 @@ export default function RootLayout({
           }}
         />
 
-        <SmoothScroll />
+        <SmoothScrollGate />
         {children}
       </body>
     </html>

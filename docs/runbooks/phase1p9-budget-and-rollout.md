@@ -1,5 +1,10 @@
 # Phase 1P.9 — $50/month budget and staged rollout
 
+> **Superseded by [phase1p9r-release-readiness.md](phase1p9r-release-readiness.md)**
+> (Phase 1P.9R): async now defaults OFF with per-tenant activation, the
+> migration must precede the code, turn concurrency is 6, and the rollback
+> procedure changed. Kept for history.
+
 Every step below that deploys, changes a setting, upgrades a plan or touches
 production data is an **owner approval gate**. Nothing here has been executed.
 

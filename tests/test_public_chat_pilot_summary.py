@@ -76,6 +76,7 @@ P1P7_ORG_PREFIX = "p1p7-test-"
 # Tables with an ``organization_id`` column are purged by org. Construction
 # rows that lack one are handled explicitly in ``_purge_org_tables``.
 _PURGE_TABLES = [
+    "ai_usage_reservations",
     "ai_request_logs",
     "public_chat_sessions",
     "public_chat_configurations",
