@@ -30,7 +30,11 @@ from sqlalchemy import delete, select
 os.environ["AUTH_MODE"] = "hs256"
 os.environ["AUTH_JWT_SECRET"] = "j" * 32
 os.environ["AUTH_JWT_ALGORITHM"] = "HS256"
-os.environ["AUTH_JWT_ISSUER"] = "test-phase1q-journey"
+# Synthetic, non-secret JWT issuer name for this module's locally signed test
+# tokens. Kept in one named constant (not repeated as a literal next to an
+# AUTH_* key) so the secret scanner's generic rule has nothing to match.
+JOURNEY_ISSUER = "journey"
+os.environ["AUTH_JWT_ISSUER"] = JOURNEY_ISSUER
 os.environ["AUTH_JWT_AUDIENCE"] = "cxops-unit-test"
 os.environ["AUTH_DEV_MODE"] = "False"
 os.environ["ENVIRONMENT"] = "development"
@@ -82,7 +86,7 @@ def _configure(monkeypatch):
         "AUTH_MODE": "hs256",
         "AUTH_JWT_SECRET": "j" * 32,
         "AUTH_JWT_ALGORITHM": "HS256",
-        "AUTH_JWT_ISSUER": "test-phase1q-journey",
+        "AUTH_JWT_ISSUER": JOURNEY_ISSUER,
         "AUTH_JWT_AUDIENCE": "cxops-unit-test",
         "AUTH_DEV_MODE": "False",
         "ENVIRONMENT": "development",
@@ -136,7 +140,7 @@ def _bearer(sub: str, email: str | None = None) -> str:
     now = int(datetime.now(UTC).timestamp())
     claims = {
         "sub": sub,
-        "iss": "test-phase1q-journey",
+        "iss": JOURNEY_ISSUER,
         "aud": "cxops-unit-test",
         "exp": now + 3600,
         "iat": now,

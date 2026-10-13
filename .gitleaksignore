@@ -1,0 +1,21 @@
+# Exact-fingerprint exceptions for gitleaks (commit:file:rule:line).
+#
+# Each line suppresses ONE historical finding at ONE commit. Any new commit,
+# file, line or rule is still scanned and still fails CI. Never add a
+# path-wide or rule-wide exception here; use .gitleaks.toml with a written
+# triage note if that is ever genuinely needed.
+#
+# d1f5b92 (Phase 1Q, PR #19): tests/test_phase1q_e2e_journey.py line 85 set
+# the JWT issuer setting to a short synthetic name - the *issuer name* of
+# locally signed test JWTs (the signing secret in that file is "j" * 32). It is not a
+# credential and authenticates nothing; the generic-api-key rule fired on the
+# AUTH_* key name. Triaged in Phase 1Q-R. The literal was replaced by a named
+# constant in a later commit, so only this historical blob needs the entry.
+d1f5b92bf2050ef47a93216b3c918bb5dc9b8395:tests/test_phase1q_e2e_journey.py:generic-api-key:85
+
+# ff7352a (pre-existing on master, found by the Phase 1Q-R full-history
+# scan): tests/test_replit_config.py line 457 is a tuple of *forbidden key
+# names* the test asserts never appear in .replit (e.g. the encryption-key and
+# OpenAI-key variable names followed by "="). No value is present; the rule
+# fired on the variable-name shape.
+ff7352a39855dd801272623c1813494ea3d89539:tests/test_replit_config.py:generic-api-key:457
