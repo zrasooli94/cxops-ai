@@ -19,7 +19,10 @@ type View =
   | { kind: "ready"; token: string; organization: string; role: string; email: string; expires: string }
   | { kind: "accepting" }
   | { kind: "accepted"; organization: string; role: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  // The invitation is still valid; the signed-in account is the problem
+  // (wrong address, unverified email) or acceptance is not available yet.
+  | { kind: "retry"; token: string; message: string; unavailable: boolean };
 
 function readStoredToken(): string | null {
   try {
@@ -93,6 +96,10 @@ export function InviteClient() {
       storeToken(null);
       setView({ kind: "accepted", organization: result.organization_name, role: result.role });
     } catch (exc) {
+      if (exc instanceof CommercialApiError && (exc.status === 403 || exc.status === 503)) {
+        setView({ kind: "retry", token, message: exc.message, unavailable: exc.status === 503 });
+        return;
+      }
       if (exc instanceof CommercialApiError && exc.status === 404) {
         storeToken(null);
       }
@@ -169,6 +176,29 @@ export function InviteClient() {
           <a href="/api/auth/landing" className="mt-6 inline-flex rounded-xl bg-slate-950 px-5 py-3 text-sm font-medium text-white">
             Open the workspace
           </a>
+        </>
+      ) : null}
+
+      {view.kind === "retry" ? (
+        <>
+          <h1 className="mt-6 text-xl font-semibold text-slate-950">
+            {view.unavailable ? "Not available yet" : "Check the account you are signed in with"}
+          </h1>
+          <p role="alert" className="mt-3 text-sm leading-6 text-slate-600">
+            {view.message}
+          </p>
+          <p className="mt-3 text-xs leading-5 text-slate-500">
+            {view.unavailable
+              ? "Your invitation is still valid. Try again later."
+              : "Your invitation is still valid. Sign in with the invited, verified email address and open the link again."}
+          </p>
+          <button
+            type="button"
+            onClick={() => void accept(view.token)}
+            className="mt-5 inline-flex rounded-xl border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+          >
+            Try again
+          </button>
         </>
       ) : null}
 

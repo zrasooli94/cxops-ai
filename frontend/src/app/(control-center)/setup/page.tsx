@@ -47,6 +47,36 @@ const THEME_LABELS: Record<string, string> = {
   forest: "Forest",
 };
 
+// Domains entered before the chatbot exists are only a draft (the widget row
+// does not exist yet). Keep them for this tab so an interrupted setup resumes
+// with them. Origins are not secret; nothing else is stored.
+const DRAFT_ORIGINS_KEY = "cxops.setup.draftOrigins";
+
+function readDraftOrigins(organizationId: number): string[] {
+  try {
+    const raw = window.sessionStorage.getItem(`${DRAFT_ORIGINS_KEY}.${organizationId}`);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string").slice(0, 20)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDraftOrigins(organizationId: number, origins: string[] | null) {
+  try {
+    const key = `${DRAFT_ORIGINS_KEY}.${organizationId}`;
+    if (origins === null) {
+      window.sessionStorage.removeItem(key);
+    } else {
+      window.sessionStorage.setItem(key, JSON.stringify(origins));
+    }
+  } catch {
+    // Storage blocked: the draft simply lives in memory.
+  }
+}
+
 function errorText(exc: unknown): string {
   return exc instanceof CommercialApiError ? exc.message : "Something went wrong. Please try again.";
 }
@@ -80,10 +110,19 @@ export default function SetupPage() {
     void load().then((next) => {
       if (next) {
         setActive(firstOpenStep(next.steps));
-        setDraftOrigins(next.widget?.allowed_origins ?? []);
+        setDraftOrigins(
+          next.widget ? next.widget.allowed_origins : readDraftOrigins(next.organization.id),
+        );
       }
     });
   }, [load]);
+
+  useEffect(() => {
+    // Keep the active step visible in the horizontal (phone) stepper.
+    document
+      .querySelector('[aria-label="Setup steps"] [aria-current="step"]')
+      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [active]);
 
   if (loadError && !state) {
     return (
@@ -120,7 +159,7 @@ export default function SetupPage() {
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        <nav aria-label="Setup steps" className="space-y-3">
+        <nav aria-label="Setup steps" className="min-w-0 space-y-3">
           <div>
             <div className="flex justify-between text-xs text-slate-500">
               <span>Progress</span>
@@ -133,13 +172,23 @@ export default function SetupPage() {
               />
             </div>
           </div>
-          <ol className="space-y-1">
+          {/* Phones: a compact horizontal stepper so the active step's form
+              stays above the fold; desktop: the full vertical list. */}
+          <ol className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1 [scrollbar-width:none] lg:mx-0 lg:block lg:space-y-1 lg:overflow-visible lg:px-0">
             {state.steps.map((step, index) => (
-              <li key={step.key}>
+              <li key={step.key} className="shrink-0 lg:shrink">
                 <button
                   type="button"
-                  onClick={() => setActive(step.key)}
+                  onClick={() => {
+                    setActive(step.key);
+                    if (window.matchMedia("(max-width: 1023px)").matches) {
+                      document.getElementById("setup-step-panel")?.scrollIntoView({ block: "start" });
+                    }
+                  }}
                   aria-current={active === step.key ? "step" : undefined}
+                  aria-label={`${index + 1}. ${step.title}: ${
+                    step.complete ? "complete" : step.required ? "required" : "recommended"
+                  }`}
                   className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${
                     active === step.key ? "bg-white shadow-sm ring-1 ring-slate-200" : "hover:bg-white/70"
                   }`}
@@ -149,11 +198,11 @@ export default function SetupPage() {
                   ) : (
                     <Circle className="mt-0.5 h-4 w-4 shrink-0 text-slate-300" aria-hidden="true" />
                   )}
-                  <span>
-                    <span className="block font-medium text-slate-900">
+                  <span aria-hidden="true">
+                    <span className="block whitespace-nowrap font-medium text-slate-900">
                       {index + 1}. {step.title}
                     </span>
-                    <span className="block text-xs text-slate-500">
+                    <span className="hidden text-xs text-slate-500 lg:block">
                       {step.complete ? "Complete" : step.required ? "Required" : "Recommended"}
                     </span>
                   </span>
@@ -163,7 +212,7 @@ export default function SetupPage() {
           </ol>
         </nav>
 
-        <div className="min-w-0 space-y-5">
+        <div id="setup-step-panel" className="min-w-0 scroll-mt-4 space-y-5">
           {state.warnings.length > 0 ? (
             <div className="space-y-2">
               {state.warnings.map((warning) => (
@@ -183,7 +232,12 @@ export default function SetupPage() {
             readOnly={readOnly}
             freshKey={freshKey}
             draftOrigins={draftOrigins}
-            setDraftOrigins={setDraftOrigins}
+            setDraftOrigins={(origins) => {
+              setDraftOrigins(origins);
+              if (!state.widget) {
+                writeDraftOrigins(state.organization.id, origins);
+              }
+            }}
             onKeyIssued={setFreshKey}
             onSaved={async (goTo) => {
               const next = await load();
@@ -480,7 +534,7 @@ function ThemePicker({ value, options, onChange, disabled }: { value: string; op
           return (
             <label
               key={option}
-              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-violet-500 ${
                 value === option ? "border-violet-500 ring-2 ring-violet-100" : "border-slate-200"
               }`}
             >
@@ -524,6 +578,7 @@ function ChatbotStep({ state, readOnly, draftOrigins, onKeyIssued, onSaved }: St
           allowed_origins: draftOrigins,
         });
         onKeyIssued(created.public_widget_key);
+        writeDraftOrigins(state.organization.id, null);
         await onSaved("install");
       }
     });

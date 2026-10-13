@@ -300,14 +300,21 @@ export default function WorkspacePage() {
                 {new Date(data.usage.period_start).toLocaleDateString()}. Costs are estimates
                 from recorded usage, not an invoice.
               </p>
-              <p className="text-xs text-slate-500">
-                Last 24 hours: {data.usage.chat_turns_24h.completed} answered,{" "}
-                {data.usage.chat_turns_24h.failed} failed
-                {data.usage.chat_turns_24h.p50_seconds !== null
-                  ? `, typical reply ${data.usage.chat_turns_24h.p50_seconds}s`
-                  : ""}
-                .
-              </p>
+              {data.usage.chat_turns_24h.completed +
+                data.usage.chat_turns_24h.failed +
+                data.usage.chat_turns_24h.open >
+              0 ? (
+                // Counts background (asynchronous) AI replies only; widgets
+                // answered synchronously do not appear here.
+                <p className="text-xs text-slate-500">
+                  Background AI replies, last 24 hours: {data.usage.chat_turns_24h.completed}{" "}
+                  answered, {data.usage.chat_turns_24h.failed} failed
+                  {data.usage.chat_turns_24h.p50_seconds !== null
+                    ? `, typical reply ${data.usage.chat_turns_24h.p50_seconds}s`
+                    : ""}
+                  .
+                </p>
+              ) : null}
             </div>
           ) : (
             <Unavailable reason={data.usage.reason} />

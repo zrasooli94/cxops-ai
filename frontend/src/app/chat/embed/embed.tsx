@@ -141,6 +141,19 @@ main {
 }
 `;
 
+// Phase 1Q-R: the API refuses a widget's config with 403/404 when the widget
+// is switched off, its key is wrong, or the tenant is not approved/suspended.
+// That is final for this page view: the launcher is not shown and no session
+// is resumed or polled.
+const UNAVAILABLE_MESSAGE = "Chat is not available right now.";
+
+function isWidgetRefusal(error: unknown): boolean {
+  return (
+    error instanceof PublicChatApiError &&
+    (error.status === 403 || error.status === 404)
+  );
+}
+
 function clientMessageId(): string {
   return crypto.randomUUID().replaceAll("-", "");
 }
@@ -256,6 +269,7 @@ export function PublicChatWidget({
     useState<WidgetState>("closed");
   // UI-only visibility: when false, the launcher renders no matter what the
   // session state is. Minimize never touches ``state``.
+  const [unavailable, setUnavailable] = useState(false);
   const [panelOpen, setPanelOpen] =
     useState(false);
   const [config, setConfig] =
@@ -495,6 +509,11 @@ export function PublicChatWidget({
         }
         if (configResult.status === "fulfilled") {
           setConfig(configResult.value);
+        } else if (isWidgetRefusal(configResult.reason)) {
+          // The widget was switched off or the tenant suspended since this
+          // session started: do not resume it as if the chat were live.
+          discardSession();
+          throw configResult.reason;
         }
       }
 
@@ -525,11 +544,16 @@ export function PublicChatWidget({
         setState(resumed ?? "ai_active");
       }
     } catch (error) {
-      setErrorMessage(
-        error instanceof PublicChatApiError
-          ? error.message
-          : "Unable to reach the support channel.",
-      );
+      if (isWidgetRefusal(error)) {
+        setUnavailable(true);
+        setErrorMessage(UNAVAILABLE_MESSAGE);
+      } else {
+        setErrorMessage(
+          error instanceof PublicChatApiError
+            ? error.message
+            : "Unable to reach the support channel.",
+        );
+      }
       setState("error");
     } finally {
       connectInflightRef.current = false;
@@ -730,8 +754,12 @@ export function PublicChatWidget({
           setConfig((previous) => previous ?? resolved);
         }
       })
-      .catch(() => {
-        // The prefetch is an optimization, not a gate.
+      .catch((error: unknown) => {
+        // The prefetch is an optimization, not a gate - except for a definite
+        // refusal (widget off / tenant not live), which hides the launcher.
+        if (!cancelled && isWidgetRefusal(error)) {
+          setUnavailable(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -839,6 +867,11 @@ export function PublicChatWidget({
   // widget state — the launcher and the panel both render the sheet — so the
   // transparent-frame rules reach html/body even before a click.
   const embedStyles = <style>{EMBED_STYLE_RULES}</style>;
+
+  if (unavailable && !panelOpen) {
+    // Nothing to offer: no launcher, no session, no polling.
+    return embedStyles;
+  }
 
   if (!panelOpen || state === "closed") {
     return (
