@@ -112,6 +112,7 @@ def send_and_wait_for_reply(
     delivery: str,
     reply_timeout: float = 90.0,
     sleep: Any = time.sleep,
+    probe_text: str = PROBE_TEXT,
 ) -> str:
     """Send the probe message and verify a reply arrives.
 
@@ -121,7 +122,7 @@ def send_and_wait_for_reply(
     and the reply must then become visible through ``/sessions/updates``,
     polled at the server's suggested pace. Bodies are never printed.
     """
-    payload_out: dict[str, Any] = {"client_message_id": client_message_id, "text": PROBE_TEXT}
+    payload_out: dict[str, Any] = {"client_message_id": client_message_id, "text": probe_text}
     if delivery == "async":
         payload_out["delivery"] = "async"
     started = time.monotonic()
@@ -140,7 +141,7 @@ def send_and_wait_for_reply(
             raise StepFailure("no reply returned; the agent did not answer")
         return (
             f"reply received ({len(reply)} chars, body not shown), "
-            f"status={payload.get('status')!r}"
+            f"status={payload.get('status')!r}, handoff={bool(payload.get('handoff'))}"
         )
     if state != "accepted":
         raise StepFailure(
@@ -199,8 +200,15 @@ def run(args: argparse.Namespace) -> int:
             raise StepFailure(f"HTTP {code}: {_describe(payload)}")
         ok(
             "version endpoint",
-            f"{payload.get('service')} {payload.get('version')} ({payload.get('environment')})",
+            f"{payload.get('service')} {payload.get('version')} ({payload.get('environment')})"
+            f", build_sha={payload.get('build_sha')}",
         )
+        expected_sha = (args.expect_build_sha or "").strip().lower()
+        if expected_sha and payload.get("build_sha") != expected_sha:
+            bad(
+                "build identity",
+                f"expected build_sha {expected_sha!r}, deployed {payload.get('build_sha')!r}",
+            )
     except StepFailure as exc:
         bad("version endpoint", str(exc))
         _report(results)
@@ -272,6 +280,7 @@ def run(args: argparse.Namespace) -> int:
             origin_header=origin_header,
             client_message_id=f"smoke-{run_id}",
             delivery=args.delivery,
+            probe_text=args.probe_text,
         )
         ok("message answered", detail)
     except StepFailure as exc:
@@ -365,6 +374,19 @@ def main() -> int:
         help="An origin already on the tenant's allowlist, e.g. https://www.example.com",
     )
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--probe-text",
+        default=PROBE_TEXT,
+        help=(
+            "The single message to send. Defaults to the content-free generic "
+            "probe; pass one synthetic question to check a grounded answer."
+        ),
+    )
+    parser.add_argument(
+        "--expect-build-sha",
+        default="",
+        help="Fail unless /version reports exactly this commit (release check).",
+    )
     parser.add_argument(
         "--delivery",
         choices=("sync", "async"),

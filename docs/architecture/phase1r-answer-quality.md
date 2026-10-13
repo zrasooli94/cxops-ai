@@ -136,3 +136,23 @@ model was slow".
 
 After deploy: `GET /version` -> `build_sha` equals the merged commit. The
 runbook (`docs/runbooks/rispu-live-pilot.md`) lists the new metrics.
+
+## 7. The one proposed live test (owner approval required)
+
+Preconditions: this PR merged and deployed by the owner; `/version` shows the
+merged `build_sha`. Then, using RISPU's existing widget key file, one session,
+one synthetic question (~one decision call, one embedding, one answer call;
+counted against the tenant allowance):
+
+```bash
+.venv/bin/python scripts/smoke_public_chat.py \
+    --backend-url <render-api> --frontend-url <vercel-frontend> \
+    --widget-key-file <key-file> --embedding-origin https://www.rispu.com \
+    --expect-build-sha <merged-commit> \
+    --probe-text "Does RISPU develop mobile applications?"
+```
+
+Pass criteria: `build identity` passes, `message answered` reports
+`handoff=False`, status `ai_active`; the script then requests handoff and
+closes the same session (no further model calls). Bodies and keys are never
+printed. Abort on any `FAIL`.

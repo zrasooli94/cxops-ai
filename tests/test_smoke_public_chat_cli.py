@@ -200,3 +200,19 @@ def test_sync_delivery_keeps_the_original_contract() -> None:
     )
     assert "reply received" in detail
     assert "delivery" not in stub.requests[0][2]
+
+
+def test_probe_text_is_sent_and_handoff_flag_is_reported_without_the_body() -> None:
+    smoke_mod = _smoke_module()
+    stub = _StubSmoke(
+        [(200, {"processing_state": "completed", "reply": "Secret body", "status": "ai_active", "handoff": False})]
+    )
+    detail = smoke_mod.send_and_wait_for_reply(
+        stub,
+        origin_header={},
+        client_message_id="smoke-4",
+        delivery="sync",
+        probe_text="Does RISPU develop mobile applications?",
+    )
+    assert stub.requests[0][2]["text"] == "Does RISPU develop mobile applications?"
+    assert "handoff=False" in detail and "Secret body" not in detail
