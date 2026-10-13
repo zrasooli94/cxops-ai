@@ -160,3 +160,33 @@ moves it to approved, provisions, sends the one-time link, and approves the
 tenant after reviewing setup. Price and invoice outside the
 product until a billing decision exists. Start with a conservative allowance
 (e.g. 300 conversations / $3) and review usage weekly in the operator console.
+
+## 8. Final closeout (after review of f418542)
+
+| # | Item | Outcome | Evidence |
+|---|---|---|---|
+| C1 | Deployment order was merge-then-migrate (unsafe: Render/Vercel auto-deploy `master`) | Corrected: migrate from the release SHA first, merge once afterwards | `docs/runbooks/phase1q-release-runbook.md` |
+| C2 | Cross-version compatibility | Production code `32dc64f` on a `1q0a0001` database: 2219 passed / 1 expected failure (asserts DB at the old head; verdict `ahead` is non-refusing); app boots, `/ready` 200; Render preflight has no head check; worker gate warns only | runbook §1 |
+| C3 | Staff AI admission raced (read-only check; reproduced 10/10 admitted where 2 fit) | Reservations through the shared ledger/advisory lock, settled on success/error/cancellation, staff keys excluded from public-chat turn counts | `tests/test_phase1q_r_staff_budget.py` (9) |
+| C4 | Identity transport | Redirects never followed (token cannot leave `NHOST_AUTH_URL`); URL rejects credentials/query/fragment, https only | `tests/test_identity_verification.py` (16) |
+
+Budget guarantee and its limit: admissions (public-chat turns and staff
+calls) are serialized by one advisory lock across all API instances, so the
+sum of *reserved estimates* never exceeds the tenant budget or the platform
+ceiling. A call whose real cost exceeds its estimate (e.g. a long evaluation
+run) is recorded after the fact and blocks later admissions; the overshoot is
+bounded by (actual - estimate) of calls already in flight. Embeddings are
+estimated (fixed allowance), not metered per call. The OpenAI project hard
+limit remains the final authority.
+
+Final verification at the closeout head:
+
+| Check | Result |
+|---|---|
+| Backend pytest, Python 3.12 / 3.11 | 2310 passed / 2310 passed |
+| Ruff, mypy | clean |
+| Frontend `npm test` / `test:auth` / `test:session`, lint, typecheck, build | 799 / 620 / 100, clean, pass |
+| Docker API + frontend | built |
+| Alembic `1q0a0001 → 1p9b0001 → 1q0a0001`, `alembic check` | clean (a full downgrade to `base` fails in a pre-existing early migration with an unnamed FK - outside any rollback path) |
+| Gitleaks: PR range, full history | no leaks |
+| Widget first load | unchanged since f418542 (no frontend change in the closeout) |
