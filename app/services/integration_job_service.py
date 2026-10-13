@@ -90,6 +90,7 @@ class IntegrationJobService:
     CONVERSATION_REPLY = JOB_TYPE_CONVERSATION_REPLY
     SLA_ESCALATION = SLA_ESCALATION_JOB_TYPE
     AI_EVALUATION = "ai.evaluation"
+    PUBLIC_CHAT_TURN = "public_chat.turn"
 
     @staticmethod
     async def _assert_agent_execution_target(
@@ -472,6 +473,32 @@ class IntegrationJobService:
 
             return None
 
+        # Durable public-chat AI turn (Phase 1P.9). Normally run in-process by
+        # the API's turn dispatcher; the scheduled worker is the backstop.
+        if job.job_type == IntegrationJobService.PUBLIC_CHAT_TURN:
+            organization_id = job.organization_id
+            if organization_id is None:
+                raise PermanentJobError("Chat turn job is missing an organization binding")
+            payload = job.payload or {}
+            try:
+                session_id = int(payload["session_id"])
+                message_id = int(payload["message_id"])
+                client_message_id = str(payload["client_message_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PermanentJobError("Chat turn job payload is malformed") from exc
+
+            # Imported lazily: public_chat_service imports this module.
+            from app.services.public_chat_service import PublicChatService
+
+            await PublicChatService.process_turn(
+                db,
+                organization_id=organization_id,
+                session_id=session_id,
+                message_id=message_id,
+                client_message_id=client_message_id,
+            )
+            return None
+
         raise PermanentJobError(f"Unknown job type: {job.job_type}")
 
     @staticmethod
@@ -487,6 +514,26 @@ class IntegrationJobService:
         For human replies, this synchronizes the message delivery_status with
         the job's final retry/failed state.
         """
+        if job.job_type == IntegrationJobService.PUBLIC_CHAT_TURN:
+            # A chat turn that will not be retried must not leave the visitor
+            # waiting: hand the conversation to a human (no model call).
+            payload = job.payload if isinstance(job.payload, dict) else {}
+            if job.status == "failed" and job.organization_id is not None:
+                try:
+                    session_id = int(payload["session_id"])
+                    client_message_id = str(payload["client_message_id"])
+                except (KeyError, TypeError, ValueError):
+                    return
+                from app.services.public_chat_service import PublicChatService
+
+                await PublicChatService.fail_turn_to_handoff(
+                    db,
+                    organization_id=job.organization_id,
+                    session_id=session_id,
+                    client_message_id=client_message_id,
+                )
+            return
+
         if job.job_type != IntegrationJobService.CONVERSATION_REPLY:
             return
 

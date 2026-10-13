@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -48,6 +49,10 @@ class PublicChatSessionCreateRequest(BaseModel):
 class PublicChatMessageSendRequest(BaseModel):
     client_message_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=10000)
+    # Phase 1P.9: "async" accepts the message immediately and delivers the
+    # reply through /sessions/updates. "sync" (default) keeps the original
+    # contract for already-deployed widgets.
+    delivery: Literal["sync", "async"] = "sync"
 
     @field_validator("client_message_id")
     @classmethod
@@ -62,6 +67,21 @@ class PublicChatMessageSendResponse(BaseModel):
     reply: str | None
     status: str
     handoff: bool
+    # accepted | completed | handoff (Phase 1P.9; additive, optional).
+    processing_state: str | None = None
+
+
+class PublicChatTurnState(BaseModel):
+    message_id: int
+    state: Literal["accepted", "processing"]
+
+
+class PublicChatUpdatesResponse(BaseModel):
+    status: str
+    messages: list[PublicChatMessageRead]
+    turns: list[PublicChatTurnState]
+    cursor: int
+    poll_after_ms: int
 
 
 class PublicChatHumanRequestResponse(BaseModel):

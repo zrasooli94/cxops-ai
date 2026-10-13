@@ -36,6 +36,7 @@ from app.schemas.public_chat import (
     PublicChatSessionCreateResponse,
     PublicChatSessionSummary,
     PublicChatStateResponse,
+    PublicChatUpdatesResponse,
 )
 from app.services.public_chat_service import (
     PublicChatConfigurationNotFoundError,
@@ -49,6 +50,7 @@ from app.services.public_chat_service import (
     PublicChatWidgetDisabledError,
     public_chat_service,
 )
+from app.services.public_chat_turn_dispatcher import turn_dispatcher
 
 router = APIRouter(
     prefix="/public/chat",
@@ -241,6 +243,7 @@ async def send_public_chat_message(
             embedding_origin=origin,
             text=body.text,
             client_message_id=body.client_message_id,
+            delivery=body.delivery,
         )
     except (
         PublicChatConfigurationNotFoundError,
@@ -253,6 +256,13 @@ async def send_public_chat_message(
         PublicChatMessageInFlightError,
     ) as exc:
         PublicChatRouteErrors.raise_checked(exc)
+
+    # Async turn: the job row is committed by now; run it in this process
+    # right away (bounded, tenant-fair). The ids never reach the response.
+    turn_job_id = result.pop("_turn_job_id", None)
+    turn_organization_id = result.pop("_organization_id", None)
+    if turn_job_id is not None and turn_organization_id is not None:
+        turn_dispatcher.submit(int(turn_job_id), int(turn_organization_id))
 
     record_public_chat_message(outcome=result.get("status", "processed"))
     # No message text, no session token, no widget key: identifiers and the
@@ -286,6 +296,33 @@ async def get_public_chat_state(
         PublicChatRouteErrors.raise_checked(exc)
 
     return PublicChatStateResponse(**state)
+
+
+@router.get(
+    "/sessions/updates",
+    response_model=PublicChatUpdatesResponse,
+)
+async def get_public_chat_updates(
+    db: DatabaseSession,
+    session_token: Payload,
+    after_id: Annotated[int, Query(ge=0, le=2**62)] = 0,
+):
+    """Messages after a cursor plus pending-turn states (Phase 1P.9).
+
+    Scoped by the session bearer token like every public endpoint: only that
+    session's own conversation (and therefore tenant) is ever read.
+    """
+    try:
+        session = await public_chat_service.verify_session(db, session_token)
+        updates = await public_chat_service.get_updates(db, session, after_id=after_id)
+    except (
+        PublicChatSessionNotFoundError,
+        PublicChatSessionExpiredError,
+        PublicChatSessionClosedError,
+    ) as exc:
+        PublicChatRouteErrors.raise_checked(exc)
+
+    return PublicChatUpdatesResponse(**updates)
 
 
 @router.post(

@@ -1,3 +1,7 @@
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import (
@@ -17,10 +21,37 @@ log = get_logger(__name__)
 
 configure_logging()
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Resume public-chat turns interrupted by a restart (Phase 1P.9).
+
+    One bounded query at start-up, run in the background so a slow or
+    unreachable database never delays the process from serving. No periodic
+    polling: later recovery is driven by visitors polling for their replies.
+    """
+    from app.services.public_chat_turn_dispatcher import turn_dispatcher
+
+    async def _resume() -> None:
+        try:
+            resumed = await turn_dispatcher.recover_on_startup()
+            if resumed:
+                log.info("public_chat_turns_resumed_on_startup", count=resumed)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("public_chat_turn_startup_recovery_failed", error_type=type(exc).__name__)
+
+    task = asyncio.get_running_loop().create_task(_resume())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await turn_dispatcher.drain(timeout=10.0)
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     debug=settings.debug,
+    lifespan=lifespan,
 )
 
 app.add_middleware(RequestCorrelationMiddleware)
