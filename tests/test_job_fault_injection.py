@@ -113,6 +113,9 @@ class FakeZendesk:
 
     def __init__(self) -> None:
         self.comments: dict[int, list[dict]] = {}
+        # Zendesk assigns comment IDs globally, not separately per ticket.
+        # The local message uniqueness constraint relies on that contract.
+        self._next_comment_id = 1
         self.sends = 0
         self.page_calls = 0
         self.fail_scan_times = 0
@@ -131,10 +134,11 @@ class FakeZendesk:
     def _append(self, ticket_id: int, body: str, created: datetime) -> dict:
         bucket = self.comments.setdefault(ticket_id, [])
         comment = {
-            "id": len(bucket) + 1,
+            "id": self._next_comment_id,
             "body": body,
             "created_at": self._stamp(created),
         }
+        self._next_comment_id += 1
         bucket.append(comment)
         return comment
 
@@ -224,6 +228,25 @@ def zendesk(monkeypatch) -> FakeZendesk:
     fake = FakeZendesk()
     fake.install(monkeypatch)
     return fake
+
+
+def test_fake_zendesk_uses_global_comment_ids_across_tickets():
+    """The fake must respect Zendesk's globally unique comment IDs.
+
+    Otherwise two independently delivered replies to different tickets in
+    the same tenant can both get external ID '1', colliding with the real
+    conversation-message uniqueness constraint and causing a spurious retry.
+    """
+    fake = FakeZendesk()
+    fake.seed(7000, 2)
+    fake.seed(7001, 3)
+    fake.add_newer(7000, 1)
+    fake.add_newer(7001, 2)
+
+    ids = [comment["id"] for ticket in fake.comments.values() for comment in ticket]
+    assert len(ids) == 8
+    assert len(ids) == len(set(ids))
+    assert fake.comments[7000][0]["id"] != fake.comments[7001][0]["id"]
 
 
 # ---------------------------------------------------------------------------
