@@ -27,7 +27,11 @@ export type NavigationIconName =
   | "car"
   | "sliders-horizontal"
   | "flask"
-  | "messages-square";
+  | "messages-square"
+  | "building"
+  | "rocket"
+  | "user-plus"
+  | "settings";
 
 /** Every control-center destination that carries a capability requirement. */
 export type ControlCenterRoute =
@@ -47,7 +51,11 @@ export type ControlCenterRoute =
   | "/transformation"
   | "/simulations"
   | "/automotive-pilot"
-  | "/experiments";
+  | "/experiments"
+  | "/workspace"
+  | "/setup"
+  | "/team"
+  | "/settings/public-chat";
 
 /**
  * Single source of truth for what each route requires. Sidebar visibility
@@ -76,6 +84,11 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/simulations": CAPABILITIES.TRANSFORMATION_SIMULATION_READ,
   "/automotive-pilot": CAPABILITIES.TICKET_READ,
   "/experiments": CAPABILITIES.TRANSFORMATION_EXPERIMENT_READ,
+  // Phase 1Q business-owner workspace.
+  "/workspace": null,
+  "/setup": CAPABILITIES.ORGANIZATION_READ,
+  "/team": CAPABILITIES.MEMBER_READ,
+  "/settings/public-chat": CAPABILITIES.INTEGRATION_MANAGE,
 };
 
 export interface NavigationItem {
@@ -217,6 +230,42 @@ export const PRIMARY_NAVIGATION: readonly NavigationItem[] = [
     description: "Production telemetry",
     icon: "activity",
     requiredCapability: ROUTE_REQUIREMENTS["/observability"],
+  },
+];
+
+/**
+ * Phase 1Q: the business-owner group shown above the operations navigation.
+ * Kept separate from PRIMARY_NAVIGATION so the operations sidebar contract is
+ * unchanged; visibility uses the same capability predicate.
+ */
+export const BUSINESS_NAVIGATION: readonly NavigationItem[] = [
+  {
+    href: "/workspace",
+    label: "Overview",
+    description: "Your business at a glance",
+    icon: "building",
+    requiredCapability: ROUTE_REQUIREMENTS["/workspace"],
+  },
+  {
+    href: "/setup",
+    label: "Setup",
+    description: "Guided setup and readiness",
+    icon: "rocket",
+    requiredCapability: ROUTE_REQUIREMENTS["/setup"],
+  },
+  {
+    href: "/team",
+    label: "Team",
+    description: "Members and invitations",
+    icon: "user-plus",
+    requiredCapability: ROUTE_REQUIREMENTS["/team"],
+  },
+  {
+    href: "/settings/public-chat",
+    label: "Chatbot settings",
+    description: "Widget, domains and key",
+    icon: "settings",
+    requiredCapability: ROUTE_REQUIREMENTS["/settings/public-chat"],
   },
 ];
 

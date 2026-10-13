@@ -16,16 +16,23 @@ import {
  */
 
 describe("closed allowlist", () => {
-  it("contains exactly the two authored themes", () => {
+  it("contains exactly the authored themes", () => {
     assert.deepEqual(
       Object.keys(PUBLIC_CHAT_THEMES).sort(),
-      ["default", "rispu"],
+      ["default", "forest", "midnight", "ocean", "rispu"],
     );
   });
 
-  it("resolves the two known tokens", () => {
-    assert.equal(resolveTheme("default").name, "default");
-    assert.equal(resolveTheme("rispu").name, "rispu");
+  it("resolves every known token", () => {
+    for (const name of ["default", "rispu", "midnight", "ocean", "forest"]) {
+      assert.equal(resolveTheme(name).name, name);
+    }
+  });
+
+  it("never resolves inherited object keys as themes", () => {
+    for (const token of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      assert.equal(resolveTheme(token).name, "default", token);
+    }
   });
 
   it("falls back to default for every unknown token", () => {

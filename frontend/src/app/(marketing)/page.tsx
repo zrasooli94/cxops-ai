@@ -71,7 +71,7 @@ export default function HomePage() {
           aria-hidden="true"
           className="pointer-events-none absolute -top-40 left-1/2 h-[480px] w-[900px] -translate-x-1/2 rounded-full bg-[radial-gradient(closest-side,rgba(115,87,255,0.12),transparent)]"
         />
-        <Container className="relative grid items-center gap-14 py-16 lg:grid-cols-[1.05fr_1fr] lg:py-24">
+        <Container className="relative grid items-center gap-14 py-16 lg:grid-cols-[0.95fr_1.05fr] lg:py-24">
           <div>
             <p className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-medium text-violet-700">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-500" aria-hidden="true" />

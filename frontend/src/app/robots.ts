@@ -31,7 +31,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: {
       userAgent: "*",
       allow: "/",
-      disallow: ["/login", "/chat/embed"],
+      disallow: ["/login", "/chat/embed", "/invite", "/operator"],
     },
     sitemap: `${origin}/sitemap.xml`,
     host: origin,

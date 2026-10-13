@@ -271,17 +271,23 @@ export function parseAuthorizationInfo(
     return null;
   }
 
-  return {
+  const parsed: AuthorizationInfo = {
     organization_id: organizationId,
     role,
     capabilities,
   };
+  if (typeof candidate.organization_status === "string") {
+    return { ...parsed, organization_status: candidate.organization_status };
+  }
+  return parsed;
 }
 
 /** Structural view a Server Component hands to the client provider. */
 export interface AuthorizationView {
   organizationId: number;
   role: string;
+  /** "active" unless the backend reported another lifecycle status. */
+  organizationStatus: string;
   capabilities: readonly string[];
   can(capability: string): boolean;
   canAny(required: readonly string[]): boolean;
@@ -302,6 +308,7 @@ export function createAuthorizationView(
   return {
     organizationId: authorization.organization_id,
     role: authorization.role,
+    organizationStatus: authorization.organization_status ?? "active",
     capabilities,
     can: (capability) => hasCapability(capabilities, capability),
     canAny: (required) => hasAnyCapability(capabilities, required),

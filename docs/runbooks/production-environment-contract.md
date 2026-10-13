@@ -92,6 +92,10 @@ every value below is validated before uvicorn binds.
 | `ZENDESK_WEBHOOK_SECRET` | If Zendesk enabled | `WARN` if absent. Not a pilot blocker. |
 | `TICKET_EVENT_WEBHOOK_SECRET` | If ticket webhooks enabled | `WARN` if absent. Not a pilot blocker. |
 | `ZENDESK_SUBDOMAIN` / `ZENDESK_CLIENT_ID` / `ZENDESK_CLIENT_SECRET` / `ZENDESK_REDIRECT_URI` | If Zendesk OAuth enabled | Not used by the A1 pilot. |
+| `PUBLIC_LEAD_CAPTURE_ENABLED` | Phase 1Q. **Unset / `false`** until releasing lead capture is approved | While off, `POST /public/leads` answers 503 and stores nothing; the website form says requests open soon. |
+| `LEAD_SUBMISSIONS_PER_HOUR_PLATFORM` / `LEAD_SUBMISSIONS_PER_DAY_PER_EMAIL` | Optional (defaults 30 / 3) | Abuse ceilings for public lead submissions. |
+| `TEAM_INVITATION_TTL_HOURS` | Optional (default 72) | Lifetime of a team invitation link. |
+| `ONBOARDING_KNOWLEDGE_SETUP_ENABLED` | Phase 1Q. Unset / `false` | When `true`, organizations still in setup may ingest knowledge (paid embeddings) before approval. Off keeps every AI spend behind operator approval. |
 
 ## Render worker service (`cxops-worker`)
 
@@ -185,6 +189,7 @@ deleted or weakened.
 | `CXOPS_PUBLIC_SITE_URL` | **Vercel production origin**, `https://…`, present before the build | Inlined into the build by `robots.ts`, `sitemap.ts`, and static metadata. A runtime-only value produces a site that advertises `http://localhost:3000` to every crawler, and it fails silently: the site works, the metadata does not. Vercel also provides `VERCEL_PROJECT_PRODUCTION_URL` / `VERCEL_URL`. |
 | `NEXT_PUBLIC_NHOST_SUBDOMAIN` | Nhost project subdomain | Public by construction. Embedded in the client bundle. |
 | `NEXT_PUBLIC_NHOST_REGION` | Nhost region (e.g. `ap-southeast-1`) | Same. |
+| `CXOPS_WIDGET_FRAME_ANCESTORS` | Phase 1Q. Optional, **present before the build** | Approved tenants' exact `https://` origins (comma/space separated) allowed to frame `/chat/embed`, appended to the base list in `next.config.ts`. Read at build time, so adding a customer domain is an env change plus a redeploy. Wildcards, `http`, and paths are rejected and named in the build log. |
 | `NEXT_STANDALONE_OUTPUT` | `off` where Vercel requires it | Vercel runs `next start` behind its own routing, which cannot use a standalone server output. The name describes the capability being turned off, not a hosting provider. |
 | Public staff auth (`NEXT_PUBLIC_*`) | Subdomain and region only | The only `NEXT_PUBLIC_*` values in this codebase are `NEXT_PUBLIC_NHOST_SUBDOMAIN` and `NEXT_PUBLIC_NHOST_REGION`. **No server secret may ever take a `NEXT_PUBLIC_` prefix** — those values are inlined into the client bundle at build time and are readable by anyone who loads the page. |
 | Server-only secrets | Never `NEXT_PUBLIC_` | The BFF reads server secrets from non-public env names. See "Env boundary" below. |

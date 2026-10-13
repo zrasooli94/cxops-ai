@@ -14,4 +14,10 @@ export interface AuthorizationInfo {
   readonly organization_id: number;
   readonly role: string;
   readonly capabilities: readonly string[];
+  /**
+   * Phase 1Q commercial lifecycle of the organization ("onboarding",
+   * "pending_review", "active", "suspended"). Absent from older backends.
+   * Until it is "active", `capabilities` is the setup subset of the role.
+   */
+  readonly organization_status?: string;
 }

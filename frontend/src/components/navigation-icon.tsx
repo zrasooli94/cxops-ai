@@ -3,6 +3,7 @@ import {
   Activity,
   Bot,
   BrainCircuit,
+  Building2,
   Car,
   ClipboardCheck,
   FlaskConical,
@@ -10,10 +11,13 @@ import {
   Inbox,
   Layers,
   MessagesSquare,
+  Rocket,
   Route,
+  Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Ticket,
+  UserPlus,
   Users,
   Workflow,
 } from "lucide-react";
@@ -37,6 +41,10 @@ const ICONS: Record<NavigationIconName, LucideIcon> = {
   "sliders-horizontal": SlidersHorizontal,
   flask: FlaskConical,
   "messages-square": MessagesSquare,
+  building: Building2,
+  rocket: Rocket,
+  "user-plus": UserPlus,
+  settings: Settings2,
 };
 
 export default function NavigationIcon({
