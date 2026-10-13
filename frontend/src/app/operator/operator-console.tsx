@@ -515,8 +515,18 @@ function EntitlementsForm({ tenant, onSaved }: { tenant: Tenant; onSaved: () => 
     try {
       const body: Record<string, unknown> = { plan_code: plan.trim() || null };
       if (tenant.widget) {
-        body.monthly_ai_turn_limit = Number.parseInt(turns, 10);
-        body.monthly_ai_budget_usd = Number.parseFloat(budget);
+        // An empty or invalid field would serialise as null, which the API
+        // treats as "clear the override" - refuse it instead of guessing.
+        const turnLimit = Number(turns);
+        const budgetUsd = Number(budget);
+        if (turns.trim() === "" || !Number.isInteger(turnLimit) || turnLimit < 0) {
+          throw new CommercialApiError(400, "Enter a whole number of AI conversations (0 or more).");
+        }
+        if (budget.trim() === "" || !Number.isFinite(budgetUsd) || budgetUsd < 0) {
+          throw new CommercialApiError(400, "Enter a budget in USD (0 or more).");
+        }
+        body.monthly_ai_turn_limit = turnLimit;
+        body.monthly_ai_budget_usd = budgetUsd;
       }
       await requestJson(`/platform-admin/organizations/${tenant.id}/entitlements`, { method: "PATCH", body });
       await onSaved();

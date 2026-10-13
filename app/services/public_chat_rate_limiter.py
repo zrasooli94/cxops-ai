@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func
+from sqlalchemy import CursorResult, and_, delete, func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,6 +76,9 @@ public_chat_rate_limiter = PublicChatRateLimiter()
 
 # Buckets whose window is older than this are pruned opportunistically.
 _PRUNE_WINDOW_SECONDS = 7200.0
+# Buckets of day-long windows (Phase 1Q per-email lead limit) are kept longer.
+_LONG_WINDOW_PREFIX = "lead_email:"
+_LONG_WINDOW_PRUNE_SECONDS = 2 * 86400.0
 
 
 def _contract_key(scope: str, key: str) -> str:
@@ -153,9 +156,16 @@ class PublicChatRateLimiterDb:
         if now_epoch is None:
             now_epoch = time.time()
         cutoff = datetime.fromtimestamp(now_epoch - _PRUNE_WINDOW_SECONDS, tz=UTC)
+        long_cutoff = datetime.fromtimestamp(now_epoch - _LONG_WINDOW_PRUNE_SECONDS, tz=UTC)
+        long_window = PublicChatRateLimitBucket.key_cache.like(f"{_LONG_WINDOW_PREFIX}%")
+        # Phase 1Q: daily lead buckets (scope "lead_email") must outlive the
+        # 2 h horizon, or the first prune after 02:00 UTC would reset them.
         result = await db.execute(
             delete(PublicChatRateLimitBucket).where(
-                PublicChatRateLimitBucket.window_start < cutoff
+                or_(
+                    and_(PublicChatRateLimitBucket.window_start < cutoff, ~long_window),
+                    and_(PublicChatRateLimitBucket.window_start < long_cutoff, long_window),
+                )
             )
         )
         return int(cast("CursorResult[Any]", result).rowcount or 0)

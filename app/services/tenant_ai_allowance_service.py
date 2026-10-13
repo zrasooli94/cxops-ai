@@ -174,15 +174,19 @@ class TenantAIAllowanceService:
                 )
             )
             if organization_status != LIFECYCLE_ACTIVE:
+                usage = await cls._usage(
+                    db, organization_id=organization_id, period_start=period_start, now=moment
+                )
                 await db.commit()
                 return AllowanceDecision(
                     allowed=False,
                     reason="organization_not_active",
-                    turns_used=0,
+                    turns_used=usage.turns,
                     turn_limit=turn_limit,
-                    cost_used_usd=0.0,
+                    cost_used_usd=usage.spent_usd,
                     budget_usd=budget,
                     period_start=period_start,
+                    outstanding_usd=usage.outstanding_usd,
                 )
             existing = (
                 await db.execute(

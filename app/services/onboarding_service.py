@@ -247,10 +247,12 @@ class OnboardingService:
         changes: dict[str, Any],
     ) -> None:
         organization = await _organization(db, organization_id)
-        if organization.lifecycle_status not in {LIFECYCLE_ONBOARDING, LIFECYCLE_ACTIVE}:
+        if organization.lifecycle_status == LIFECYCLE_PENDING_REVIEW:
             raise OnboardingConflictError(
                 "Business details are locked while the workspace is under review."
             )
+        if organization.lifecycle_status not in {LIFECYCLE_ONBOARDING, LIFECYCLE_ACTIVE}:
+            raise OnboardingConflictError("This workspace is suspended.")
         changed: list[str] = []
         if "name" in changes and changes["name"] is not None:
             name = str(changes["name"]).strip()
@@ -371,6 +373,15 @@ class OnboardingService:
         """Branding and origins during setup. ``enabled`` is not accepted here."""
         if "enabled" in changes:
             raise OnboardingError("The chatbot is switched on from its settings after approval.")
+        # What the operator reviews (domains, public text) must not change
+        # while the review is open.
+        status = (await _organization(db, organization_id)).lifecycle_status
+        if status == LIFECYCLE_PENDING_REVIEW:
+            raise OnboardingConflictError(
+                "Chatbot settings are locked while the workspace is under review."
+            )
+        if status not in {LIFECYCLE_ONBOARDING, LIFECYCLE_ACTIVE}:
+            raise OnboardingConflictError("This workspace is suspended.")
         theme = changes.get("theme_token")
         if theme is not None and theme not in SELF_SERVICE_THEME_TOKENS:
             raise OnboardingError("unsupported theme")

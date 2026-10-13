@@ -1236,3 +1236,54 @@ async def test_ai_reservation_refused_for_unapproved_or_suspended_tenant(db):
         key=f"p1q-test:{active.id}:{uuid.uuid4().hex}",
     )
     assert allowed.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_daily_lead_buckets_but_removes_stale_chat_buckets(db):
+    import time as _time
+
+    from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
+
+    now = _time.time()
+    three_hours_ago = now - 3 * 3600
+    email_key = f"p1q-{uuid.uuid4().hex}"
+    chat_key = f"p1q-{uuid.uuid4().hex}"
+    assert await public_chat_rate_limiter_db.allow(
+        db, scope="lead_email", key=email_key, limit=1, window_seconds=60.0,
+        now_epoch=three_hours_ago,
+    )
+    assert await public_chat_rate_limiter_db.allow(
+        db, scope="session_messages", key=chat_key, limit=1, window_seconds=60.0,
+        now_epoch=three_hours_ago,
+    )
+    await public_chat_rate_limiter_db.prune(db, now_epoch=now)
+    await db.commit()
+    remaining = {
+        row
+        for (row,) in await db.execute(
+            select(PublicChatRateLimitBucket.key_cache).where(
+                PublicChatRateLimitBucket.key_cache.in_(
+                    [f"lead_email:{email_key}", f"session_messages:{chat_key}"]
+                )
+            )
+        )
+    }
+    assert remaining == {f"lead_email:{email_key}"}
+    await db.execute(
+        delete(PublicChatRateLimitBucket).where(
+            PublicChatRateLimitBucket.key_cache == f"lead_email:{email_key}"
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chatbot_settings_locked_during_review(db, client):
+    org, owner, _ = await _org(db, status="pending_review", widget=True, widget_enabled=False)
+    async with client:
+        r = await client.patch(
+            "/onboarding/widget",
+            json={"allowed_origins": ["https://elsewhere.example"]},
+            headers=_auth(owner, org.id),
+        )
+    assert r.status_code == 409
