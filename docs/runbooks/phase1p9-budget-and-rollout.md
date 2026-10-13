@@ -51,7 +51,7 @@ a tenant that runs out is handed to humans instead of incurring spend.
 
 | # | Step | Gate / check | Rollback |
 |---|---|---|---|
-| 0 | Review and merge the draft PR stack in order (#3 → #4 → #8 → #9 → this PR) | Owner review, CI green | Revert merge |
+| 0 | Review and merge this draft PR (its prerequisites #3–#12 are already on master) | Owner review, CI green | Revert merge |
 | 1 | Run migration `1p9a0001` on Neon (additive: two nullable columns + check) via the documented Alembic path | `alembic current` = `1p9a0001`; production preflight passes | `alembic downgrade 1p5a0001` (drops only the new columns) |
 | 2 | Deploy API with `PUBLIC_CHAT_ASYNC_ENABLED=false` | Existing widget behaviour unchanged; `/health`, `/ready` OK | Redeploy previous image |
 | 3 | Upgrade Render API to Starter if it is on Free (**paid, $7**) | Owner approval of spend | Downgrade plan |
