@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, overload
 
 T = TypeVar("T")
 
@@ -30,7 +30,13 @@ class LazyAttribute(Generic[T]):
     def __set_name__(self, owner: type, name: str) -> None:
         self.attr_name = name
 
-    def __get__(self, instance: Any, owner: type | None = None) -> T:
+    @overload
+    def __get__(self, instance: None, owner: type | None = None) -> LazyAttribute[T]: ...
+
+    @overload
+    def __get__(self, instance: object, owner: type | None = None) -> T: ...
+
+    def __get__(self, instance: object | None, owner: type | None = None) -> Any:
         if instance is None:
             return self
         cache = instance.__dict__
