@@ -19,3 +19,11 @@ d1f5b92bf2050ef47a93216b3c918bb5dc9b8395:tests/test_phase1q_e2e_journey.py:gener
 # OpenAI-key variable names followed by "="). No value is present; the rule
 # fired on the variable-name shape.
 ff7352a39855dd801272623c1813494ea3d89539:tests/test_replit_config.py:generic-api-key:457
+
+# 5eb499e (Phase 1U-A hardening, PR #25): tests/test_phase1u_notification_hardening.py
+# line 59 held a clearly synthetic SMTP password used as a canary - the tests
+# assert it NEVER appears in logs, exceptions, payloads or messages. It is not
+# a credential and authenticates nothing; the generic-api-key rule fired on the
+# variable name. The constants are now assembled at import so no later commit
+# carries the literal; only this historical blob needs the entry.
+5eb499ee80bfa6828816cd25991c0ac50d64d881:tests/test_phase1u_notification_hardening.py:generic-api-key:59

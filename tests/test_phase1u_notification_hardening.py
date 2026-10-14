@@ -53,10 +53,16 @@ client = base.client
 db = base.db
 org_scope = base.org_scope
 
-TELEGRAM_URL = "tgram://123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef/123456789"
-EMAIL_URL = "mailtos://svc:S3cretPW-unique-9x@company.example?smtp=smtp.gmail.com&to=staff@example.com"
-TOKEN = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
-PASSWORD = "S3cretPW-unique-9x"
+# Random canaries generated per run (so no credential-shaped literal exists in
+# the repository). The tests assert none of them ever reaches a log, an
+# exception chain, a job payload or an outgoing message.
+TOKEN = secrets.token_urlsafe(24)  # Telegram-token-shaped: [A-Za-z0-9_-]{32}
+PASSWORD = "canary-" + secrets.token_hex(8)
+TELEGRAM_URL = f"tgram://123456789:{TOKEN}/123456789"
+EMAIL_URL = (
+    f"mailtos://svc:{PASSWORD}@company.example"
+    "?smtp=smtp.gmail.com&to=staff@example.com"
+)
 
 
 # --------------------------------------------------------------------------
