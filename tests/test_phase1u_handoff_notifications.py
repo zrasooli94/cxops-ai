@@ -215,28 +215,48 @@ async def test_reconciliation_finds_missing_job_once(db, client, org_scope, monk
 
 @pytest.mark.asyncio
 async def test_atomic_rollback_when_outbox_staging_fails(db, client, org_scope, monkeypatch):
-    """A failed enqueue cannot commit a human_requested status without an outbox."""
+    """A failed enqueue cannot commit a human_requested status without an outbox.
+
+    The proof does not rely on the failing session's own (rolled back) state:
+    it reads through an independent connection.
+    """
+    from app.core.database import AsyncSessionLocal
+
     _enable(monkeypatch)
     org, session = await _session(db, client, org_scope)
+    # Stable primary keys, captured before the rollback expires the ORM objects.
+    session_id, org_id = session.id, org.id
+
     async def fail_stage(_db, *, organization_id, session_id):
         raise RuntimeError("deliberate synthetic insert failure")
+
     monkeypatch.setattr(notifications, "stage_initial_handoff", fail_stage)
     with pytest.raises(RuntimeError, match="deliberate synthetic"):
         await PublicChatRepository.handoff_to_human(
-            db, session=session, organization_id=org.id
+            db, session=session, organization_id=org_id
         )
-    await db.rollback()
-    row = await db.get(PublicChatSession, session.id)
-    assert row is not None and row.status == "ai_active"
-    jobs = (
-        await db.execute(
-            select(IntegrationJob).where(
-                IntegrationJob.organization_id == org.id,
-                IntegrationJob.job_type == notifications.NOTIFY_JOB_TYPE,
+
+    async with AsyncSessionLocal() as other:  # a different connection
+        status = await other.scalar(
+            select(PublicChatSession.status).where(PublicChatSession.id == session_id)
+        )
+        jobs = (
+            await other.execute(
+                select(IntegrationJob.id).where(
+                    IntegrationJob.organization_id == org_id,
+                    IntegrationJob.job_type == notifications.NOTIFY_JOB_TYPE,
+                )
             )
-        )
-    ).scalars().all()
+        ).scalars().all()
+    assert status == "ai_active"
     assert jobs == []
+    # the repository rolled back, so the caller's session is immediately usable
+    assert (
+        await db.scalar(
+            select(PublicChatSession.status).where(PublicChatSession.id == session_id)
+        )
+        == "ai_active"
+    )
 
 
 @pytest.mark.asyncio
@@ -251,6 +271,11 @@ async def test_flood_cap_suppresses_excess_and_creates_one_digest(
 
     _enable(monkeypatch)
     monkeypatch.setenv("HANDOFF_NOTIFICATIONS_ENABLED", "true")
+    # Production HTTPS validation stays on; the disposable environment simply
+    # provides an HTTPS frontend origin.
+    monkeypatch.setattr(
+        notifications.settings, "frontend_base_url", "https://staff.example.test"
+    )
     monkeypatch.setattr(handoff_dispatcher, "submit", lambda *_a: True)
     monkeypatch.setattr(
         notifications.settings,
@@ -266,6 +291,7 @@ async def test_flood_cap_suppresses_excess_and_creates_one_digest(
     async def fake_send(*, channel, configured, title, body):
         assert "CXOps AI" in title and body.startswith("CXOps AI")
         assert "secret" not in body and "customer message" not in body
+        assert body.endswith("https://staff.example.test/public-chat")
         sent.append(channel)
     monkeypatch.setattr(apprise_sender, "send_staff_handoff", fake_send)
 
@@ -323,3 +349,8 @@ async def test_flood_cap_suppresses_excess_and_creates_one_digest(
     assert len(suppressed) == 2
     assert len(digests) == 1
     assert digests[0].status == "pending"
+    # exactly six admitted per hour: the other two never reached a provider,
+    # and the digest is not due (nor sent) inside the hour it summarises
+    assert sorted(j.payload.get("outcome") for j in all_jobs if j.payload.get("event") == "initial").count("provider_accepted") == 6
+    assert sent.count("email") + sent.count("telegram") == 12
+    assert digests[0].available_at > datetime.now(UTC)

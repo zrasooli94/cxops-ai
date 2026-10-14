@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db_connection import release_idle_connection
 from app.core.logging import get_logger
+from app.core.metrics import record_handoff_notification
 from app.models.integration_job import IntegrationJob
 from app.models.organization import LIFECYCLE_ACTIVE, Organization
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
@@ -25,7 +26,13 @@ from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
 
 log = get_logger(__name__)
 NOTIFY_JOB_TYPE = "handoff.notify"
-CHANNELS = ("email", "telegram")
+CHANNELS = ("email", "telegram")  # every channel this service knows how to send
+
+
+def required_channels() -> tuple[str, ...]:
+    """Channels this deployment is configured to send; every runner needs all."""
+    wanted = {c.strip() for c in settings.handoff_notification_channels.split(",")}
+    return tuple(c for c in CHANNELS if c in wanted)
 MAX_RECOVERY_BATCH = 50
 
 
@@ -62,7 +69,8 @@ async def stage_initial_handoff(
     if not settings.handoff_notifications_enabled:
         return None
     if activation is None or activation > datetime.now(UTC):
-        raise RuntimeError("handoff notification rollout timestamp is not active")
+        # Not yet active: the handoff itself must still succeed, unchanged.
+        return None
     if not await _correct_tenant(db, organization_id):
         return None
     key = first_handoff_key(organization_id, session_id)
@@ -82,6 +90,7 @@ async def stage_initial_handoff(
     )
     fresh = (await db.execute(stmt)).scalar_one_or_none()
     if fresh is not None:
+        record_handoff_notification(outcome="staged")
         return int(fresh)
     return await db.scalar(
         select(IntegrationJob.id).where(
@@ -174,11 +183,14 @@ def _config_state() -> str:
     return "missing"
 
 
-async def _suppressed(db: AsyncSession, job: IntegrationJob, reason: str) -> None:
+async def _suppressed(
+    db: AsyncSession, job: IntegrationJob, reason: str, **extra: Any
+) -> None:
     allowed = {"disabled", "inactive", "stale", "unconfigured", "rate_limited", "nothing_waiting"}
     if reason not in allowed:
         raise ValueError("unknown suppression reason")
-    await _update_outcome(db, job, outcome=f"suppressed:{reason}")
+    await _update_outcome(db, job, outcome=f"suppressed:{reason}", **extra)
+    record_handoff_notification(outcome=f"suppressed_{reason}")
     log.info("handoff_notification_suppressed", job_id=job.id, reason=reason)
 
 
@@ -206,9 +218,11 @@ async def _send_channels(db: AsyncSession, job: IntegrationJob, *, count: int | 
         raise PermanentJobError("invalid recorded notification channels")
     # All channels must be configured in each worker; otherwise defer before
     # contacting either one, to avoid a partial send on environment drift.
-    for channel in CHANNELS:
+    channels = required_channels()
+    for channel in channels:
         destination = _destination(channel)
         if not destination:
+            record_handoff_notification(outcome="deferred_config_missing")
             raise JobDeferredError("notification worker missing configuration")
         try:
             restricted_url(channel, destination)
@@ -233,8 +247,9 @@ async def _send_channels(db: AsyncSession, job: IntegrationJob, *, count: int | 
     await release_idle_connection(db)
     async with handoff_notification_delivery_lease(job.id) as acquired:
         if not acquired:
+            record_handoff_notification(outcome="deferred_busy")
             raise JobDeferredError("notification delivery busy")
-        for channel in CHANNELS:
+        for channel in channels:
             if channel in accepted:
                 continue
             try:
@@ -248,12 +263,15 @@ async def _send_channels(db: AsyncSession, job: IntegrationJob, *, count: int | 
                 await _suppressed(db, job, "unconfigured")
                 return
             except NotificationTransportError:
+                record_handoff_notification(outcome="transport_error")
                 raise RuntimeError("notification delivery failed") from None
             accepted.append(channel)
+            record_handoff_notification(outcome=f"channel_accepted_{channel}")
             await _update_outcome(db, job, accepted_channels=accepted)
             log.info("handoff_notification_channel_accepted", job_id=job.id, channel=channel)
 
     await _update_outcome(db, job, outcome="provider_accepted")
+    record_handoff_notification(outcome="provider_accepted")
 
 
 async def _process_initial(db: AsyncSession, job: IntegrationJob) -> None:
@@ -264,7 +282,7 @@ async def _process_initial(db: AsyncSession, job: IntegrationJob) -> None:
     payload = job.payload
     session_id = payload.get("session_id")
     if (
-        set(payload) - {"session_id", "event", "quota_granted", "accepted_channels", "outcome"}
+        set(payload) - {"session_id", "event", "quota_granted", "accepted_channels", "outcome", "digest_hour"}
         or isinstance(session_id, bool)
         or not isinstance(session_id, int)
         or session_id <= 0
@@ -317,7 +335,11 @@ async def _process_initial(db: AsyncSession, job: IntegrationJob) -> None:
                 .on_conflict_do_nothing(index_elements=[IntegrationJob.dedupe_key])
             )
             await db.execute(digest)
-            await _suppressed(db, job, "rate_limited")
+            # The digest counts by the hour a request was SUPPRESSED in (the
+            # cap's own window), not by when the job row was created.
+            await _suppressed(
+                db, job, "rate_limited", digest_hour=hour_start.isoformat()
+            )
             return
         await _update_outcome(db, job, quota_granted=True)
     await _send_channels(db, job)
@@ -354,9 +376,8 @@ async def _process_digest(db: AsyncSession, job: IntegrationJob) -> None:
         .where(
             IntegrationJob.organization_id == job.organization_id,
             IntegrationJob.job_type == NOTIFY_JOB_TYPE,
-            IntegrationJob.created_at >= hour,
-            IntegrationJob.created_at < hour + timedelta(hours=1),
             IntegrationJob.payload["outcome"].astext == "suppressed:rate_limited",
+            IntegrationJob.payload["digest_hour"].astext == hour.isoformat(),
         )
     )
     if not count:
@@ -373,6 +394,7 @@ async def process_handoff_job(db: AsyncSession, job: IntegrationJob) -> None:
         raise PermanentJobError("notification has no tenant binding")
     state = _config_state()
     if state == "missing":
+        record_handoff_notification(outcome="deferred_config_missing")
         raise JobDeferredError("notification worker configuration missing")
     if state == "off":
         await _suppressed(db, job, "disabled")

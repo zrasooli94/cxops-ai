@@ -191,6 +191,11 @@ class Settings(BaseSettings):
     handoff_notification_email_url: str = ""
     handoff_notification_telegram_url: str = ""
     handoff_notification_max_per_hour: int = 6
+    # Channels every runner must be able to reach before any job may send. A
+    # runner that lacks one DEFERS (never a partial send, never a suppression).
+    handoff_notification_channels: str = "email,telegram"
+    # Derived, not meant to be set: why an enabled flag was downgraded to OFF.
+    handoff_notification_config_error: str = ""
 
     @field_validator("handoff_notifications_enabled", mode="before")
     @classmethod
@@ -206,14 +211,29 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_handoff_rollout(self) -> "Settings":
-        if self.handoff_notifications_enabled:
-            activation = self.handoff_notification_activated_at
-            if activation is None or activation.tzinfo is None:
-                raise ValueError("handoff activation requires an aware UTC timestamp")
-            if self.handoff_notification_pilot_tenant != "rispu":
-                raise ValueError("handoff pilot is restricted to RISPU")
-            if not 1 <= self.handoff_notification_max_per_hour <= 6:
-                raise ValueError("handoff cap must remain between 1 and 6")
+        """An invalid notification rollout downgrades to OFF; it never raises.
+
+        ``Settings`` is built by every process (API, scheduled worker, scripts).
+        Raising here would turn a mistyped notification variable into an outage
+        of chat, SLA and job processing. The downgrade is fail-closed (no
+        notification is sent or staged) and the reason is logged at start-up.
+        """
+        if not self.handoff_notifications_enabled:
+            return self
+        activation = self.handoff_notification_activated_at
+        channels = [c.strip() for c in self.handoff_notification_channels.split(",") if c.strip()]
+        error = ""
+        if activation is None or activation.tzinfo is None:
+            error = "activation requires an aware UTC timestamp"
+        elif self.handoff_notification_pilot_tenant != "rispu":
+            error = "pilot is restricted to RISPU"
+        elif not 1 <= self.handoff_notification_max_per_hour <= 6:
+            error = "hourly cap must stay between 1 and 6"
+        elif not channels or not set(channels) <= {"email", "telegram"}:
+            error = "channels must be a non-empty subset of email,telegram"
+        if error:
+            self.handoff_notifications_enabled = False
+            self.handoff_notification_config_error = error
         return self
 
     # Public web chat (Phase 1P.1)

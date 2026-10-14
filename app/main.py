@@ -46,6 +46,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     # Phase 1P.9R: refuse to serve on a schema this build does not support
     # (raises in production; uvicorn then exits before binding its port).
+    if settings.handoff_notification_config_error:
+        log.warning(
+            "handoff_notifications_disabled_by_config",
+            reason=settings.handoff_notification_config_error,
+        )
     mark_import_complete()  # everything is imported; the schema gate is not "import"
     started = time.perf_counter()
     await check_schema(engine)

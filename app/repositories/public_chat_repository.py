@@ -152,26 +152,31 @@ class PublicChatRepository:
 
         if session.organization_id != organization_id:
             raise ValueError("Session does not belong to this organization")
-        changed = (
-            await db.execute(
-                update(PublicChatSession)
-                .where(
-                    PublicChatSession.id == session.id,
-                    PublicChatSession.organization_id == organization_id,
-                    PublicChatSession.status == "ai_active",
-                )
-                .values(status="human_requested")
-                .returning(PublicChatSession.id)
-                .execution_options(synchronize_session=False)
-            )
-        ).scalar_one_or_none()
+        session_id = session.id
         job_id = None
-        if changed is not None and settings.handoff_notifications_enabled:
-            job_id = await stage_initial_handoff(
-                db, organization_id=organization_id, session_id=session.id
-            )
-        # One commit. If staging fails, the status change cannot commit alone.
-        await db.commit()
+        try:
+            changed = (
+                await db.execute(
+                    update(PublicChatSession)
+                    .where(
+                        PublicChatSession.id == session_id,
+                        PublicChatSession.organization_id == organization_id,
+                        PublicChatSession.status == "ai_active",
+                    )
+                    .values(status="human_requested")
+                    .returning(PublicChatSession.id)
+                    .execution_options(synchronize_session=False)
+                )
+            ).scalar_one_or_none()
+            if changed is not None and settings.handoff_notifications_enabled:
+                job_id = await stage_initial_handoff(
+                    db, organization_id=organization_id, session_id=session_id
+                )
+            # One commit: the status change and its outbox row, or neither.
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
         await db.refresh(session)
 
         if job_id is not None:
@@ -183,7 +188,7 @@ class PublicChatRepository:
                 log.warning(
                     "handoff_dispatch_deferred",
                     organization_id=organization_id,
-                    session_id=session.id,
+                    session_id=session_id,
                 )
         return session
 
