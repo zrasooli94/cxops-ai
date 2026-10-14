@@ -11,7 +11,6 @@ from app.models.conversation_message import ConversationMessage
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
 from app.models.ticket import Ticket
 
-
 log = get_logger(__name__)
 
 
