@@ -1,0 +1,4 @@
+# Phase 1U-B disposable/CI-only OpenAPI fuzzing.
+# Never install this file in Render, production Docker, or scheduled workers.
+# Pinned direct dependency; transitive dependency license/lock review follows.
+schemathesis==4.31.0

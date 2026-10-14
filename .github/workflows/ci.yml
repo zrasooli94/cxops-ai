@@ -285,3 +285,64 @@ jobs:
 
       - name: Build frontend image
         run: docker build -t cxops-frontend:test ./frontend
+
+  api-contract:
+    name: API Contract (Schemathesis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    # Independent, disposable DB: deliberately distinct from backend-tests.
+    # This job cannot connect to Neon or any external provider. Fail closed
+    # before application import / migration if the connection target drifts.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops_contract_disposable_test
+          POSTGRES_USER: cxops_contract
+          POSTGRES_PASSWORD: cxops_contract
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops_contract -d cxops_contract_disposable_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      CXOPS_API_CONTRACT_RUN: "1"
+      DATABASE_URL: postgresql+asyncpg://cxops_contract:cxops_contract@127.0.0.1:5432/cxops_contract_disposable_test
+      ENVIRONMENT: development
+      DEBUG: "false"
+      AUTH_MODE: hs256
+      AUTH_DEV_MODE: "false"
+      OPENAI_API_KEY: ""
+      EVALUATION_OPENAI_API_KEY: ""
+      PUBLIC_LEAD_CAPTURE_ENABLED: "false"
+      PUBLIC_CHAT_ASYNC_ENABLED: "false"
+      HANDOFF_NOTIFICATIONS_ENABLED: "false"
+      ONBOARDING_KNOWLEDGE_SETUP_ENABLED: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install production lock plus CI-only contract tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt
+          pip install -r requirements-contract.txt
+          python -m pip check
+
+      - name: Refuse any non-disposable test target
+        run: python -m scripts.api_contract_guard
+
+      - name: Migrate only the disposable PostgreSQL database
+        run: alembic upgrade head
+
+      - name: Fuzz nine anonymous endpoints with local in-process ASGI
+        run: python -m pytest -q --tb=short tests/contract/test_public_schemathesis.py
