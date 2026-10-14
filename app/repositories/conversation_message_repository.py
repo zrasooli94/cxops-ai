@@ -1,6 +1,7 @@
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_connection import refresh_if_stale
 from app.models.conversation_message import ConversationMessage
 
 
@@ -39,7 +40,7 @@ class ConversationMessageRepository:
         db.add(message)
 
         await db.commit()
-        await db.refresh(message)
+        await refresh_if_stale(db, message)
 
         return message
 

@@ -234,7 +234,7 @@ def test_fingerprint_default_is_current_workflow_version():
     )
     # Bumped from "1" in Phase 1K.2B: the coordinator now routes action intent
     # straight to the Action Specialist, so v1 analyses must not be reused.
-    assert AGENT_WORKFLOW_VERSION == "3"
+    assert AGENT_WORKFLOW_VERSION == "4"
     assert defaulted == explicit
     assert (
         AgentWorkflowService._compute_fingerprint(**_fingerprint_kwargs())

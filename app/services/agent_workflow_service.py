@@ -1,6 +1,5 @@
 import hashlib
 import json
-import re
 import time
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict, cast
@@ -57,6 +56,7 @@ from app.services.integration_job_service import (
     AgentExecutionQueueBlockedError,
     IntegrationJobService,
 )
+from app.services.intent_classification import AgentIntent, classify_intent
 from app.services.knowledge_search_service import KnowledgeSearchService
 from app.services.rag_helpers import filter_and_format_sources
 from app.services.tool_authorization_service import ToolAuthorizationService
@@ -95,11 +95,10 @@ AGENT_DECISION_VERSION = "2"
 # 1R changed the deterministic question/injection classification (word-boundary
 # question phrases, capability questions, commitment and instruction-override
 # vetoes), so v2 fingerprints must not reuse a pre-1R analysis.
-AGENT_WORKFLOW_VERSION = "3"
+AGENT_WORKFLOW_VERSION = "4"
 
 # Deterministic coordinator intent labels (Phase 1K). These are metadata that
 # describe the request; they never gate behaviour on their own.
-AgentIntent = Literal["information", "action", "mixed", "none"]
 
 
 # Maps raw workflow_path step labels to the specialist (Phase 1K) that
@@ -191,67 +190,6 @@ def validate_specialist_path(
 
     return (len(issues) == 0), issues
 
-# Minimal action-phrasing signals. NOTE: fast-path detection (record-only /
-# acknowledgement) wins over these because those branches return early.
-_ACTION_INTENT_MARKERS = (
-    "please",
-    "i need",
-    "i want",
-    "i'd like",
-    "would like",
-    "help me",
-    "fix",
-    "stop",
-    "reset",
-    "cancel",
-    "update",
-    "change",
-    "activate",
-    "send me",
-    "requesting",
-    "investigate",
-)
-
-# Question phrasing signals for knowledge-only informational requests (Phase
-# 1R). Matched on word boundaries: the earlier substring match let "show" count
-# as "how" and "whatsapp" count as "what". Phrases cover the natural ways a
-# visitor asks about a business ("do you offer ...", "can you build ...", "who
-# is ...", "tell me about ..."), not only wh-words.
-_QUESTION_INTENT_PATTERN = re.compile(
-    r"\b(?:what|how|when|which|why|does|can i|is it|are you|am i)\b|"
-    r"\b(?:eligib|requirement)"
-)
-
-# Capability/identity phrasing only counts when the message is not already
-# action-phrased, so "can you please call me back?" stays a pure ``action``.
-_CAPABILITY_QUESTION_PATTERN = re.compile(
-    r"\b(?:where|who|whom|whose|do you|did you|can you|could you|is there|"
-    r"are there|tell me about)\b"
-)
-
-# A question phrased as a request for the business to perform something for
-# the visitor ("can you start my project now?") is a transaction, not a
-# capability question ("can you build mobile apps?"). The verb alone is not
-# enough ("how can a business start a project" is informational): it must be a
-# polite request that also claims ownership or immediacy.
-_COMMITMENT_REQUEST_PATTERN = re.compile(
-    r"\b(?:can|could|would|will) you (?:please )?(?:start|begin|launch|publish|"
-    r"increase|book|schedule|hire|buy|order|sign|build|create|set up|change|send|"
-    r"make|delete|remove|cancel|update|run|post|upgrade|add|set|do)\b"
-    r"[^?.\n]*\b(?:my|our|for me|for us|now|today|asap|immediately|"
-    r"right away|tomorrow)\b"
-)
-
-# Instruction-override phrasing. A message carrying it is never a plain
-# informational question: it goes to a human instead of the grounded
-# auto-reply, whatever else it asks.
-_INSTRUCTION_OVERRIDE_PATTERN = re.compile(
-    r"\b(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}"
-    r"\b(?:instruction|rule|prompt|polic|guideline|system|previous|above|prior)"
-    r"|\bsystem prompt\b|\byou are now\b|\bdeveloper mode\b|\bjailbreak"
-    r"|\bpretend (?:to be|you)\b|\bact as\b|\breveal your (?:prompt|instructions)\b"
-)
-
 logger = get_logger(__name__)
 
 
@@ -297,6 +235,8 @@ class AgentWorkflowService:
             model=settings.chat_model,
             api_key=SecretStr(settings.openai_api_key),
             temperature=0,
+            timeout=settings.openai_request_timeout_seconds,
+            max_retries=settings.openai_max_retries,
         )
 
         # ``method="function_calling"`` is required, not stylistic. The default
@@ -635,36 +575,11 @@ class AgentWorkflowService:
         intent still branches on ``needs_knowledge`` exactly as before Phase
         1K, so fast paths and other final decisions are unchanged.
         """
-        if fast_path_action is not None:
-            return "none"
-
-        is_action_phrased = any(
-            marker in text for marker in _ACTION_INTENT_MARKERS
+        return classify_intent(
+            text=text,
+            fast_path_action=fast_path_action,
+            has_policy_signal=has_policy_signal,
         )
-
-        if _INSTRUCTION_OVERRIDE_PATTERN.search(text):
-            return "mixed"
-
-        is_question = _QUESTION_INTENT_PATTERN.search(text) is not None
-        is_capability_question = (
-            not is_action_phrased
-            and _CAPABILITY_QUESTION_PATTERN.search(text) is not None
-        )
-
-        if (is_question or is_capability_question) and (
-            _COMMITMENT_REQUEST_PATTERN.search(text)
-        ):
-            return "mixed"
-
-        if is_action_phrased:
-            if not is_question and not has_policy_signal:
-                return "action"
-            return "mixed"
-
-        if is_question or is_capability_question:
-            return "information"
-
-        return "mixed"
 
     async def _assess_knowledge_need(
         self,
@@ -1312,6 +1227,18 @@ STRICT RULES:
     ``customer.send_reply`` tool; never invent Zendesk tools for local chats.
 """
 
+        # Phase 1S: in a multi-message chat the ticket still shows the FIRST
+        # message. Name the message to act on, but only when it differs, so a
+        # single-message prompt is unchanged.
+        latest_message = (state.get("latest_customer_text") or "").strip()
+        latest_message_section = ""
+        if latest_message and latest_message != str(ticket["description"]).strip():
+            latest_message_section = (
+                "\nLATEST CUSTOMER MESSAGE (this is the message to respond to; "
+                "the ticket description above is the conversation's first message):\n"
+                f"{latest_message}\n"
+            )
+
         user_prompt = f"""
 TICKET
 
@@ -1323,7 +1250,7 @@ Subject:
 
 Description:
 {ticket["description"]}
-
+{latest_message_section}
 Status:
 {ticket["status"]}
 

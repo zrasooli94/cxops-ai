@@ -2,6 +2,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.db_connection import refresh_if_stale
 from app.models.ai_request_log import AIRequestLog
 
 
@@ -112,7 +113,7 @@ class AIObservabilityService:
         db.add(log)
 
         await db.commit()
-        await db.refresh(log)
+        await refresh_if_stale(db, log)
 
         return log
 

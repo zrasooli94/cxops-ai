@@ -30,6 +30,8 @@ class RAGService:
         self.llm = ChatOpenAI(
             model=settings.chat_model,
             api_key=SecretStr(settings.openai_api_key),
+            timeout=settings.openai_request_timeout_seconds,
+            max_retries=settings.openai_max_retries,
         )
 
     @staticmethod

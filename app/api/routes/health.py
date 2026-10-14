@@ -10,7 +10,9 @@ them causes outages:
 
 ``/ready``
     Readiness. Verifies the one dependency that makes the API non-functional
-    without it - PostgreSQL. Answers ``503`` when that check fails, which is
+    without it - PostgreSQL. ``timing_ms`` reports the database first-statement
+    and steady-state round-trip times (numbers only, no host or error text).
+    Answers ``503`` when that check fails, which is
     what a load balancer or Render health check needs in order to take the
     instance out of rotation. Optional tenant integrations are never probed
     here: a third-party provider being down must not pull the whole platform
@@ -28,6 +30,8 @@ None of these endpoints echo configuration, connection strings, or credential
 material, and a failing database check reports a fixed reason rather than the
 driver's exception text, which can embed the connection URL.
 """
+
+import time
 
 from fastapi import APIRouter, Response, status
 from sqlalchemy import text
@@ -72,12 +76,27 @@ async def health() -> dict:
 async def ready(response: Response) -> dict:
     """Readiness. Fails with 503 when PostgreSQL is unreachable."""
     database = DB_OK
+    timing: dict[str, float] = {}
     try:
         async with AsyncSessionLocal() as db:
+            started = time.perf_counter()
             await db.execute(text("SELECT 1"))
+            timing["database_first_statement"] = round(
+                (time.perf_counter() - started) * 1000, 1
+            )
+            # A second statement on the same connection is a pure network
+            # round trip: this is the per-statement cost every chat turn pays
+            # (~45 statements) and the number that decides whether the API and
+            # the database are in the same region.
+            started = time.perf_counter()
+            await db.execute(text("SELECT 1"))
+            timing["database_round_trip"] = round(
+                (time.perf_counter() - started) * 1000, 1
+            )
     except Exception:  # noqa: BLE001 - any driver/timeout error fails readiness
         # The detail is logged, not returned. Callers get a stable contract.
         database = DB_UNAVAILABLE
+        timing = {}
 
     ready_now = database == DB_OK
     if not ready_now:
@@ -89,6 +108,7 @@ async def ready(response: Response) -> dict:
         "version": settings.app_version,
         "environment": settings.environment,
         "checks": {"database": database},
+        "timing_ms": timing,
     }
 
 

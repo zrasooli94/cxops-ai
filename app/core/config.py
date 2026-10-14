@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
 
     chat_model: str = "gpt-4o-mini"
+    # Phase 1S: bound every OpenAI call. The SDK default is a 10 minute timeout
+    # with 2 retries, so one hung connection could hold a customer's request,
+    # a pooled database connection's turn lease and an analysis slot for the
+    # better part of an hour. A turn that exceeds this fails closed instead.
+    openai_request_timeout_seconds: float = 30.0
+    openai_max_retries: int = 1
 
     @field_validator(
         "generic_webhook_replay_window_seconds",

@@ -1,6 +1,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_connection import refresh_if_stale
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 
@@ -20,7 +21,7 @@ class ConversationRepository:
         db.add(conversation)
 
         await db.commit()
-        await db.refresh(conversation)
+        await refresh_if_stale(db, conversation)
 
         return conversation
 
@@ -39,7 +40,7 @@ class ConversationRepository:
             setattr(conversation, field, value)
 
         await db.commit()
-        await db.refresh(conversation)
+        await refresh_if_stale(db, conversation)
 
         return conversation
 

@@ -1,6 +1,7 @@
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_connection import refresh_if_stale
 from app.models.ticket import Ticket
 
 OPEN_TICKET_STATUSES = ("new", "open", "pending")
@@ -16,7 +17,7 @@ class TicketRepository:
         db.add(ticket)
 
         await db.commit()
-        await db.refresh(ticket)
+        await refresh_if_stale(db, ticket)
 
         return ticket
 
@@ -242,7 +243,7 @@ class TicketRepository:
             setattr(ticket, field, value)
 
         await db.commit()
-        await db.refresh(ticket)
+        await refresh_if_stale(db, ticket)
 
         return ticket
 
@@ -284,6 +285,6 @@ class TicketRepository:
             setattr(ticket, field, value)
 
         await db.commit()
-        await db.refresh(ticket)
+        await refresh_if_stale(db, ticket)
 
         return ticket

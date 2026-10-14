@@ -23,7 +23,7 @@ import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import Select, TextClause, event, text
+from sqlalchemy import Select, TextClause, event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 from sqlalchemy.orm import ORMExecuteState, Session
 
@@ -80,6 +80,25 @@ async def release_idle_connection(db: AsyncSession) -> bool:
         return False
     await db.commit()
     return True
+
+
+async def refresh_if_stale(db: AsyncSession, instance: object) -> None:
+    """``db.refresh(instance)`` only when something on it is actually stale.
+
+    Repositories ``commit()`` and then ``refresh()`` the row they just wrote so
+    server-generated columns (ids, timestamps) are populated. With
+    ``eager_defaults`` enabled on every mapper those values come back in the
+    INSERT/UPDATE's own ``RETURNING`` and, with ``expire_on_commit=False``,
+    nothing is expired, so the follow-up SELECT is a pure network round trip
+    (a measurable cost per statement against a remote database). If any
+    attribute is expired - after a rollback, or a column the dialect could not
+    return - the full refresh still happens, so the helper can never leave an
+    object less loaded than ``refresh`` would have.
+    """
+    state = inspect(instance)
+    if state is not None and not state.expired and not state.expired_attributes:
+        return
+    await db.refresh(instance)
 
 
 @asynccontextmanager
