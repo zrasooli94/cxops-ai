@@ -989,3 +989,81 @@ async def test_lifespan_with_the_flag_off_starts_no_notification_machinery(monke
         pass
     assert called["n"] == 0
     assert len(handoff_dispatcher._inflight) == 0
+
+
+def test_analysis_capacity_reserves_connections_for_notification_leases_only_when_enabled(
+    monkeypatch,
+):
+    from app.core import database
+    from app.core.config import settings
+    from app.core.db_connection import AnalysisCapacity
+
+    monkeypatch.setattr(database, "engine", types.SimpleNamespace(
+        sync_engine=types.SimpleNamespace(
+            pool=types.SimpleNamespace(size=lambda: 5, _max_overflow=10)
+        )
+    ))
+    monkeypatch.setattr(settings, "public_chat_turn_max_concurrency", 6)
+    capacity = AnalysisCapacity(configured=50)
+    monkeypatch.setattr(settings, "handoff_notifications_enabled", False)
+    off = capacity.effective_limit()
+    monkeypatch.setattr(settings, "handoff_notifications_enabled", True)
+    on = capacity.effective_limit()
+    assert off == 15 - 6 - 2
+    assert on == off - 2
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_destination_defers_the_alert_instead_of_consuming_it(
+    db, client, org_scope, monkeypatch, provider
+):
+    _enable(monkeypatch)
+    org = await _rispu_org(db, org_scope)
+    (sid,) = await _make_sessions(db, org, 1)
+    await _handoff(sid, org.id)
+    (job,) = await _jobs(org.id)
+    monkeypatch.setattr(
+        notifications.settings, "handoff_notification_email_url", "json://evil.example/hook"
+    )
+    assert await _run_job(job.id) == "deferred"
+    (still,) = await _jobs(org.id)
+    assert still.attempts == 0 and "outcome" not in still.payload
+    assert provider.calls == []
+
+    monkeypatch.setattr(notifications.settings, "handoff_notification_email_url", EMAIL_URL)
+    await _make_due(job.id)
+    assert await _run_job(job.id) == "completed"  # delivered once corrected
+    assert provider.calls == ["email", "telegram"]
+
+
+def test_unset_github_variables_mean_defaults_not_a_broken_process():
+    from app.core.config import Settings
+
+    cfg = Settings(
+        handoff_notifications_enabled="",
+        handoff_notification_channels="",
+        handoff_notification_max_per_hour="",
+        handoff_notification_pilot_tenant="",
+        handoff_notification_activated_at="",
+    )
+    assert cfg.handoff_notifications_enabled is False
+    assert cfg.handoff_notification_channels == "email,telegram"
+    assert cfg.handoff_notification_max_per_hour == 6
+    assert cfg.handoff_notification_pilot_tenant == "rispu"
+
+
+def test_the_scheduled_worker_installs_the_lock_and_passes_every_runtime_variable():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "production-worker.yml").read_text()
+    assert "pip install -r requirements-lock.txt" in workflow
+    assert "cache-dependency-path: requirements-lock.txt" in workflow
+    for name in (
+        "HANDOFF_NOTIFICATIONS_ENABLED", "HANDOFF_NOTIFICATION_ACTIVATED_AT",
+        "HANDOFF_NOTIFICATION_CHANNELS", "HANDOFF_NOTIFICATION_MAX_PER_HOUR",
+        "HANDOFF_NOTIFICATION_EMAIL_URL", "HANDOFF_NOTIFICATION_TELEGRAM_URL",
+    ):
+        assert f"{name}: ${{{{" in workflow, name
+    # secrets stay secrets: destinations come from `secrets.`, flags from `vars.`
+    assert "secrets.HANDOFF_NOTIFICATION_EMAIL_URL" in workflow
+    assert "secrets.HANDOFF_NOTIFICATION_TELEGRAM_URL" in workflow
+    lock = (REPO_ROOT / "requirements-lock.txt").read_text()
+    assert "apprise==2.0.1" in lock

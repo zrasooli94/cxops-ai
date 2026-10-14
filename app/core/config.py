@@ -204,6 +204,24 @@ class Settings(BaseSettings):
         # this from explicit OFF inside the worker's actual delivery gate.
         return False if value == "" else value
 
+    @field_validator(
+        "handoff_notification_channels",
+        "handoff_notification_pilot_tenant",
+        "handoff_notification_max_per_hour",
+        mode="before",
+    )
+    @classmethod
+    def _handoff_empty_value_is_default(cls, value, info):
+        # An unset GitHub Actions variable arrives as "", which must mean "the
+        # default", never "no channels" or an int parse error in every process.
+        if value == "":
+            return {
+                "handoff_notification_channels": "email,telegram",
+                "handoff_notification_pilot_tenant": "rispu",
+                "handoff_notification_max_per_hour": 6,
+            }[info.field_name]
+        return value
+
     @field_validator("handoff_notification_activated_at", mode="before")
     @classmethod
     def _handoff_empty_activation_is_unset(cls, value):

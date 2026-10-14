@@ -227,8 +227,12 @@ async def _send_channels(db: AsyncSession, job: IntegrationJob, *, count: int | 
         try:
             restricted_url(channel, destination)
         except NotificationDestinationError:
-            await _suppressed(db, job, "unconfigured")
-            return
+            # Present but invalid is still a configuration problem on THIS
+            # runner: keep the alert durable (no attempt consumed, nothing
+            # sent) so it goes out once the secret is corrected, instead of
+            # being silently consumed as "suppressed".
+            record_handoff_notification(outcome="deferred_config_missing")
+            raise JobDeferredError("notification destination configuration invalid") from None
 
     queue_url = settings.frontend_base_url.rstrip("/") + "/public-chat"
     if not queue_url.startswith("https://"):
@@ -260,8 +264,8 @@ async def _send_channels(db: AsyncSession, job: IntegrationJob, *, count: int | 
                     body=body,
                 )
             except NotificationDestinationError:
-                await _suppressed(db, job, "unconfigured")
-                return
+                record_handoff_notification(outcome="deferred_config_missing")
+                raise JobDeferredError("notification destination configuration invalid") from None
             except NotificationTransportError:
                 record_handoff_notification(outcome="transport_error")
                 raise RuntimeError("notification delivery failed") from None

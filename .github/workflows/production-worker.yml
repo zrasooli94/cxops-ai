@@ -74,6 +74,8 @@ jobs:
       # worker without configuration defers, rather than consumes the alert.
       HANDOFF_NOTIFICATIONS_ENABLED: ${{ vars.HANDOFF_NOTIFICATIONS_ENABLED }}
       HANDOFF_NOTIFICATION_ACTIVATED_AT: ${{ vars.HANDOFF_NOTIFICATION_ACTIVATED_AT }}
+      HANDOFF_NOTIFICATION_CHANNELS: ${{ vars.HANDOFF_NOTIFICATION_CHANNELS }}
+      HANDOFF_NOTIFICATION_MAX_PER_HOUR: ${{ vars.HANDOFF_NOTIFICATION_MAX_PER_HOUR }}
       HANDOFF_NOTIFICATION_EMAIL_URL: ${{ secrets.HANDOFF_NOTIFICATION_EMAIL_URL }}
       HANDOFF_NOTIFICATION_TELEGRAM_URL: ${{ secrets.HANDOFF_NOTIFICATION_TELEGRAM_URL }}
     steps:
@@ -85,7 +87,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-lock.txt
 
       - name: Install dependencies
         run: |
