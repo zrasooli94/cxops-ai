@@ -319,3 +319,57 @@ async def test_a_malformed_rollout_stages_no_job_and_never_changes_the_handoff(
         ) == "human_requested"
     assert await hard._jobs(org.id) == []
     assert provider.calls == []
+
+# Follow-up review: whitespace and explicit null are unlike literal "" in
+# Pydantic. They previously slipped through the before-model validator.
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("handoff_notifications_enabled", False),
+        ("handoff_notification_activated_at", None),
+        ("handoff_notification_max_per_hour", 6),
+    ],
+)
+@pytest.mark.parametrize("blank", ["   ", " \t "])
+def test_whitespace_only_notification_environment_values_are_safe(
+    field, expected, blank, monkeypatch
+):
+    cfg = _settings_from_env(monkeypatch, {field.upper(): blank})
+    assert getattr(cfg, field) == expected
+    assert cfg.handoff_notifications_enabled is False
+    assert cfg.handoff_notification_config_error == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("handoff_notifications_enabled", False),
+        ("handoff_notification_activated_at", None),
+        ("handoff_notification_max_per_hour", 6),
+    ],
+)
+def test_explicit_none_notification_values_do_not_crash_settings(field, expected):
+    cfg = Settings(**{field: None})
+    assert getattr(cfg, field) == expected
+    assert cfg.handoff_notifications_enabled is False
+
+
+@pytest.mark.parametrize("blank", ["   ", None])
+def test_blank_activation_with_enabled_notification_flag_fails_closed(blank):
+    cfg = Settings(
+        handoff_notifications_enabled=True,
+        handoff_notification_activated_at=blank,
+    )
+    assert cfg.handoff_notifications_enabled is False
+    assert cfg.handoff_notification_config_error == "activation requires an aware UTC timestamp"
+
+
+def test_blank_hourly_cap_uses_default_without_disabling_otherwise_valid_rollout():
+    cfg = Settings(
+        handoff_notifications_enabled=True,
+        handoff_notification_activated_at="2026-10-01T00:00:00+00:00",
+        handoff_notification_max_per_hour=" \t ",
+    )
+    assert cfg.handoff_notifications_enabled is True
+    assert cfg.handoff_notification_max_per_hour == 6
+    assert cfg.handoff_notification_config_error == ""

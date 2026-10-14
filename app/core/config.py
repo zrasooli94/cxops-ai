@@ -244,6 +244,11 @@ class Settings(BaseSettings):
             if isinstance(raw, str):
                 raw = raw.strip()
             if raw is None or raw == "":
+                # Whitespace-only strings and explicit None must be passed to
+                # the field validators as an actual empty value. Leaving the
+                # original "  " or None would cause Pydantic to raise before
+                # the optional feature can safely downgrade to OFF.
+                cleaned[name] = ""
                 return  # handled by the empty-means-default validators
             try:
                 cleaned[name] = adapter.validate_python(raw)

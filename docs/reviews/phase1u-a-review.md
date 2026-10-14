@@ -190,3 +190,19 @@ scripts from starting.
   invalid/empty/missing defers (attempts unchanged), and **zero** provider
   calls in every case.
 * **NOT TESTED**: a full `ENVIRONMENT=production` start with real secrets.
+
+
+## Independent follow-up: blank-but-not-empty optional values
+
+A further review found that the before-model sanitiser stripped whitespace to
+test emptiness but left the original `"  "` value for Pydantic to parse.
+Likewise, direct `None` for the boolean flag or integer cap would cause a
+`ValidationError`. Both could still prevent optional notification configuration
+from loading. The sanitiser now passes literal `""` to the existing
+empty-means-default field validators, preserving the unchanged OFF default
+without relaxing any non-notification setting. Regression cases explicitly
+cover whitespace-only environment values, direct null inputs, active rollout
+with a missing activation date, and a defaulted cap.
+
+No merge, deployment, secrets change or outbound provider request was made
+during this follow-up. Rerun full CI on the new draft-branch commit.
