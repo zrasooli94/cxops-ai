@@ -168,7 +168,16 @@ class AnalysisCapacity:
         capacity = pool_capacity(database.engine)
         if capacity is None:
             return self.configured
-        headroom = capacity - settings.public_chat_turn_max_concurrency - 2
+        # Staff notifications hold up to two dedicated lease connections while
+        # a provider call is in flight; budget them only when the feature is on,
+        # so the OFF configuration's capacity is exactly what it was.
+        notification_leases = 2 if settings.handoff_notifications_enabled else 0
+        headroom = (
+            capacity
+            - settings.public_chat_turn_max_concurrency
+            - notification_leases
+            - 2
+        )
         return max(1, min(self.configured, headroom))
 
     def _sem(self) -> asyncio.Semaphore:

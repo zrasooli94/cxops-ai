@@ -3,11 +3,15 @@ from datetime import datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db_connection import refresh_if_stale
+from app.core.logging import get_logger
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
 from app.models.ticket import Ticket
+
+log = get_logger(__name__)
 
 
 class PublicChatRepository:
@@ -137,6 +141,55 @@ class PublicChatRepository:
         await db.commit()
         await refresh_if_stale(db, session)
 
+        return session
+
+    @staticmethod
+    async def handoff_to_human(
+        db: AsyncSession, *, session: PublicChatSession, organization_id: int
+    ) -> PublicChatSession:
+        """Persist CAS initial handoff and its durable notification job atomically."""
+        from app.services.handoff_notification_service import stage_initial_handoff
+
+        if session.organization_id != organization_id:
+            raise ValueError("Session does not belong to this organization")
+        session_id = session.id
+        job_id = None
+        try:
+            changed = (
+                await db.execute(
+                    update(PublicChatSession)
+                    .where(
+                        PublicChatSession.id == session_id,
+                        PublicChatSession.organization_id == organization_id,
+                        PublicChatSession.status == "ai_active",
+                    )
+                    .values(status="human_requested")
+                    .returning(PublicChatSession.id)
+                    .execution_options(synchronize_session=False)
+                )
+            ).scalar_one_or_none()
+            if changed is not None and settings.handoff_notifications_enabled:
+                job_id = await stage_initial_handoff(
+                    db, organization_id=organization_id, session_id=session_id
+                )
+            # One commit: the status change and its outbox row, or neither.
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        await db.refresh(session)
+
+        if job_id is not None:
+            from app.services.public_chat_turn_dispatcher import handoff_dispatcher
+            try:
+                handoff_dispatcher.submit(int(job_id), organization_id)
+            except RuntimeError:
+                # The scheduled worker and API restart recovery still see the row.
+                log.warning(
+                    "handoff_dispatch_deferred",
+                    organization_id=organization_id,
+                    session_id=session_id,
+                )
         return session
 
     @staticmethod

@@ -58,7 +58,11 @@ STARTUP_RECOVERY_BACKOFF_SECONDS = (0, 5, 30, 120, 600)
 
 
 class TurnDispatcher:
-    def __init__(self, *, max_concurrency: int, per_tenant: int) -> None:
+    def __init__(
+        self, *, max_concurrency: int, per_tenant: int,
+        job_type: str = PUBLIC_CHAT_TURN_JOB_TYPE,
+    ) -> None:
+        self.job_type = job_type
         self._max_concurrency = max_concurrency
         self._per_tenant = per_tenant
         self._global: asyncio.Semaphore | None = None
@@ -75,6 +79,8 @@ class TurnDispatcher:
     def submit(self, job_id: int, organization_id: int, *, delay: float = 0.0) -> bool:
         """Schedule a turn; ``False`` if this process already has it in hand."""
         if job_id in self._inflight:
+            return False
+        if self.job_type == "handoff.notify" and len(self._inflight) >= 32:
             return False
         task = asyncio.get_running_loop().create_task(
             self._run(job_id, organization_id, delay)
@@ -139,7 +145,7 @@ class TurnDispatcher:
             async with AsyncSessionLocal() as db:
                 jobs = await IntegrationJobRepository.list_open_by_type(
                     db,
-                    job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
+                    job_type=self.job_type,
                     after_id=after_id,
                     limit=page_size,
                 )
@@ -156,7 +162,16 @@ class TurnDispatcher:
             after_id = jobs[-1].id
 
     async def recover_on_startup(self) -> int:
-        """Resume turns interrupted by a restart (all of them, paged)."""
+        """Resume jobs plus reconcile missed initial handoffs after activation."""
+        if self.job_type == "handoff.notify":
+            from app.services.handoff_notification_service import (
+                reconcile_missing_handoffs,
+            )
+
+            async with AsyncSessionLocal() as db:
+                repaired = await reconcile_missing_handoffs(db)
+            for job_id, org in repaired:
+                self.submit(job_id, org)
         return await self.recover_all()
 
     async def run_maintenance(self) -> None:
@@ -194,6 +209,21 @@ class TurnDispatcher:
         deadline = time.monotonic() + timeout
         while self._tasks and time.monotonic() < deadline:
             await asyncio.wait(set(self._tasks), timeout=max(0.0, deadline - time.monotonic()))
+
+    async def shutdown(self, timeout: float = 5.0) -> None:
+        """Graceful stop: wait up to ``timeout``, then cancel what is left.
+
+        A cancelled job keeps its ``processing`` claim and is recovered like
+        any crashed one (stale-claim recovery / startup recovery), so nothing
+        is lost; what must not happen is a task outliving the application.
+        """
+        await self.drain(timeout=timeout)
+        pending = [task for task in self._tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._inflight.clear()
 
     @property
     def inflight(self) -> int:
@@ -241,7 +271,7 @@ class TurnDispatcher:
             job = await IntegrationJobRepository.claim_by_id(
                 db,
                 job_id=job_id,
-                job_type=PUBLIC_CHAT_TURN_JOB_TYPE,
+                job_type=self.job_type,
                 stale_after_seconds=settings.public_chat_turn_stale_seconds,
             )
             if job is None:
@@ -272,15 +302,18 @@ class TurnDispatcher:
                     )
             except JobDeferredError as exc:
                 await db.rollback()
+                deferred_delay = (
+                    60 if self.job_type == "handoff.notify" else DEFER_DELAY_SECONDS
+                )
                 deferred = await IntegrationJobRepository.defer_claimed(
                     db,
                     job_id=job_id,
                     claimed_at=claimed_at,
-                    delay_seconds=DEFER_DELAY_SECONDS,
+                    delay_seconds=deferred_delay,
                     reason=str(exc),
                 )
                 if deferred is not None:
-                    self._resubmit_later(job_id, organization_id, DEFER_DELAY_SECONDS)
+                    self._resubmit_later(job_id, organization_id, deferred_delay)
             except Exception as exc:  # noqa: BLE001
                 await db.rollback()
                 failed = await IntegrationJobRepository.mark_failed(
@@ -325,4 +358,10 @@ class TurnDispatcher:
 turn_dispatcher = TurnDispatcher(
     max_concurrency=settings.public_chat_turn_max_concurrency,
     per_tenant=settings.public_chat_turn_max_concurrency_per_tenant,
+)
+
+# Same tested claim/recovery implementation, but bounded to 2 global and 1
+# per tenant for notification transport. No extra Render worker process.
+handoff_dispatcher = TurnDispatcher(
+    max_concurrency=2, per_tenant=1, job_type="handoff.notify"
 )

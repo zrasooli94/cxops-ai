@@ -576,3 +576,35 @@ def record_public_chat_turn_stage(*, stage: str, seconds: float) -> None:
 
 def record_embedding_cache(*, result: str) -> None:
     EMBEDDING_QUERY_CACHE_TOTAL.labels(result="hit" if result == "hit" else "miss").inc()
+
+
+# Phase 1U-A: staff handoff notification outcomes. Closed label set; no tenant,
+# destination, session or customer value is ever a label.
+HANDOFF_NOTIFICATIONS_TOTAL = Counter(
+    "cxops_handoff_notifications_total",
+    "Staff handoff notification job outcomes.",
+    ["outcome"],
+)
+HANDOFF_NOTIFICATION_OUTCOMES = frozenset(
+    {
+        "staged",
+        "provider_accepted",
+        "channel_accepted_email",
+        "channel_accepted_telegram",
+        "suppressed_disabled",
+        "suppressed_inactive",
+        "suppressed_stale",
+        "suppressed_unconfigured",
+        "suppressed_rate_limited",
+        "suppressed_nothing_waiting",
+        "deferred_config_missing",
+        "deferred_busy",
+        "transport_error",
+    }
+)
+
+
+def record_handoff_notification(*, outcome: str) -> None:
+    if outcome not in HANDOFF_NOTIFICATION_OUTCOMES:
+        outcome = "transport_error"
+    HANDOFF_NOTIFICATIONS_TOTAL.labels(outcome=outcome).inc()

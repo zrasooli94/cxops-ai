@@ -1062,10 +1062,9 @@ class PublicChatService:
             )
             reply_text = await cls.handoff_reply_for(db, organization_id)
             if session.status == "ai_active":
-                session = await PublicChatRepository.update_session_for_tenant(
+                session = await PublicChatRepository.handoff_to_human(
                     db,
                     session=session,
-                    changes={"status": "human_requested"},
                     organization_id=organization_id,
                 )
             await cls._insert_reply_message(
@@ -1161,10 +1160,9 @@ class PublicChatService:
             reply_text = await cls.handoff_reply_for(db, organization_id)
 
         if handoff and session.status == "ai_active":
-            session = await PublicChatRepository.update_session_for_tenant(
+            session = await PublicChatRepository.handoff_to_human(
                 db,
                 session=session,
-                changes={"status": "human_requested"},
                 organization_id=session.organization_id,
             )
 
@@ -1516,10 +1514,9 @@ class PublicChatService:
         if conversation is None:
             return
         if session.status == "ai_active":
-            session = await PublicChatRepository.update_session_for_tenant(
+            session = await PublicChatRepository.handoff_to_human(
                 db,
                 session=session,
-                changes={"status": "human_requested"},
                 organization_id=organization_id,
             )
         await cls._insert_reply_message(
@@ -1635,10 +1632,9 @@ class PublicChatService:
         if session.status == "closed":
             raise PublicChatSessionClosedError("Session closed.")
         if session.status == "ai_active":
-            session = await PublicChatRepository.update_session_for_tenant(
+            session = await PublicChatRepository.handoff_to_human(
                 db,
                 session=session,
-                changes={"status": "human_requested"},
                 organization_id=session.organization_id,
             )
         return {

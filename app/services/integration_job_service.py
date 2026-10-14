@@ -499,6 +499,11 @@ class IntegrationJobService:
             )
             return None
 
+        if job.job_type == "handoff.notify":
+            from app.services.handoff_notification_service import process_handoff_job
+            await process_handoff_job(db, job)
+            return None
+
         raise PermanentJobError(f"Unknown job type: {job.job_type}")
 
     @staticmethod

@@ -39,10 +39,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.core.database import engine
     from app.core.schema_gate import check_schema
     from app.services.provider_warmup import warm_provider_clients
-    from app.services.public_chat_turn_dispatcher import turn_dispatcher
+    from app.services.public_chat_turn_dispatcher import (
+        handoff_dispatcher,
+        turn_dispatcher,
+    )
 
     # Phase 1P.9R: refuse to serve on a schema this build does not support
     # (raises in production; uvicorn then exits before binding its port).
+    if settings.handoff_notification_config_error:
+        log.warning(
+            "handoff_notifications_disabled_by_config",
+            reason=settings.handoff_notification_config_error,
+        )
     mark_import_complete()  # everything is imported; the schema gate is not "import"
     started = time.perf_counter()
     await check_schema(engine)
@@ -57,12 +65,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     loop = asyncio.get_running_loop()
     task = loop.create_task(turn_dispatcher.run_maintenance())
+    notification_task = (
+        loop.create_task(handoff_dispatcher.run_maintenance())
+        if settings.handoff_notifications_enabled else None
+    )
     warm_task = loop.create_task(warm_provider_clients())
     try:
         yield
     finally:
         warm_task.cancel()
         task.cancel()
+        if notification_task is not None:
+            notification_task.cancel()
+            await handoff_dispatcher.shutdown(timeout=5.0)
         await turn_dispatcher.drain(timeout=10.0)
 
 
