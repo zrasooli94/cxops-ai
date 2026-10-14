@@ -4,6 +4,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.db_connection import refresh_if_stale
 from app.models.agent_action_event import (
     AgentActionEvent,
 )
@@ -125,7 +126,7 @@ class AgentRunRepository:
         db.add(run)
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -134,19 +135,23 @@ class AgentRunRepository:
         db: AsyncSession,
         run_id: str,
         organization_id: int,
+        *,
+        load_ticket: bool = True,
     ) -> AgentRun | None:
         """Tenant-scoped run lookup: a guessed run_id from another
         organization never resolves, so foreign runs are indistinguishable
-        from missing runs (non-enumerating 404)."""
+        from missing runs (non-enumerating 404).
 
-        result = await db.execute(
-            select(AgentRun)
-            .where(
-                AgentRun.run_id == run_id,
-                AgentRun.organization_id == organization_id,
-            )
-            .options(selectinload(AgentRun.ticket))
+        ``load_ticket=False`` skips the eager ticket load (a second statement)
+        for callers that only read the run's own columns."""
+
+        statement = select(AgentRun).where(
+            AgentRun.run_id == run_id,
+            AgentRun.organization_id == organization_id,
         )
+        if load_ticket:
+            statement = statement.options(selectinload(AgentRun.ticket))
+        result = await db.execute(statement)
 
         return result.scalar_one_or_none()
 
@@ -341,7 +346,7 @@ class AgentRunRepository:
         run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -359,7 +364,7 @@ class AgentRunRepository:
         run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -385,7 +390,7 @@ class AgentRunRepository:
         db.add(event)
 
         await db.commit()
-        await db.refresh(event)
+        await refresh_if_stale(db, event)
 
         return event
 
@@ -440,7 +445,7 @@ class AgentRunRepository:
         run.error_message = None
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -458,7 +463,7 @@ class AgentRunRepository:
         run.error_message = error_message[:4000]
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -479,7 +484,7 @@ class AgentRunRepository:
         run.reviewed_at = None
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -497,7 +502,7 @@ class AgentRunRepository:
         run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -516,7 +521,7 @@ class AgentRunRepository:
         run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 
@@ -535,7 +540,7 @@ class AgentRunRepository:
         run.reviewed_at = datetime.now(UTC)
 
         await db.commit()
-        await db.refresh(run)
+        await refresh_if_stale(db, run)
 
         return run
 

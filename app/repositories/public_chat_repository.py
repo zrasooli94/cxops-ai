@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db_connection import refresh_if_stale
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.public_chat import PublicChatConfiguration, PublicChatSession
@@ -53,7 +54,7 @@ class PublicChatRepository:
         db.add(session)
 
         await db.commit()
-        await db.refresh(session)
+        await refresh_if_stale(db, session)
 
         return session
 
@@ -134,7 +135,7 @@ class PublicChatRepository:
             setattr(session, field, value)
 
         await db.commit()
-        await db.refresh(session)
+        await refresh_if_stale(db, session)
 
         return session
 

@@ -76,6 +76,8 @@ class EmbeddingService:
             model=settings.embedding_model,
             api_key=SecretStr(settings.openai_api_key),
             dimensions=settings.embedding_dimensions,
+            timeout=settings.openai_request_timeout_seconds,
+            max_retries=settings.openai_max_retries,
         )
 
     async def embed_text(

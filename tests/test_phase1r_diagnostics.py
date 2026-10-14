@@ -192,3 +192,119 @@ def test_turn_stage_metric_ignores_unknown_stages():
     text = generate_latest().decode()
     assert 'stage="agent"' in text
     assert "user-supplied" not in text
+
+
+# --- Phase 1S: bounded model clients, write-path round trips ----------------
+
+
+def test_openai_clients_are_bounded():
+    from app.services.agent_workflow_service import agent_workflow_service
+    from app.services.embedding_service import embedding_service
+    from app.services.rag_service import rag_service
+
+    assert settings.openai_request_timeout_seconds <= 60
+    assert settings.openai_max_retries <= 2
+    assert rag_service.llm.request_timeout == settings.openai_request_timeout_seconds
+    assert rag_service.llm.max_retries == settings.openai_max_retries
+    assert embedding_service.client.request_timeout == settings.openai_request_timeout_seconds
+    assert agent_workflow_service.decision_llm is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_if_stale_skips_clean_objects_and_refreshes_expired_ones():
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.core.db_connection import refresh_if_stale
+
+    class FakeDb:
+        def __init__(self):
+            self.refreshed = []
+
+        async def refresh(self, instance):
+            self.refreshed.append(instance)
+
+    class Row:
+        pass
+
+    from sqlalchemy.orm import Mapper  # noqa: F401  (documents the inspect contract)
+
+    db = FakeDb()
+    clean = type("S", (), {"expired": False, "expired_attributes": set()})()
+    stale = type("S", (), {"expired": False, "expired_attributes": {"updated_at"}})()
+    expired = type("S", (), {"expired": True, "expired_attributes": set()})()
+
+    import app.core.db_connection as module
+
+    original = module.inspect
+    try:
+        for state, should_refresh in ((clean, False), (stale, True), (expired, True)):
+            module.inspect = lambda _obj, _state=state: _state  # type: ignore[assignment]
+            before = len(db.refreshed)
+            await refresh_if_stale(db, Row())  # type: ignore[arg-type]
+            assert (len(db.refreshed) - before == 1) is should_refresh
+    finally:
+        module.inspect = original
+    assert sa_inspect is not None
+
+
+@pytest.mark.asyncio
+async def test_a_repository_write_needs_no_follow_up_select():
+    """INSERT ... RETURNING populates id/created_at; no refresh SELECT follows."""
+    import uuid
+
+    from sqlalchemy import delete, event
+
+    from app.core.database import AsyncSessionLocal, engine
+    from app.models.ai_request_log import AIRequestLog
+    from app.models.organization import Organization
+    from app.services.ai_observability_service import AIObservabilityService
+
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, *_rest):
+        statements.append(statement.lstrip().split(None, 1)[0].upper())
+
+    async with AsyncSessionLocal() as db:
+        org = Organization(name=f"phase1s-write-{uuid.uuid4().hex[:8]}")
+        db.add(org)
+        await db.commit()
+        try:
+            event.listen(engine.sync_engine, "before_cursor_execute", capture)
+            try:
+                log = await AIObservabilityService.record(
+                    db,
+                    organization_id=org.id,
+                    request_id=uuid.uuid4().hex,
+                    question="q",
+                    answer="a",
+                    grounded=True,
+                    llm_called=False,
+                    retrieval_count=0,
+                    best_similarity=None,
+                    sources=[],
+                    latency_ms=1.0,
+                    feature="phase1s",
+                )
+            finally:
+                event.remove(engine.sync_engine, "before_cursor_execute", capture)
+            assert log.id is not None and log.created_at is not None
+            assert statements == ["INSERT"], statements
+        finally:
+            await db.execute(delete(AIRequestLog).where(AIRequestLog.organization_id == org.id))
+            await db.execute(delete(Organization).where(Organization.id == org.id))
+            await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_ready_reports_database_round_trip_without_leaking_anything():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.get("/ready")
+    body = response.json()
+    assert response.status_code == 200
+    assert body["checks"] == {"database": "ok"}
+    timing = body["timing_ms"]
+    assert set(timing) == {"database_first_statement", "database_round_trip"}
+    assert all(isinstance(v, int | float) and v >= 0 for v in timing.values())
+    dumped = json.dumps(body).lower()
+    for forbidden in ("postgres", "password", "127.0.0.1", "cxops_disposable"):
+        assert forbidden not in dumped

@@ -234,6 +234,27 @@ class ScriptedChat:
         return types.SimpleNamespace(content=self.text, usage_metadata=None)
 
 
+_GREETING = re.compile(
+    r"^\s*(?:hi|hello|hey|hiya|good (?:morning|afternoon|evening)|thanks|thank you)"
+    r"(?:\s+(?:there|team|all|everyone|rispu))?[\s!.,]*$",
+    re.IGNORECASE,
+)
+
+
+def _message_to_act_on(prompt: str) -> str:
+    """The latest customer message in a decision prompt, else the description."""
+    if "LATEST CUSTOMER MESSAGE" in prompt:
+        tail = prompt.split("LATEST CUSTOMER MESSAGE", 1)[1]
+        return tail.split("):\n", 1)[-1].split("\n\nStatus:", 1)[0].strip()
+    if "Description:\n" in prompt:
+        return prompt.split("Description:\n", 1)[1].split("\n\nStatus:", 1)[0].strip()
+    return ""
+
+
+def _is_greeting(text: str) -> bool:
+    return bool(_GREETING.match(text))
+
+
 class PolicyAwareFakeDecision:
     """Decision model: respond with knowledge, human_review without."""
 
@@ -249,6 +270,8 @@ class PolicyAwareFakeDecision:
         _, human = _message_text(messages)
         has_knowledge = "No knowledge-base policy was supplied." not in human
         action = self.force_action or ("respond" if has_knowledge else "human_review")
+        if self.force_action is None and _is_greeting(_message_to_act_on(human)):
+            action = "no_action"  # rule 14 of the production prompt
         decision = AgentDecision(
             action=action,  # type: ignore[arg-type]
             reason="certification fake decision",

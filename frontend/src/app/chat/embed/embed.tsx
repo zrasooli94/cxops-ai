@@ -21,6 +21,10 @@ import {
   sendPublicChatMessage,
 } from "@/lib/public-chat/client";
 import {
+  handoffCopy,
+  isHandoffState,
+} from "@/lib/public-chat/handoff-copy";
+import {
   clientMessageIdForSend,
   sendWithRetry,
   type PendingSend,
@@ -285,6 +289,8 @@ export function PublicChatWidget({
   const [composerFocused, setComposerFocused] =
     useState(false);
   const [endConfirm, setEndConfirm] =
+    useState(false);
+  const [newConversationConfirm, setNewConversationConfirm] =
     useState(false);
 
   const embeddingOriginRef =
@@ -737,6 +743,35 @@ export function PublicChatWidget({
     setState("closed");
   }, [clearPoll, discardSession]);
 
+  // Close the current server session, then open a brand-new one. The old
+  // conversation stays with the team; nothing is reactivated, and the AI never
+  // answers inside a session that was handed to a human.
+  const startNewConversation = useCallback(async () => {
+    const token = sessionTokenRef.current;
+    if (token) {
+      try {
+        await closePublicChatSession(token);
+      } catch {
+        setErrorMessage(
+          "Unable to start a new conversation right now. Please try again.",
+        );
+        return;
+      }
+    }
+    clearPoll();
+    discardSession();
+    sessionTokenRef.current = null;
+    pendingSendRef.current = null;
+    setSessionToken(null);
+    setMessages([]);
+    setInput("");
+    setEndConfirm(false);
+    setNewConversationConfirm(false);
+    setAwaitingReply(false);
+    setState("closed");
+    await open();
+  }, [clearPoll, discardSession, open]);
+
   useEffect(() => {
     embeddingOriginRef.current =
       createEmbeddingOrigin(document.referrer);
@@ -1010,10 +1045,95 @@ export function PublicChatWidget({
               fontWeight: 500,
             }}
           >
-            {state === "human_assigned"
-              ? "An agent is reviewing this conversation"
-              : "Sent for human review"}
+            {handoffCopy(state).chip}
           </p>
+        </div>
+      )}
+
+      {isHandoffState(state) && (
+        <div
+          style={{
+            margin: "8px 16px 0",
+            padding: "10px 12px",
+            borderRadius: "10px",
+            border: `1px solid ${theme.panel.border}`,
+            color: theme.text.secondary,
+            fontSize: "12.5px",
+            lineHeight: 1.45,
+          }}
+        >
+          <p style={{ margin: 0 }}>
+            {handoffCopy(state).explanation}
+          </p>
+          {newConversationConfirm ? (
+            <div style={{ marginTop: "8px" }}>
+              <p style={{ margin: 0 }}>
+                {handoffCopy(state).closeWarning}
+              </p>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                  marginTop: "8px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => void startNewConversation()}
+                  disabled={sending}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: theme.composer.sendBackground,
+                    color: theme.composer.sendForeground,
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {handoffCopy(state).confirmLabel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setNewConversationConfirm(false)
+                  }
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: "8px",
+                    border: `1px solid ${theme.composer.border}`,
+                    background: "transparent",
+                    color: theme.text.primary,
+                    fontSize: "12.5px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {handoffCopy(state).keepLabel}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setNewConversationConfirm(true)}
+              disabled={sending}
+              style={{
+                marginTop: "8px",
+                padding: "6px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${theme.composer.border}`,
+                background: "transparent",
+                color: theme.text.primary,
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              {handoffCopy(state).newConversationLabel}
+            </button>
+          )}
         </div>
       )}
 
@@ -1185,7 +1305,11 @@ export function PublicChatWidget({
             }}
             maxLength={config?.max_message_length ?? 4000}
             disabled={!composerEnabled || sending}
-            placeholder="Type your message…"
+            placeholder={
+              isHandoffState(state)
+                ? handoffCopy(state).placeholder
+                : "Type your message…"
+            }
             autoComplete="off"
             style={{
               flex: 1,

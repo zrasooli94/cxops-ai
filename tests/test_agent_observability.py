@@ -119,7 +119,7 @@ async def _run_flow(monkeypatch, *, ticket: dict) -> dict:
 
 def test_workflow_version_bumped_for_2b_routing():
     """Phase 1K.2B changed real routing, so v1 analyses must not be reused."""
-    assert AGENT_WORKFLOW_VERSION == "3"
+    assert AGENT_WORKFLOW_VERSION == "4"
 
 
 def test_analysis_response_exposes_coordinator_intent():

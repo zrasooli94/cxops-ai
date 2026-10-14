@@ -248,11 +248,24 @@ class _GroundedAutoReply:
 
 log = get_logger(__name__)
 
+RATE_BUCKET_PRUNE_INTERVAL_SECONDS = 60.0
+_last_bucket_prune = float("-inf")
+
 
 class PublicChatService:
     @staticmethod
     async def _maybe_prune_rate_buckets(db: AsyncSession) -> None:
-        """Opportunistically prune stale rate-limit buckets; never blocks."""
+        """Opportunistically prune stale rate-limit buckets; never blocks.
+
+        Pruning is housekeeping, not a correctness requirement (the limiter
+        ignores stale windows), so it runs at most once per interval per
+        process instead of as an extra statement on every message.
+        """
+        global _last_bucket_prune
+        now = time.monotonic()
+        if now - _last_bucket_prune < RATE_BUCKET_PRUNE_INTERVAL_SECONDS:
+            return
+        _last_bucket_prune = now
         try:
             await public_chat_rate_limiter_db.prune(db)
         except Exception:
@@ -1011,14 +1024,12 @@ class PublicChatService:
         allowance hands the conversation to a human without calling a model.
         """
         organization_id = session.organization_id
-        ticket_result = await db.execute(
-            select(Ticket).where(
-                Ticket.id == session.ticket_id,
-                Ticket.organization_id == organization_id,
-            )
-        )
-        ticket = ticket_result.scalar_one_or_none()
-        if ticket is None:
+        # ``Session.get`` answers from the identity map when this request's
+        # session already loaded the ticket (the sync path just updated it),
+        # and issues the SELECT otherwise. The tenant check below is the same
+        # predicate the previous query applied in SQL.
+        ticket = await db.get(Ticket, session.ticket_id)
+        if ticket is None or ticket.organization_id != organization_id:
             raise PublicChatSessionNotFoundError("Session ticket not found.")
         if ticket.subject == TICKET_PLACEHOLDER_SUBJECT:
             # Async acceptance mirrors the first message after its commit and
@@ -1106,6 +1117,7 @@ class PublicChatService:
             db,
             run_id=result["run_id"],
             organization_id=organization_id,
+            load_ticket=False,
         )
         run_action = run.action if run is not None else None
 
