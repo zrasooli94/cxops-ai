@@ -1067,3 +1067,70 @@ def test_the_scheduled_worker_installs_the_lock_and_passes_every_runtime_variabl
     assert "secrets.HANDOFF_NOTIFICATION_TELEGRAM_URL" in workflow
     lock = (REPO_ROOT / "requirements-lock.txt").read_text()
     assert "apprise==2.0.1" in lock
+
+
+@pytest.mark.asyncio
+async def test_a_failed_dispatch_after_commit_leaves_a_durable_job_the_worker_completes(
+    db, client, org_scope, monkeypatch, provider
+):
+    """The API commits the handoff, then dies/fails before submitting the job."""
+    _enable(monkeypatch)
+
+    def dispatcher_down(*_a, **_k):
+        raise RuntimeError("event loop is gone")
+
+    monkeypatch.setattr(handoff_dispatcher, "submit", dispatcher_down)
+    org = await _rispu_org(db, org_scope)
+    (sid,) = await _make_sessions(db, org, 1)
+    await _handoff(sid, org.id)  # the customer's handoff is unaffected
+    (job,) = await _jobs(org.id)
+    assert job.status == "pending"
+    assert await _run_job(job.id) == "completed"  # scheduled-worker recovery
+    assert provider.calls == ["email", "telegram"]
+
+
+@pytest.mark.asyncio
+async def test_api_startup_recovery_resubmits_pending_jobs_without_polling(
+    db, client, org_scope, monkeypatch
+):
+    _enable(monkeypatch)
+    org = await _rispu_org(db, org_scope)
+    ids = await _make_sessions(db, org, 2)
+    for sid in ids:
+        await _handoff(sid, org.id)
+    submitted: list[int] = []
+    dispatcher = TurnDispatcher(max_concurrency=2, per_tenant=1, job_type=notifications.NOTIFY_JOB_TYPE)
+    monkeypatch.setattr(
+        dispatcher, "submit",
+        lambda job_id, _org, delay=0.0: submitted.append(job_id) or True,
+    )
+    recovered = await dispatcher.recover_on_startup()
+    assert recovered >= 2
+    # (submit() is idempotent per in-flight job, so a job offered by both the
+    # reconciler and the open-job scan still runs once)
+    assert set(submitted) == {j.id for j in await _jobs(org.id)}
+
+
+@pytest.mark.asyncio
+async def test_staff_release_returns_to_the_queue_without_a_new_alert(
+    db, client, org_scope, monkeypatch
+):
+    from app.services.public_chat_staff_service import PublicChatStaffService
+
+    _enable(monkeypatch)
+    org = await _rispu_org(db, org_scope)
+    (sid,) = await _make_sessions(db, org, 1, status="human_assigned")
+    async with AsyncSessionLocal() as s:
+        await s.execute(update(PublicChatSession).where(PublicChatSession.id == sid).values(
+            assigned_to_subject="staff-1", assigned_at=datetime.now(UTC)))
+        await s.commit()
+    async with AsyncSessionLocal() as s:
+        await PublicChatStaffService.release(s, session_id=sid, organization_id=org.id)
+    async with AsyncSessionLocal() as check:
+        status = await check.scalar(
+            select(PublicChatSession.status).where(PublicChatSession.id == sid)
+        )
+    assert status == "human_requested"
+    assert await _jobs(org.id) == []  # re-queue is not an initial handoff
+    async with AsyncSessionLocal() as s:
+        assert await notifications.reconcile_missing_handoffs(s) == []  # nor repaired
