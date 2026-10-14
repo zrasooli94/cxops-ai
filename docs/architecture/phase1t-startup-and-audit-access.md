@@ -20,9 +20,9 @@ Reproduced in the production image (`python:3.11-slim`, requirements-lock),
 
 | CPU limit | before (7fd5a64) | after (1T) | change |
 |---|---|---|---|
-| 2.0 | 1.76 s | 1.37 s | -22 % |
-| 0.5 | 3.7-3.8 s | 2.6-2.9 s | -28 % |
-| 0.1 | 69-71 s | 40-47 s | about -37 % |
+| 2.0 | 1.76 s | 1.22 s | -31 % |
+| 0.5 | 3.7-3.8 s | 2.7 s | -28 % |
+| 0.1 | 69-71 s | 47-49 s | about -32 % |
 
 At 0.1 CPU the unmodified import also reproduced the production gap (42-71 s
 across runs); at 0.5 CPU it is under 4 s. The preflight (a second interpreter
@@ -42,12 +42,14 @@ What was measured and rejected:
 
 Self time of the import (2-CPU run): application modules 506 ms, `openai`
 330 ms, `langsmith` 77 ms, `sqlalchemy` 69 ms, `fastapi` 43 ms. The OpenAI SDK
-and LangGraph were the only large, avoidable block.
+was the only large, avoidable block.
 
 ## 2. Changes
 
-* `ChatOpenAI`, `OpenAIEmbeddings` and `StateGraph` are no longer imported or
-  constructed at import time. The three clients are `functools.cached_property`
+* `ChatOpenAI` and `OpenAIEmbeddings` (the OpenAI SDK) are no longer imported or
+  constructed at import time. (`StateGraph` was tried lazily too: only ~15 ms
+  and it moved a blocking import into the first customer turn, which a
+  timing-sensitive load test caught, so it stays a module-level import.) The three clients are `functools.cached_property`
   on the existing singletons (`rag_service.llm`,
   `embedding_service.client`, `agent_workflow_service.decision_llm`), so the
   public attributes and their assignability (tests, fakes) are unchanged.
@@ -71,7 +73,7 @@ unreachable), every authorization/approval/AI-budget/model setting.
 
 ## 3. Tests (`tests/test_phase1t_startup.py`)
 
-SDK/LangGraph not loaded at `import app.main`; lazy build on first use and
+The OpenAI SDK not loaded at `import app.main`; lazy build on first use and
 assignability; warm-up never raises; boot metrics only after start-up;
 `lifespan` refuses to serve and never starts warm-up when the schema gate
 fails; `start_render_api.sh` with an invalid production environment (DEBUG on,

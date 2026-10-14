@@ -33,7 +33,7 @@ def _run_python(code: str, **env: str) -> subprocess.CompletedProcess:
 def test_importing_the_application_does_not_load_the_provider_sdk():
     proc = _run_python(
         "import sys, app.main\n"
-        "print(sorted(m for m in ('openai','langchain_openai','langgraph') if m in sys.modules))"
+        "print(sorted(m for m in ('openai','langchain_openai') if m in sys.modules))"
     )
     assert proc.returncode == 0, proc.stderr[-600:]
     assert proc.stdout.strip() == "[]", proc.stdout
@@ -169,5 +169,4 @@ def test_benchmark_script_runs_and_reports_the_sdk_is_not_imported():
 
     report = json.loads(proc.stdout)
     assert report["openai_loaded_at_import"] is False
-    assert report["langgraph_loaded_at_import"] is False
     assert report["import_seconds"]["median"] > 0

@@ -3,7 +3,7 @@
 Each sample is a fresh interpreter importing ``app.main`` (exactly what
 ``uvicorn app.main:app`` does before it can bind its port) under
 ``-X importtime``. It reports wall time, the share spent in each top-level
-package, and whether the OpenAI SDK / LangGraph were loaded at import.
+package, and whether the OpenAI SDK was loaded at import.
 
     .venv/bin/python -m scripts.benchmark_startup --runs 5
 

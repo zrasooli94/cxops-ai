@@ -10,6 +10,11 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
+from langgraph.graph import (
+    END,
+    START,
+    StateGraph,
+)
 from pydantic import BaseModel, SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -1597,8 +1602,6 @@ Choose the safest next action.
                 state,
                 db=db,
             )
-
-        from langgraph.graph import END, START, StateGraph
 
         graph = StateGraph(AgentState)
 
