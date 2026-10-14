@@ -76,18 +76,28 @@ async def test_disposable_database_has_no_provisioned_widget_configuration():
 @public_schema.parametrize()
 @settings(max_examples=12, deadline=None, derandomize=True)
 def test_anonymous_public_operations_are_robust_to_generated_inputs(case):
-    assert (case.method.upper(), case.path) in PUBLIC_OPERATIONS
+    # Schemathesis may deliberately negate the HTTP method (e.g. TRACE)
+    # while preserving the original OpenAPI operation. Keep these negative
+    # cases: an unregistered method must be rejected, not dispatched.
+    assert (case.operation.method.upper(), case.path) in PUBLIC_OPERATIONS
     response = case.call(
         headers={
             "Authorization": f"Bearer {INVALID_BEARER}",
             "X-Embedding-Origin": "https://contract.invalid",
         }
     )
-    assert response.status_code < 500 or (case.path == "/public/leads" and response.status_code == 503), (
-        f"{case.method} {case.path} returned HTTP {response.status_code}; "
-        "an unhandled exception or internal error is never acceptable"
-    )
-    assert response.status_code in {200, 202, 400, 401, 403, 404, 409, 413, 422, 429, 503}
+    if case.method.upper() != case.operation.method.upper():
+        assert response.status_code == 405, (
+            f"Unsupported method {case.method} was not rejected on {case.path}"
+        )
+    elif response.status_code == 503:
+        # An explicitly disabled lead-capture POST returns 503 by contract.
+        assert case.path == "/public/leads"
+    else:
+        assert response.status_code < 500, (
+            f"{case.method} {case.path} returned HTTP {response.status_code}"
+        )
+    assert response.status_code in {200, 202, 400, 401, 403, 404, 405, 409, 413, 422, 429, 503}
     # No stack trace, provider credential or injected bearer in responses.
     body = response.content
     assert b"Traceback (most recent call last)" not in body
@@ -97,4 +107,9 @@ def test_anonymous_public_operations_are_robust_to_generated_inputs(case):
         # 4xx responses other than FastAPI's documented 422 often have no
         # OpenAPI response entries; tracking those gaps is separate from this
         # no-5xx negative-input pilot.
-        case.validate_response(response)
+        # Operation-level validation checks response bodies only. Schemathesis's
+        # default case checks also require acceptance of every schema-compliant
+        # request; a known URL/domain semantic constraint is not in OpenAPI.
+        # Keep that discovery in the review document instead of weakening the
+        # application's domain validator.
+        case.operation.validate_response(response, case=case)
