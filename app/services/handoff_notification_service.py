@@ -259,6 +259,8 @@ async def _send_channels(db: AsyncSession, job: IntegrationJob, *, count: int | 
 async def _process_initial(db: AsyncSession, job: IntegrationJob) -> None:
     from app.services.integration_job_service import PermanentJobError
 
+    if job.organization_id is None:
+        raise PermanentJobError("notification has no tenant binding")
     payload = job.payload
     session_id = payload.get("session_id")
     if (
@@ -324,8 +326,12 @@ async def _process_initial(db: AsyncSession, job: IntegrationJob) -> None:
 async def _process_digest(db: AsyncSession, job: IntegrationJob) -> None:
     from app.services.integration_job_service import PermanentJobError
 
+    if job.organization_id is None:
+        raise PermanentJobError("digest has no tenant binding")
     payload = job.payload or {}
     raw = payload.get("hour_start")
+    if not isinstance(raw, str):
+        raise PermanentJobError("invalid digest hour")
     try:
         hour = datetime.fromisoformat(raw).astimezone(UTC)
     except (ValueError, TypeError, AttributeError):
