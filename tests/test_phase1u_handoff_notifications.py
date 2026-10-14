@@ -211,3 +211,115 @@ async def test_reconciliation_finds_missing_job_once(db, client, org_scope, monk
         )
     ).scalars().all()
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_atomic_rollback_when_outbox_staging_fails(db, client, org_scope, monkeypatch):
+    """A failed enqueue cannot commit a human_requested status without an outbox."""
+    _enable(monkeypatch)
+    org, session = await _session(db, client, org_scope)
+    async def fail_stage(_db, *, organization_id, session_id):
+        raise RuntimeError("deliberate synthetic insert failure")
+    monkeypatch.setattr(notifications, "stage_initial_handoff", fail_stage)
+    with pytest.raises(RuntimeError, match="deliberate synthetic"):
+        await PublicChatRepository.handoff_to_human(
+            db, session=session, organization_id=org.id
+        )
+    await db.rollback()
+    row = await db.get(PublicChatSession, session.id)
+    assert row is not None and row.status == "ai_active"
+    jobs = (
+        await db.execute(
+            select(IntegrationJob).where(
+                IntegrationJob.organization_id == org.id,
+                IntegrationJob.job_type == notifications.NOTIFY_JOB_TYPE,
+            )
+        )
+    ).scalars().all()
+    assert jobs == []
+
+
+@pytest.mark.asyncio
+async def test_flood_cap_suppresses_excess_and_creates_one_digest(
+    db, client, org_scope, monkeypatch
+):
+    """Eight real tenant handoffs yield six attempts per channel and one digest."""
+    from app.repositories.integration_job_repository import IntegrationJobRepository
+    from app.services import apprise_sender
+    from app.services.integration_job_service import IntegrationJobService
+    from app.services.public_chat_turn_dispatcher import handoff_dispatcher
+
+    _enable(monkeypatch)
+    monkeypatch.setenv("HANDOFF_NOTIFICATIONS_ENABLED", "true")
+    monkeypatch.setattr(handoff_dispatcher, "submit", lambda *_a: True)
+    monkeypatch.setattr(
+        notifications.settings,
+        "handoff_notification_email_url",
+        "mailtos://user:secret@company.example?smtp=smtp.gmail.com&to=staff@example.com",
+    )
+    monkeypatch.setattr(
+        notifications.settings,
+        "handoff_notification_telegram_url",
+        "tgram://123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef/123456789",
+    )
+    sent: list[str] = []
+    async def fake_send(*, channel, configured, title, body):
+        assert "CXOps AI" in title and body.startswith("CXOps AI")
+        assert "secret" not in body and "customer message" not in body
+        sent.append(channel)
+    monkeypatch.setattr(apprise_sender, "send_staff_handoff", fake_send)
+
+    org = await org_scope()
+    org.external_id = "rispu"
+    await db.commit()
+    _cfg, key = await base._make_widget_config(db, org)
+    sessions = []
+    for _ in range(8):
+        await base._create_session(client, key)
+    rows = await db.execute(
+        select(PublicChatSession).where(
+            PublicChatSession.organization_id == org.id
+        ).order_by(PublicChatSession.id.asc())
+    )
+    sessions = list(rows.scalars().all())
+    assert len(sessions) == 8
+    for session in sessions:
+        await PublicChatRepository.handoff_to_human(
+            db, session=session, organization_id=org.id
+        )
+    for session in sessions:
+        job = await db.scalar(
+            select(IntegrationJob).where(
+                IntegrationJob.dedupe_key == notifications.first_handoff_key(
+                    org.id, session.id
+                )
+            )
+        )
+        assert job is not None
+        claimed = await IntegrationJobRepository.claim_by_id(
+            db, job_id=job.id,
+            job_type=notifications.NOTIFY_JOB_TYPE,
+            stale_after_seconds=120,
+        )
+        assert claimed is not None
+        await IntegrationJobService.execute(db, claimed)
+        completed = await IntegrationJobRepository.mark_completed(
+            db, job_id=claimed.id, claimed_at=claimed.locked_at
+        )
+        assert completed is not None and completed.status == "completed"
+    assert sent.count("email") == 6 and sent.count("telegram") == 6
+    results = await db.execute(
+        select(IntegrationJob).where(
+            IntegrationJob.organization_id == org.id,
+            IntegrationJob.job_type == notifications.NOTIFY_JOB_TYPE,
+        )
+    )
+    all_jobs = list(results.scalars().all())
+    suppressed = [
+        j for j in all_jobs
+        if j.payload.get("outcome") == "suppressed:rate_limited"
+    ]
+    digests = [j for j in all_jobs if j.payload.get("event") == "digest"]
+    assert len(suppressed) == 2
+    assert len(digests) == 1
+    assert digests[0].status == "pending"
