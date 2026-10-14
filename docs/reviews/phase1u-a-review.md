@@ -163,3 +163,30 @@ unauthenticated test-send endpoint, no new tables or migrations.
    acceptance in the payload, latency from the `staged` metric, no duplicate.
 4. Rollback: set `HANDOFF_NOTIFICATIONS_ENABLED=false` on both runners. Queued
    jobs are suppressed (`disabled`), nothing is deleted, no schema change.
+
+## 13. Follow-up: configuration parsing safety (after `9631a85`)
+
+An independent review showed that the "downgrade to OFF" validator ran too
+late: pydantic field parsing raises first. Reproduced on `9631a85`:
+`HANDOFF_NOTIFICATIONS_ENABLED=maybe`,
+`HANDOFF_NOTIFICATION_ACTIVATED_AT=not-a-date` and
+`HANDOFF_NOTIFICATION_MAX_PER_HOUR=invalid` each made `Settings()` raise
+(**VERIFIED**), which would have prevented the API, the scheduled worker and
+scripts from starting.
+
+* **Fix**: a `mode="before"` model validator parses only the notification
+  fields, defaults what fails, forces OFF and records a field-name-only reason.
+  Unrelated settings are untouched.
+* **Related gap found and fixed**: the worker's delivery gate recognised only
+  `true/false/1/0/on/off`, whereas `Settings` also accepts `yes/no/t/f/y/n`;
+  `no` made a worker defer forever instead of suppressing. Both now share
+  `parse_handoff_flag`.
+* **VERIFIED** by `tests/test_phase1u_config_safety.py` (52 cases): all
+  reported cases, the same garbage with the flag explicitly OFF, wrong Python
+  types, a credential canary never echoed, `import app.main` and
+  `import scripts.worker` succeed with the notification machinery unloaded,
+  the production preflight does not traceback on them, `lifespan` logs the
+  reason once and starts no notification task, explicit OFF suppresses,
+  invalid/empty/missing defers (attempts unchanged), and **zero** provider
+  calls in every case.
+* **NOT TESTED**: a full `ENVIRONMENT=production` start with real secrets.

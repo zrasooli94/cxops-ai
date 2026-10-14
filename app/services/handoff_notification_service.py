@@ -172,13 +172,17 @@ async def _update_outcome(db: AsyncSession, job: IntegrationJob, **fields: Any) 
 def _config_state() -> str:
     """Worker with missing GitHub variables must DEFER, not suppress.
 
-    Explicit 'false' is an owner kill switch; absent/empty means a runner
-    never received the rollout configuration.
+    Explicit OFF is an owner kill switch; absent, empty, unparseable or
+    otherwise unusable rollout configuration means the runner cannot make the
+    decision and the alert must stay durable. The flag is interpreted with the
+    same parser ``Settings`` uses, so the two can never disagree.
     """
-    raw = os.environ.get("HANDOFF_NOTIFICATIONS_ENABLED", "").strip().lower()
-    if raw in ("0", "false", "off"):
+    from app.core.config import parse_handoff_flag
+
+    flag = parse_handoff_flag(os.environ.get("HANDOFF_NOTIFICATIONS_ENABLED"))
+    if flag is False:
         return "off"
-    if raw in ("1", "true", "on") and settings.handoff_notifications_enabled:
+    if flag is True and settings.handoff_notifications_enabled:
         return "on"
     return "missing"
 

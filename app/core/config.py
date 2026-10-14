@@ -2,10 +2,29 @@ from datetime import datetime
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import field_validator, model_validator
+from pydantic import TypeAdapter, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.encryption import validate_encryption_keys
+
+_BOOL_ADAPTER = TypeAdapter(bool)
+
+
+def parse_handoff_flag(value: object) -> bool | None:
+    """The notification flag exactly as ``Settings`` interprets it.
+
+    ``None`` means empty or unparseable. The runtime delivery gate uses this
+    same function so "explicitly off" and "enabled" can never be judged by one
+    vocabulary in ``Settings`` and another in the worker (pydantic accepts
+    yes/no/t/f/y/n as well as true/false/1/0/on/off).
+    """
+    raw = value.strip() if isinstance(value, str) else value
+    if raw is None or raw == "":
+        return None
+    try:
+        return _BOOL_ADAPTER.validate_python(raw)
+    except (ValidationError, ValueError, TypeError):
+        return None
 
 
 class Settings(BaseSettings):
@@ -197,6 +216,64 @@ class Settings(BaseSettings):
     # Derived, not meant to be set: why an enabled flag was downgraded to OFF.
     handoff_notification_config_error: str = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _handoff_inputs_never_fail_field_parsing(cls, data: object) -> object:
+        """Fail closed on malformed notification settings BEFORE field parsing.
+
+        ``Settings`` is built by every process (API, scheduled worker, scripts).
+        A malformed ``HANDOFF_*`` value - ``maybe`` for the flag, ``not-a-date``
+        for the activation time, ``invalid`` for the cap - would otherwise be a
+        pydantic field error that stops the whole process from starting, which
+        is an outage for chat, SLA and job processing caused by an *optional*
+        feature's variable. Each notification field is parsed here with a
+        throwaway adapter; an unparseable value is replaced by its safe default
+        and the feature is forced OFF with a bounded reason that names only the
+        FIELD (never the value, which could be a credential-bearing URL).
+        Unrelated settings are not touched.
+        """
+        if not isinstance(data, dict):
+            return data
+        cleaned = dict(data)
+        bad: list[str] = []
+
+        def parse(name: str, adapter: TypeAdapter, default: object) -> None:
+            if name not in cleaned:
+                return
+            raw = cleaned[name]
+            if isinstance(raw, str):
+                raw = raw.strip()
+            if raw is None or raw == "":
+                return  # handled by the empty-means-default validators
+            try:
+                cleaned[name] = adapter.validate_python(raw)
+            except (ValidationError, ValueError, TypeError, OverflowError):
+                bad.append(name)
+                cleaned[name] = default
+
+        parse("handoff_notifications_enabled", _BOOL_ADAPTER, False)
+        parse("handoff_notification_activated_at", TypeAdapter(datetime), None)
+        parse("handoff_notification_max_per_hour", TypeAdapter(int), 6)
+        for name in ("handoff_notification_pilot_tenant",
+                     "handoff_notification_channels",
+                     "handoff_notification_email_url",
+                     "handoff_notification_telegram_url"):
+            if name in cleaned and not isinstance(cleaned[name], str):
+                bad.append(name)
+                cleaned[name] = ""
+        if bad:
+            # Any unparseable notification setting means the rollout is not
+            # trustworthy: stay OFF, say which fields, never which values.
+            cleaned["handoff_notifications_enabled"] = False
+            fields = ", ".join(sorted(b.removeprefix("handoff_") for b in bad))
+            cleaned["handoff_notification_config_error"] = (
+                f"unparseable notification setting(s): {fields}"
+            )
+        else:
+            # Derived field: never trusted from the environment.
+            cleaned.pop("handoff_notification_config_error", None)
+        return cleaned
+
     @field_validator("handoff_notifications_enabled", mode="before")
     @classmethod
     def _handoff_empty_flag_is_off(cls, value):
@@ -251,7 +328,9 @@ class Settings(BaseSettings):
             error = "channels must be a non-empty subset of email,telegram"
         if error:
             self.handoff_notifications_enabled = False
-            self.handoff_notification_config_error = error
+            self.handoff_notification_config_error = (
+                self.handoff_notification_config_error or error
+            )
         return self
 
     # Public web chat (Phase 1P.1)

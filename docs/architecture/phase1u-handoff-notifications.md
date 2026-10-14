@@ -96,6 +96,23 @@ tenant, a cap outside 1-6, an unknown channel) **downgrades to OFF and logs the
 reason at start-up**; it never raises, so a mistyped notification variable
 cannot stop chat, SLA or job processing in any process.
 
+*Malformed values are handled before field parsing.* A `mode="before"` model
+validator parses each notification field with a throwaway adapter; an
+unparseable flag (`maybe`), activation time (`not-a-date`) or cap (`invalid`,
+`6.5`) is replaced by its safe default, the feature is forced OFF, and
+`handoff_notification_config_error` records the field names only
+(`unparseable notification setting(s): ...`), never the value (which could be a
+credential-bearing URL). The same holds when the flag is explicitly OFF. The
+derived error field cannot be injected from the environment.
+
+*One flag vocabulary.* The delivery gate interprets
+`HANDOFF_NOTIFICATIONS_ENABLED` with the same parser as `Settings`
+(`parse_handoff_flag`; pydantic accepts yes/no/t/f/y/n as well as
+true/false/1/0/on/off). Previously a worker judged `no` as "missing" and
+deferred forever while `Settings` read it as OFF. Now: parseable false =>
+`suppressed:disabled`; parseable true with a valid rollout => send; empty,
+unparseable or invalid rollout => defer.
+
 All outbound sends are blocked while the main feature flag is false. The API
 and GitHub Actions worker must use consistent rollout config and secrets.
 
