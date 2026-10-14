@@ -70,6 +70,12 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AUTH_JWKS_URL: ${{ secrets.AUTH_JWKS_URL }}
       AUTH_JWT_ISSUER: ${{ secrets.AUTH_JWT_ISSUER }}
+      # A missing rollout flag is distinguishable from an explicit OFF: a
+      # worker without configuration defers, rather than consumes the alert.
+      HANDOFF_NOTIFICATIONS_ENABLED: ${{ vars.HANDOFF_NOTIFICATIONS_ENABLED }}
+      HANDOFF_NOTIFICATION_ACTIVATED_AT: ${{ vars.HANDOFF_NOTIFICATION_ACTIVATED_AT }}
+      HANDOFF_NOTIFICATION_EMAIL_URL: ${{ secrets.HANDOFF_NOTIFICATION_EMAIL_URL }}
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ${{ secrets.HANDOFF_NOTIFICATION_TELEGRAM_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,7 +90,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-lock.txt
 
       - name: Production environment preflight
         run: python scripts/preflight_production_env.py

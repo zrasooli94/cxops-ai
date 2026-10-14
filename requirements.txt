@@ -21,5 +21,8 @@ pypdf
 
 prometheus-client
 
+# Phase 1U-A: email/Telegram adapter; outbound calls disabled by default.
+apprise==2.0.1
+
 python-jose[cryptography]
 cryptography>=42.0.0

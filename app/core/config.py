@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -181,6 +182,15 @@ class Settings(BaseSettings):
                 "base URLs must not include a path, query, fragment, or credentials"
             )
         return candidate
+
+    # Phase 1U-A: restricted RISPU email + Telegram pilot, OFF by default.
+    # All transport URLs stay in server env secrets, never user-controlled.
+    handoff_notifications_enabled: bool = False
+    handoff_notification_pilot_tenant: str = "rispu"
+    handoff_notification_activated_at: datetime | None = None
+    handoff_notification_email_url: str = ""
+    handoff_notification_telegram_url: str = ""
+    handoff_notification_max_per_hour: int = 6
 
     # Public web chat (Phase 1P.1)
     public_chat_session_token_entropy_bytes: int = 32

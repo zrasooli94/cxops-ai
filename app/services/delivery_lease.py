@@ -33,6 +33,7 @@ log = get_logger("delivery_lease")
 # High 32 bits of the advisory key per lease kind; low 32 bits: the row id.
 REPLY_DELIVERY_LOCK_NAMESPACE = 0x52504C59  # "RPLY": one delivery per reply
 CHAT_TURN_LOCK_NAMESPACE = 0x5455524E  # "TURN": one AI turn per chat session
+HANDOFF_NOTIFICATION_LOCK_NAMESPACE = 0x4E4F5446  # "NOTF": per-job send lease
 
 
 def _lease_key(namespace: int, row_id: int) -> int:
@@ -47,6 +48,15 @@ def reply_lease_key(message_id: int) -> int:
 
 def chat_turn_lease_key(session_id: int) -> int:
     return _lease_key(CHAT_TURN_LOCK_NAMESPACE, session_id)
+
+
+@asynccontextmanager
+async def handoff_notification_delivery_lease(job_id: int) -> AsyncIterator[bool]:
+    """Serialize provider sends for a job across processes."""
+    async with advisory_lease(
+        _lease_key(HANDOFF_NOTIFICATION_LOCK_NAMESPACE, job_id), label=job_id
+    ) as held:
+        yield held
 
 
 @asynccontextmanager
