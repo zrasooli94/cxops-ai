@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -52,6 +53,29 @@ USER_AGENT = "cxops-smoke-public-chat/1.0"
 # string) keeps smoke output diffable and keeps customer-data-shaped content out
 # of the transcript.
 PROBE_TEXT = "Hello, I have a general question about selling my car."
+
+
+# Static customer-visible texts the widget returns when it did NOT answer from
+# knowledge. Mirrored from ``app.services.public_chat_service`` (this script is
+# deliberately dependency-free); ``tests/test_smoke_public_chat_cli.py`` fails
+# if they drift.
+STATIC_REPLIES = frozenset(
+    {
+        "A support team member needs to review this request.",
+        "Your request has been received.",
+        (
+            "This request has been recorded for the A1 Cash for Cars team. No one has "
+            "been contacted, and no booking, quote, offer, or valuation has been made."
+        ),
+        "I don't have enough information in the knowledge base to answer that question.",
+        (
+            "I found potentially relevant information, but I could not "
+            "produce a sufficiently grounded answer with valid citations."
+        ),
+    }
+)
+
+_COMMIT_ID = re.compile(r"^[0-9a-f]{7,64}$")
 
 
 class StepFailure(Exception):
@@ -113,6 +137,7 @@ def send_and_wait_for_reply(
     reply_timeout: float = 90.0,
     sleep: Any = time.sleep,
     probe_text: str = PROBE_TEXT,
+    expect_grounded_reply: bool = False,
 ) -> str:
     """Send the probe message and verify a reply arrives.
 
@@ -139,6 +164,8 @@ def send_and_wait_for_reply(
         reply = payload.get("reply")
         if not reply:
             raise StepFailure("no reply returned; the agent did not answer")
+        if expect_grounded_reply:
+            _require_grounded_looking_reply(payload)
         return (
             f"reply received ({len(reply)} chars, body not shown), "
             f"status={payload.get('status')!r}, handoff={bool(payload.get('handoff'))}"
@@ -168,6 +195,30 @@ def send_and_wait_for_reply(
             )
         sleep(max(0.5, float(update.get("poll_after_ms") or 1000) / 1000))
     raise StepFailure(f"no async reply within {reply_timeout:.0f}s")
+
+
+def _require_grounded_looking_reply(payload: dict[str, Any]) -> None:
+    """Fail unless the response has every HTTP-visible sign of an auto-answer.
+
+    This is necessary, not sufficient: it cannot prove the answer was grounded
+    in retrieved knowledge. That is established afterwards by the read-only
+    audit of ``agent_action_events`` / ``ai_request_logs`` (see the Phase 1R
+    architecture note). Reply bodies are never echoed.
+    """
+    problems = []
+    if payload.get("handoff") is not False:
+        problems.append(f"handoff={payload.get('handoff')!r} (must be False)")
+    if payload.get("processing_state") != "completed":
+        problems.append(f"processing_state={payload.get('processing_state')!r}")
+    if payload.get("status") != "ai_active":
+        problems.append(f"status={payload.get('status')!r}")
+    reply = payload.get("reply")
+    if not isinstance(reply, str) or not reply.strip():
+        problems.append("empty reply")
+    elif reply.strip() in STATIC_REPLIES:
+        problems.append("reply is a static handoff/acknowledgement/fallback text")
+    if problems:
+        raise StepFailure("not a grounded auto-reply: " + "; ".join(problems))
 
 
 def _describe(payload: Any) -> str:
@@ -204,11 +255,25 @@ def run(args: argparse.Namespace) -> int:
             f", build_sha={payload.get('build_sha')}",
         )
         expected_sha = (args.expect_build_sha or "").strip().lower()
-        if expected_sha and payload.get("build_sha") != expected_sha:
-            bad(
-                "build identity",
-                f"expected build_sha {expected_sha!r}, deployed {payload.get('build_sha')!r}",
-            )
+        if expected_sha:
+            deployed = payload.get("build_sha")
+            if not isinstance(deployed, str) or not _COMMIT_ID.fullmatch(deployed):
+                bad(
+                    "build identity",
+                    "deployed build_sha is missing or not a commit id; "
+                    "stopping before any session or model call",
+                )
+                _report(results)
+                return 1
+            if deployed != expected_sha:
+                bad(
+                    "build identity",
+                    f"expected build_sha {expected_sha!r}, deployed {deployed!r}; "
+                    "stopping before any session or model call",
+                )
+                _report(results)
+                return 1
+            ok("build identity", "deployed build_sha matches the expected commit")
     except StepFailure as exc:
         bad("version endpoint", str(exc))
         _report(results)
@@ -273,59 +338,81 @@ def run(args: argparse.Namespace) -> int:
         _report(results)
         return 1
 
-    # 6. Send a message. Bodies are never printed.
-    try:
-        detail = send_and_wait_for_reply(
-            smoke,
-            origin_header=origin_header,
-            client_message_id=f"smoke-{run_id}",
-            delivery=args.delivery,
-            probe_text=args.probe_text,
-        )
-        ok("message answered", detail)
-    except StepFailure as exc:
-        bad("message answered", str(exc))
+    def close_and_verify() -> None:
+        # 8. Close, then confirm the session is dead
+        try:
+            code, _payload = smoke._request(
+                f"{smoke.backend_url}/public/chat/sessions/close",
+                method="POST",
+                headers=smoke._auth(),
+            )
+            if code not in (200, 201):
+                raise StepFailure(f"close returned HTTP {code}")
+            ok("session closed", "closed")
+        except StepFailure as exc:
+            bad("session closed", str(exc))
+        except Exception as exc:  # noqa: BLE001 - report the type, never the body
+            bad("session closed", f"unexpected {type(exc).__name__}")
 
-    # 7. Human handoff
-    try:
-        code, payload = smoke._request(
-            f"{smoke.backend_url}/public/chat/sessions/human",
-            method="POST",
-            headers=smoke._auth(),
-        )
-        if code not in (200, 201) or not isinstance(payload, dict):
-            raise StepFailure(f"HTTP {code}: {_describe(payload)}")
-        if payload.get("status") != "human_requested":
-            raise StepFailure(f"status is {payload.get('status')!r}, expected 'human_requested'")
-        ok("human handoff", "status is human_requested")
-    except StepFailure as exc:
-        bad("human handoff", str(exc))
+        try:
+            code, _payload = smoke._request(
+                f"{smoke.backend_url}/public/chat/messages",
+                method="POST",
+                payload={"client_message_id": f"smoke-closed-{run_id}", "text": PROBE_TEXT},
+                headers=smoke._auth(),
+            )
+            if code != 409:
+                raise StepFailure(f"expected HTTP 409 for a closed session, got {code}")
+            ok("closed session rejected", "further messages return 409")
+        except StepFailure as exc:
+            bad("closed session rejected", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            bad("closed session rejected", f"unexpected {type(exc).__name__}")
 
-    # 8. Close, then confirm the session is dead
+    # 6-7 run inside try/finally so an already-created session is ALWAYS closed,
+    # whatever happens to the message or handoff steps.
     try:
-        code, _payload = smoke._request(
-            f"{smoke.backend_url}/public/chat/sessions/close",
-            method="POST",
-            headers=smoke._auth(),
-        )
-        if code not in (200, 201):
-            raise StepFailure(f"close returned HTTP {code}")
-        ok("session closed", "closed")
-    except StepFailure as exc:
-        bad("session closed", str(exc))
+        # 6. Send a message. Bodies are never printed.
+        try:
+            detail = send_and_wait_for_reply(
+                smoke,
+                origin_header=origin_header,
+                client_message_id=f"smoke-{run_id}",
+                delivery=args.delivery,
+                probe_text=args.probe_text,
+                expect_grounded_reply=args.expect_grounded_reply,
+            )
+            ok("message answered", detail)
+            if args.expect_grounded_reply:
+                ok(
+                    "grounding evidence",
+                    "HTTP metadata only; verify the audit rows to confirm RAG grounding",
+                )
+        except StepFailure as exc:
+            bad("message answered", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            bad("message answered", f"unexpected {type(exc).__name__}")
 
-    try:
-        code, payload = smoke._request(
-            f"{smoke.backend_url}/public/chat/messages",
-            method="POST",
-            payload={"client_message_id": f"smoke-closed-{run_id}", "text": PROBE_TEXT},
-            headers=smoke._auth(),
-        )
-        if code != 409:
-            raise StepFailure(f"expected HTTP 409 for a closed session, got {code}")
-        ok("closed session rejected", "further messages return 409")
-    except StepFailure as exc:
-        bad("closed session rejected", str(exc))
+        # 7. Human handoff
+        try:
+            code, payload = smoke._request(
+                f"{smoke.backend_url}/public/chat/sessions/human",
+                method="POST",
+                headers=smoke._auth(),
+            )
+            if code not in (200, 201) or not isinstance(payload, dict):
+                raise StepFailure(f"HTTP {code}: {_describe(payload)}")
+            if payload.get("status") != "human_requested":
+                raise StepFailure(
+                    f"status is {payload.get('status')!r}, expected 'human_requested'"
+                )
+            ok("human handoff", "status is human_requested")
+        except StepFailure as exc:
+            bad("human handoff", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            bad("human handoff", f"unexpected {type(exc).__name__}")
+    finally:
+        close_and_verify()
 
     return _report(results)
 
@@ -383,6 +470,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--expect-grounded-reply",
+        action="store_true",
+        help=(
+            "Require a synchronous, non-static reply with handoff=false, "
+            "processing_state=completed and status=ai_active. HTTP metadata "
+            "only; RAG grounding is confirmed by the read-only audit queries."
+        ),
+    )
+    parser.add_argument(
         "--expect-build-sha",
         default="",
         help="Fail unless /version reports exactly this commit (release check).",
@@ -416,6 +512,12 @@ def main() -> int:
                 "error: one of --widget-key or --widget-key-file is required",
                 file=sys.stderr,
             )
+        return 2
+    if args.expect_build_sha and not _COMMIT_ID.fullmatch(args.expect_build_sha.strip().lower()):
+        print("error: --expect-build-sha must be a 7-64 character hex commit id", file=sys.stderr)
+        return 2
+    if args.expect_grounded_reply and args.delivery != "sync":
+        print("error: --expect-grounded-reply requires --delivery sync", file=sys.stderr)
         return 2
     if args.widget_key.startswith("pk_live_") and len(args.widget_key) < 20:
         print("error: --widget-key looks truncated", file=sys.stderr)

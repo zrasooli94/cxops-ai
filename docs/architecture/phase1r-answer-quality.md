@@ -139,20 +139,97 @@ runbook (`docs/runbooks/rispu-live-pilot.md`) lists the new metrics.
 
 ## 7. The one proposed live test (owner approval required)
 
-Preconditions: this PR merged and deployed by the owner; `/version` shows the
-merged `build_sha`. Then, using RISPU's existing widget key file, one session,
-one synthetic question (~one decision call, one embedding, one answer call;
-counted against the tenant allowance):
+Preconditions: this PR merged and deployed by the owner. Using RISPU's existing
+widget key file, one session, one synthetic question (about one decision call,
+one embedding and one answer call, counted against the tenant allowance):
 
 ```bash
 .venv/bin/python scripts/smoke_public_chat.py \
     --backend-url <render-api> --frontend-url <vercel-frontend> \
     --widget-key-file <key-file> --embedding-origin https://www.rispu.com \
-    --expect-build-sha <merged-commit> \
+    --expect-build-sha <merged-commit-40-hex> \
+    --expect-grounded-reply \
     --probe-text "Does RISPU develop mobile applications?"
 ```
 
-Pass criteria: `build identity` passes, `message answered` reports
-`handoff=False`, status `ai_active`; the script then requests handoff and
-closes the same session (no further model calls). Bodies and keys are never
-printed. Abort on any `FAIL`.
+Script guarantees:
+
+* `--expect-build-sha`: if `/version` reports a different, missing or invalid
+  `build_sha`, the script reports `FAIL` and exits **before** the liveness,
+  readiness, embed, session-creation or message requests. No session exists
+  and no model is called. (A malformed expected value exits 2 before any
+  request.)
+* `--expect-grounded-reply` (sync delivery only) requires a non-empty reply
+  with `handoff` explicitly `false`, `processing_state="completed"`,
+  `status="ai_active"`, and a reply that is not one of the known static
+  handoff / acknowledgement / local-demo / knowledge-base-fallback texts.
+  Anything else is `FAIL`.
+* These are **HTTP-level signals only**. They do not prove the answer was
+  grounded in retrieved knowledge; the script says so in its output. Grounding
+  is established by the audit below.
+* Once a session is created it is always closed (including after an
+  unexpected error), and closure is verified (`409` on a further message).
+  Without the new flags the original behaviour is unchanged. Bodies, widget key
+  and session token are never printed.
+
+## 8. Read-only audit after the live test
+
+Run against production by the owner, `SELECT` only, tenant-scoped. None of
+these queries selects a message body, question, answer or token; `sources`
+is selected only as ids. Let `:org` be the RISPU `organizations.id` and
+`:t0` the time just before the smoke run.
+
+```sql
+-- 1. Exactly one session, closed (created and closed)
+SELECT id, status, created_at, closed_at, ticket_id
+FROM public_chat_sessions
+WHERE organization_id = :org AND created_at >= :t0;       -- expect 1 row, status 'closed'
+
+-- 2. The turn's agent run took the 'respond' action, with no authorization
+SELECT r.id, r.run_id, r.action, r.status, r.authorization_source
+FROM agent_runs r
+JOIN public_chat_sessions s
+  ON s.ticket_id = r.ticket_id AND s.organization_id = r.organization_id
+WHERE s.organization_id = :org AND s.created_at >= :t0;    -- action = 'respond'
+
+-- 3. The grounded auto-reply event with valid source ids and eligibility
+SELECT e.event_type,
+       e.event_data -> 'source_ids'        AS source_ids,
+       e.event_data ->> 'eligibility_reason' AS eligibility_reason,
+       e.event_data ->> 'rag_request_id'    AS rag_request_id
+FROM agent_action_events e
+JOIN agent_runs r ON r.id = e.agent_run_id
+JOIN public_chat_sessions s
+  ON s.ticket_id = r.ticket_id AND s.organization_id = r.organization_id
+WHERE s.organization_id = :org AND s.created_at >= :t0
+  AND e.event_type = 'public_grounded_auto_reply';
+-- expect 1 row; source_ids non-empty, each matching ^S[0-9]+$;
+-- eligibility_reason = 'eligible'
+
+-- 4. The matching successful, grounded RAG request (ids only)
+SELECT l.request_id, l.feature, l.status, l.grounded, l.llm_called,
+       jsonb_array_length(l.sources) AS source_count, l.latency_ms
+FROM ai_request_logs l
+WHERE l.organization_id = :org AND l.feature = 'public_chat'
+  AND l.request_id = :rag_request_id_from_query_3;
+-- expect status = 'success', grounded = true, llm_called = true, source_count >= 1
+
+-- 5. The AI reservation settled (reservation key carries the smoke message id)
+SELECT status, settled_at
+FROM ai_usage_reservations
+WHERE organization_id = :org AND reservation_key LIKE 'ai-turn:' || :org || ':%:smoke-%'
+  AND created_at >= :t0;                                   -- expect 1 row, 'settled'
+
+-- 6. No asynchronous jobs were created for the test
+SELECT job_type, count(*)
+FROM integration_jobs
+WHERE organization_id = :org AND created_at >= :t0
+GROUP BY job_type;                                         -- expect no public_chat.turn
+                                                           -- and no agent.execute rows
+```
+
+Interpretation: checks 2-4 together are what prove grounding (a `respond`
+decision, an eligible event naming valid sources, and a successful grounded
+request with the same id). A reply that passes the script but fails 3 or 4
+must be treated as a failed test. Record only ids, counts and statuses in the
+report - never message text, tokens or keys.
