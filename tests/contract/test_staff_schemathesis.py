@@ -93,6 +93,9 @@ async def _seed() -> dict[str, int]:
                 organization_id=own.id, subject="contract-viewer", role=OrganizationRole.VIEWER
             ),
             OrganizationMembership(
+                organization_id=own.id, subject="contract-owner", role=OrganizationRole.OWNER
+            ),
+            OrganizationMembership(
                 organization_id=other.id, subject="contract-foreign", role=OrganizationRole.VIEWER
             ),
         ])
@@ -221,6 +224,40 @@ async def test_viewer_cannot_assign_release_or_resolve(staff_tenants):
     async with AsyncSessionLocal() as db:
         state = await db.scalar(select(PublicChatSession.status).where(PublicChatSession.id == sid))
         assert state == "human_requested"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", ["0", "-1", "2147483648", "9223372036854775808"])
+async def test_invalid_staff_session_ids_never_reach_int32_database_bind(
+    staff_tenants, bad_id
+):
+    """The fuzzer found a 500 at 2147483648: enforce the DB ID bound at HTTP.
+
+    Use an owner, not a denied viewer, to ensure every handler could otherwise
+    reach its database query. All four routes must respond with 422.
+    """
+    own = staff_tenants["own_org"]
+    headers = _headers(own, subject="contract-owner")
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        for op in ("assign", "release", "resolve"):
+            response = await client.post(
+                f"/staff/public-chat/sessions/{bad_id}/{op}",
+                headers=headers,
+            )
+            assert response.status_code == 422
+        actions = await client.get(
+            f"/staff/public-chat/sessions/{bad_id}/business-actions",
+            headers=headers,
+        )
+        assert actions.status_code == 422
+    async with AsyncSessionLocal() as db:
+        assert await db.scalar(
+            select(PublicChatSession.status).where(
+                PublicChatSession.id == staff_tenants["own_session"]
+            )
+        ) == "human_requested"
 
 
 @staff_schema.parametrize()
