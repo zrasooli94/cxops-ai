@@ -58,6 +58,7 @@ async def test_version_endpoint_reports_build_and_uptime_without_secrets(monkeyp
     assert body["uptime_seconds"] >= 0
     assert set(body) == {
         "service", "version", "environment", "build_sha", "started_at", "uptime_seconds",
+        "boot_seconds",
     }
     dumped = json.dumps(body).lower()
     for forbidden in ("database", "password", "secret", "token", "postgres"):

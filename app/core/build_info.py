@@ -42,3 +42,46 @@ def build_sha(environ: dict[str, str] | None = None) -> str | None:
 
 def uptime_seconds() -> float:
     return round(time.monotonic() - _PROCESS_STARTED_MONOTONIC, 1)
+
+
+# --- boot timing (Phase 1T) ---------------------------------------------------
+# Seconds since the Python process was exec'd, read from /proc (Linux only, so
+# ``None`` on a developer laptop). It spans interpreter start-up, every import,
+# and the schema gate - exactly the "launch command -> serving" delay that
+# platform logs show as a gap between "API startup command" and "Uvicorn
+# process started". Nothing is read from the environment or the network.
+
+
+def process_age_seconds() -> float | None:
+    try:
+        with open("/proc/self/stat", encoding="ascii") as handle:
+            after_comm = handle.read().rsplit(")", 1)[1].split()
+        started_ticks = int(after_comm[19])  # field 22: starttime
+        with open("/proc/uptime", encoding="ascii") as handle:
+            uptime = float(handle.read().split()[0])
+        return max(0.0, uptime - started_ticks / os.sysconf("SC_CLK_TCK"))
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+# Taken as soon as this module is first imported, i.e. right after the
+# interpreter and the web framework were loaded and ``app`` began importing.
+IMPORT_STARTED_AGE_SECONDS = process_age_seconds()
+_boot_complete_age: float | None = None
+
+
+def mark_boot_complete() -> None:
+    global _boot_complete_age
+    _boot_complete_age = process_age_seconds()
+
+
+def boot_seconds() -> float | None:
+    """Process start -> start-up complete, or ``None`` before/unsupported."""
+    return None if _boot_complete_age is None else round(_boot_complete_age, 1)
+
+
+def import_phase_seconds() -> float | None:
+    """Time the application's own imports took (start of ``app`` -> complete)."""
+    if _boot_complete_age is None or IMPORT_STARTED_AGE_SECONDS is None:
+        return None
+    return round(_boot_complete_age - IMPORT_STARTED_AGE_SECONDS, 1)

@@ -2,18 +2,13 @@ import hashlib
 import json
 import time
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import Any, Literal, TypedDict, cast
 from uuid import uuid4
 
 from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
-)
-from langchain_openai import ChatOpenAI
-from langgraph.graph import (
-    END,
-    START,
-    StateGraph,
 )
 from pydantic import BaseModel, SecretStr
 from sqlalchemy import func, select, text
@@ -229,7 +224,14 @@ class AgentState(TypedDict, total=False):
 
 
 class AgentWorkflowService:
-    def __init__(self) -> None:
+    @cached_property
+    def decision_llm(self):
+        """The structured decision model, built on first use (Phase 1T).
+
+        See ``RAGService.llm``: the OpenAI SDK import is deferred off the
+        start-up path. Tests and fakes may still assign ``decision_llm``.
+        """
+        from langchain_openai import ChatOpenAI
 
         llm = ChatOpenAI(
             model=settings.chat_model,
@@ -252,7 +254,7 @@ class AgentWorkflowService:
         # The same open map is exactly what function calling accepts, so this
         # changes the wire format only, not the decision contract. The schema
         # itself is unchanged and still validated by Pydantic on the way back in.
-        self.decision_llm = llm.with_structured_output(
+        return llm.with_structured_output(
             AgentDecision,
             include_raw=True,
             method="function_calling",
@@ -1595,6 +1597,8 @@ Choose the safest next action.
                 state,
                 db=db,
             )
+
+        from langgraph.graph import END, START, StateGraph
 
         graph = StateGraph(AgentState)
 

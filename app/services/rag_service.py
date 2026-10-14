@@ -1,3 +1,4 @@
+from functools import cached_property
 from time import perf_counter
 from uuid import uuid4
 
@@ -5,7 +6,6 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
-from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,8 +26,19 @@ from app.services.rag_helpers import (
 
 
 class RAGService:
-    def __init__(self) -> None:
-        self.llm = ChatOpenAI(
+    @cached_property
+    def llm(self):
+        """The answer model client, built on first use (Phase 1T).
+
+        Importing ``langchain_openai`` pulls in the whole OpenAI SDK, the
+        largest single import cost of the API process. Building it lazily
+        keeps it off the start-up path; ``warm_provider_clients`` builds it in
+        the background right after the port binds. Assigning ``llm`` (tests,
+        fakes) still works: ``cached_property`` is a non-data descriptor.
+        """
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
             model=settings.chat_model,
             api_key=SecretStr(settings.openai_api_key),
             timeout=settings.openai_request_timeout_seconds,
