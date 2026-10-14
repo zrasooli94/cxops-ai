@@ -17,8 +17,12 @@ them causes outages:
     offline.
 
 ``/version``
-    Build identity. Answers which application version and environment is
-    deployed, so an operator can confirm a deploy without shell access.
+    Build identity. Answers which application version, environment and commit
+    is deployed, so an operator can confirm a deploy without shell access, and
+    how long the process has been up (a small ``uptime_seconds`` on a slow
+    first request means a cold start, not a slow handler). The commit comes
+    only from platform build metadata and is shown only when it is a plain hex
+    id; see ``app.core.build_info``.
 
 None of these endpoints echo configuration, connection strings, or credential
 material, and a failing database check reports a fixed reason rather than the
@@ -28,6 +32,7 @@ driver's exception text, which can embed the connection URL.
 from fastapi import APIRouter, Response, status
 from sqlalchemy import text
 
+from app.core.build_info import PROCESS_STARTED_AT, build_sha, uptime_seconds
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 
@@ -39,8 +44,11 @@ DB_OK = "ok"
 DB_UNAVAILABLE = "unavailable"
 
 
+# These three handlers are ``async def`` on purpose: they do no blocking work,
+# and a plain ``def`` is dispatched to the shared worker-thread pool, so a probe
+# could queue behind unrelated blocking calls instead of answering immediately.
 @router.get("/")
-def root() -> dict:
+async def root() -> dict:
     return {
         "service": settings.app_name,
         "version": settings.app_version,
@@ -50,7 +58,7 @@ def root() -> dict:
 
 
 @router.get("/health")
-def health() -> dict:
+async def health() -> dict:
     """Liveness only - deliberately does not query the database."""
     return {
         "status": "healthy",
@@ -85,9 +93,12 @@ async def ready(response: Response) -> dict:
 
 
 @router.get("/version")
-def version() -> dict:
+async def version() -> dict:
     return {
         "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
+        "build_sha": build_sha(),
+        "started_at": PROCESS_STARTED_AT.isoformat(),
+        "uptime_seconds": uptime_seconds(),
     }

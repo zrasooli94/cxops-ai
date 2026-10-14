@@ -182,3 +182,22 @@ Sessions closed **before Phase 1P.7.1** may be left drifting: the
   linked ticket and conversation to `closed`/`solved` with history preserved.
   If a drifted row cannot be reconciled through the application, open an
   incident review before touching it.
+
+---
+
+## 9. Phase 1R diagnostics
+
+- `GET /version` returns `build_sha` (the deployed commit, from Render build
+  metadata, `null` if unavailable), `started_at` and `uptime_seconds`. Compare
+  `build_sha` with the merged commit after every deploy. A slow request with a
+  small `uptime_seconds` is a cold start, not a slow handler.
+- `cxops_public_chat_answer_decisions_total{outcome}` explains each AI turn:
+  `grounded_reply`, `skip_*` (flag off, action not `respond`, intent not
+  `information`, business tool), `ineligible_*` (RAG answer failed an
+  eligibility check), `rag_error`, `allowance_exhausted`. No customer text is
+  recorded.
+- `cxops_public_chat_turn_stage_seconds{stage}` and the `public_chat_timing`
+  log attribute time to validate / allowance / agent / rag / persist.
+- Start-up logs `schema_gate_database_read` and `startup_complete` (with
+  `schema_gate_ms`) show how long the database took to answer before the port
+  was bound.

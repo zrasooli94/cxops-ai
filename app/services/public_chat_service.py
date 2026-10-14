@@ -47,6 +47,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from app.core.config import settings
 from app.core.db_connection import release_idle_connection
 from app.core.logging import get_logger
+from app.core.metrics import (
+    record_public_chat_answer_decision,
+    record_public_chat_turn_stage,
+)
 from app.models.agent_run import AgentRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.conversation import Conversation
@@ -105,6 +109,8 @@ class _StageTimer:
         self._last = now
 
     def log(self, kind: str, **ids: int) -> None:
+        for stage, milliseconds in self.stages.items():
+            record_public_chat_turn_stage(stage=stage, seconds=milliseconds / 1000)
         log.info(
             "public_chat_timing",
             kind=kind,
@@ -593,27 +599,48 @@ class PublicChatService:
         )
 
     @staticmethod
+    def _grounded_skip_reason(
+        *,
+        configuration: PublicChatConfiguration,
+        result: dict,
+        run: AgentRun | None,
+    ) -> str | None:
+        """Why this turn may NOT use the grounded auto-reply, or ``None``.
+
+        The carve-out is deliberately narrow: the tenant must have enabled it,
+        the coordinator must have classified the request as purely
+        ``information``, and the agent decision must be a bare ``respond`` with
+        no business tool. Anything else stays handoff-only. The returned
+        reason is a member of a closed metric vocabulary.
+        """
+        if not configuration.grounded_auto_reply_enabled:
+            return "skip_flag_off"
+        if run is None:
+            return "skip_no_run"
+        if run.action != "respond":
+            return "skip_action_not_respond"
+        if result.get("coordinator_intent") != "information":
+            return "skip_intent_not_information"
+        decision = result.get("decision") or {}
+        if decision.get("business_tool"):
+            return "skip_business_tool"
+        return None
+
+    @classmethod
     def _grounded_auto_reply_requested(
+        cls,
         *,
         configuration: PublicChatConfiguration,
         result: dict,
         run: AgentRun | None,
     ) -> bool:
-        """Whether this turn may use the tenant's grounded auto-reply opt-in.
-
-        The carve-out is deliberately narrow: the tenant must have enabled it,
-        the coordinator must have classified the request as purely
-        ``information``, and the agent decision must be a bare ``respond`` with
-        no business tool. Anything else stays handoff-only.
-        """
-        if not configuration.grounded_auto_reply_enabled:
-            return False
-        if run is None or run.action != "respond":
-            return False
-        if result.get("coordinator_intent") != "information":
-            return False
-        decision = result.get("decision") or {}
-        return not decision.get("business_tool")
+        """Whether this turn may use the tenant's grounded auto-reply opt-in."""
+        return (
+            cls._grounded_skip_reason(
+                configuration=configuration, result=result, run=run
+            )
+            is None
+        )
 
     @classmethod
     async def _grounded_auto_reply_or_none(
@@ -641,10 +668,12 @@ class PublicChatService:
         eligible, reason = public_answer_eligible(rag_result)
         if not eligible:
             log.info("public_chat_grounded_auto_reply_ineligible", reason=reason)
+            record_public_chat_answer_decision(outcome=f"ineligible_{reason}")
             return None
 
         answer = _strip_source_markers(rag_result.get("answer") or "")
         if not answer:
+            record_public_chat_answer_decision(outcome="ineligible_empty_after_strip")
             return None
 
         sources = rag_result.get("sources") or []
@@ -1011,6 +1040,7 @@ class PublicChatService:
         )
         timer.mark("allowance")
         if not allowance.allowed:
+            record_public_chat_answer_decision(outcome="allowance_exhausted")
             log.warning(
                 "public_chat_ai_allowance_exhausted",
                 organization_id=organization_id,
@@ -1051,6 +1081,7 @@ class PublicChatService:
             persist_run=True,
             authz=None,
             lock_conn=lock_conn,
+            latest_customer_text=text,
         )
 
         timer.mark("agent")
@@ -1079,11 +1110,14 @@ class PublicChatService:
         run_action = run.action if run is not None else None
 
         grounded_reply: _GroundedAutoReply | None = None
-        if cls._grounded_auto_reply_requested(
+        skip_reason = cls._grounded_skip_reason(
             configuration=configuration,
             result=result,
             run=run,
-        ):
+        )
+        if skip_reason is not None:
+            record_public_chat_answer_decision(outcome=skip_reason)
+        else:
             try:
                 grounded_reply = await cls._grounded_auto_reply_or_none(
                     db,
@@ -1096,6 +1130,7 @@ class PublicChatService:
                 # reload the objects the handoff path still needs, then fail
                 # closed to the human handoff.
                 log.exception("public_chat_grounded_auto_reply_failed")
+                record_public_chat_answer_decision(outcome="rag_error")
                 await db.rollback()
                 await db.refresh(inbound)
                 await db.refresh(session)
@@ -1108,6 +1143,7 @@ class PublicChatService:
 
         if grounded_reply is not None:
             reply_text = grounded_reply.text
+            record_public_chat_answer_decision(outcome="grounded_reply")
         elif run_action is None or run_action not in SAFE_AUTOREPLY_ACTIONS:
             handoff = True
             reply_text = await cls.handoff_reply_for(db, organization_id)
@@ -1148,6 +1184,13 @@ class PublicChatService:
             message_id=inbound.id,
             status=session.status,
             handoff=handoff,
+            grounded=grounded_reply is not None,
+            coordinator_intent=result.get("coordinator_intent"),
+            run_action=run_action,
+            skip_reason=skip_reason,
+            answer_sources=(
+                list(grounded_reply.source_ids) if grounded_reply is not None else []
+            ),
         )
         await TenantAIAllowanceService.settle(db, key=allowance_key)
 

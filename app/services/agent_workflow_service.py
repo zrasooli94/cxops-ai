@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import time
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict, cast
@@ -90,7 +91,11 @@ AGENT_DECISION_VERSION = "2"
 #
 # 1K.2B changed real routing behavior (action intent now skips retrieval), so
 # v1 fingerprints must not reuse a pre-routing-change analysis.
-AGENT_WORKFLOW_VERSION = "2"
+#
+# 1R changed the deterministic question/injection classification (word-boundary
+# question phrases, capability questions, commitment and instruction-override
+# vetoes), so v2 fingerprints must not reuse a pre-1R analysis.
+AGENT_WORKFLOW_VERSION = "3"
 
 # Deterministic coordinator intent labels (Phase 1K). These are metadata that
 # describe the request; they never gate behaviour on their own.
@@ -207,20 +212,44 @@ _ACTION_INTENT_MARKERS = (
     "investigate",
 )
 
-# Minimal question phrasing signals for knowledge-only informational requests.
-_QUESTION_INTENT_MARKERS = (
-    "what",
-    "how",
-    "can i",
-    "is it",
-    "does ",
-    "when",
-    "which",
-    "why",
-    "am i",
-    "are you",
-    "eligib",
-    "requirement",
+# Question phrasing signals for knowledge-only informational requests (Phase
+# 1R). Matched on word boundaries: the earlier substring match let "show" count
+# as "how" and "whatsapp" count as "what". Phrases cover the natural ways a
+# visitor asks about a business ("do you offer ...", "can you build ...", "who
+# is ...", "tell me about ..."), not only wh-words.
+_QUESTION_INTENT_PATTERN = re.compile(
+    r"\b(?:what|how|when|which|why|does|can i|is it|are you|am i)\b|"
+    r"\b(?:eligib|requirement)"
+)
+
+# Capability/identity phrasing only counts when the message is not already
+# action-phrased, so "can you please call me back?" stays a pure ``action``.
+_CAPABILITY_QUESTION_PATTERN = re.compile(
+    r"\b(?:where|who|whom|whose|do you|did you|can you|could you|is there|"
+    r"are there|tell me about)\b"
+)
+
+# A question phrased as a request for the business to perform something for
+# the visitor ("can you start my project now?") is a transaction, not a
+# capability question ("can you build mobile apps?"). The verb alone is not
+# enough ("how can a business start a project" is informational): it must be a
+# polite request that also claims ownership or immediacy.
+_COMMITMENT_REQUEST_PATTERN = re.compile(
+    r"\b(?:can|could|would|will) you (?:please )?(?:start|begin|launch|publish|"
+    r"increase|book|schedule|hire|buy|order|sign|build|create|set up|change|send|"
+    r"make|delete|remove|cancel|update|run|post|upgrade|add|set|do)\b"
+    r"[^?.\n]*\b(?:my|our|for me|for us|now|today|asap|immediately|"
+    r"right away|tomorrow)\b"
+)
+
+# Instruction-override phrasing. A message carrying it is never a plain
+# informational question: it goes to a human instead of the grounded
+# auto-reply, whatever else it asks.
+_INSTRUCTION_OVERRIDE_PATTERN = re.compile(
+    r"\b(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}"
+    r"\b(?:instruction|rule|prompt|polic|guideline|system|previous|above|prior)"
+    r"|\bsystem prompt\b|\byou are now\b|\bdeveloper mode\b|\bjailbreak"
+    r"|\bpretend (?:to be|you)\b|\bact as\b|\breveal your (?:prompt|instructions)\b"
 )
 
 logger = get_logger(__name__)
@@ -240,6 +269,9 @@ class AgentState(TypedDict, total=False):
     fast_path_action: str | None
 
     intent: AgentIntent | None
+    # Phase 1R: the visitor's current message (public chat). When present it,
+    # not the ticket's first message, drives classification and retrieval.
+    latest_customer_text: str | None
 
     sources: list[dict]
 
@@ -339,6 +371,7 @@ class AgentWorkflowService:
         corpus_revision: dict[str, Any],
         customer_context_digest: str,
         conversation_context_digest: str = "",
+        latest_customer_text: str | None = None,
     ) -> str:
         """Deterministic, non-logged fingerprint over materially relevant inputs.
 
@@ -374,6 +407,10 @@ class AgentWorkflowService:
                 conversation_context_digest,
             ]
         )
+        if latest_customer_text:
+            # Appended only when supplied so every pre-1R fingerprint is
+            # unchanged for callers that do not pass it.
+            payload += "|latest:" + latest_customer_text
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -605,16 +642,26 @@ class AgentWorkflowService:
             marker in text for marker in _ACTION_INTENT_MARKERS
         )
 
-        is_question = any(
-            marker in text for marker in _QUESTION_INTENT_MARKERS
+        if _INSTRUCTION_OVERRIDE_PATTERN.search(text):
+            return "mixed"
+
+        is_question = _QUESTION_INTENT_PATTERN.search(text) is not None
+        is_capability_question = (
+            not is_action_phrased
+            and _CAPABILITY_QUESTION_PATTERN.search(text) is not None
         )
+
+        if (is_question or is_capability_question) and (
+            _COMMITMENT_REQUEST_PATTERN.search(text)
+        ):
+            return "mixed"
 
         if is_action_phrased:
             if not is_question and not has_policy_signal:
                 return "action"
             return "mixed"
 
-        if is_question:
+        if is_question or is_capability_question:
             return "information"
 
         return "mixed"
@@ -634,6 +681,13 @@ class AgentWorkflowService:
         description = str(ticket.get("description", "")).strip().lower()
 
         text = f"{subject}\n{description}"
+
+        latest_customer_text = state.get("latest_customer_text")
+        if latest_customer_text:
+            # Phase 1R: a follow-up question in an existing chat session is
+            # classified on what the visitor just asked, not on the session's
+            # first message (which only ever seeds the ticket).
+            text = latest_customer_text.strip().lower()
 
         # -------------------------------------------------
         # Conservative deterministic RAG gate
@@ -927,6 +981,8 @@ class AgentWorkflowService:
             raise TicketNotFoundError("Ticket not found in workflow state.")
 
         query = f"{ticket['subject']}\n\n{ticket['description']}"
+        if state.get("latest_customer_text"):
+            query = str(state["latest_customer_text"])
 
         # The ONLY trusted tenant is the organization_id already present in
         # the workflow state (derived from the loaded, tenant-owned ticket).
@@ -1706,6 +1762,7 @@ Choose the safest next action.
         customer_context_digest: str,
         conversation_context: "ConversationContext | None",
         conversation_context_digest: str,
+        latest_customer_text: str | None = None,
     ) -> dict:
         """Run the reuse check, LLM workflow, and persistence.
 
@@ -1779,6 +1836,7 @@ Choose the safest next action.
                 "workflow_path": [],
                 "sources": [],
                 "tool_plan": [],
+                "latest_customer_text": latest_customer_text,
                 "conversation_provider": conversation_provider,
                 "enabled_business_tools": enabled_business_tools,
                 "customer_context": (
@@ -2159,6 +2217,7 @@ Choose the safest next action.
         authz: "AuthorizationContext | None" = None,
         force: bool = False,
         lock_conn: AsyncConnection | None = None,
+        latest_customer_text: str | None = None,
     ) -> dict:
 
         run_id = uuid4().hex
@@ -2231,6 +2290,7 @@ Choose the safest next action.
             corpus_revision=corpus_revision,
             customer_context_digest=customer_context_digest,
             conversation_context_digest=conversation_context_digest,
+            latest_customer_text=latest_customer_text,
         )
 
         # Acquire a database-backed concurrency guard before the reuse check
@@ -2250,6 +2310,7 @@ Choose the safest next action.
             "customer_context_digest": customer_context_digest,
             "conversation_context": conversation_context,
             "conversation_context_digest": conversation_context_digest,
+            "latest_customer_text": latest_customer_text,
         }
         lock_key: int | None = None
         if persist_run:

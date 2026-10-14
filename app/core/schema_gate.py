@@ -25,6 +25,8 @@ environments only log.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,10 +86,45 @@ async def read_current(engine: AsyncEngine) -> frozenset[str]:
         return frozenset(str(row[0]) for row in rows)
 
 
+async def read_current_with_retry(engine: AsyncEngine) -> frozenset[str]:
+    """``read_current`` with short, bounded attempts.
+
+    The gate runs before the port binds, so one hung connect (a database that
+    is waking from scale-to-zero) would otherwise hold the service unreachable
+    for the driver's 60 s default. A few short attempts recover from a slow
+    wake far sooner, and the total is still bounded; the last failure is
+    raised unchanged so a database that never answers still refuses to start.
+    """
+    attempts = max(1, settings.schema_gate_max_attempts)
+    timeout = settings.schema_gate_attempt_timeout_seconds
+    for attempt in range(1, attempts + 1):
+        started = time.perf_counter()
+        try:
+            return await asyncio.wait_for(read_current(engine), timeout=timeout)
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            log.warning(
+                "schema_gate_attempt_failed",
+                attempt=attempt,
+                attempts=attempts,
+                elapsed_ms=elapsed_ms,
+                error_type=type(exc).__name__,
+            )
+            if attempt == attempts:
+                raise
+            await asyncio.sleep(settings.schema_gate_retry_delay_seconds)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 async def check_schema(engine: AsyncEngine, *, enforce: bool | None = None) -> SchemaStatus:
     """Raise ``SchemaBehindError`` when this build must not start."""
     heads, known = build_revisions()
-    current = await read_current(engine)
+    started = time.perf_counter()
+    current = await read_current_with_retry(engine)
+    log.info(
+        "schema_gate_database_read",
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+    )
     status = SchemaStatus(classify(current, heads, known), current, heads)
     must_enforce = settings.environment == "production" if enforce is None else enforce
     fields = {

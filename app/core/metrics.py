@@ -499,3 +499,80 @@ def record_public_chat_session_closed(*, closed_by: str) -> None:
 
 def record_public_chat_rejection(*, reason: str) -> None:
     PUBLIC_CHAT_REJECTIONS_TOTAL.labels(reason=reason).inc()
+
+
+# Phase 1R: why a public-chat turn was (or was not) answered automatically.
+# ``outcome`` is a closed set (see ``record_public_chat_answer_decision``);
+# customer text, session ids and tenant ids are deliberately never labels.
+PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL = Counter(
+    "cxops_public_chat_answer_decisions_total",
+    "Public chat AI turns by the reason they were answered or handed off.",
+    [
+        "outcome",
+    ],
+)
+
+PUBLIC_CHAT_TURN_STAGE_SECONDS = Histogram(
+    "cxops_public_chat_turn_stage_seconds",
+    "Wall-clock seconds spent in each stage of a public chat turn.",
+    [
+        "stage",
+    ],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32),
+)
+
+EMBEDDING_QUERY_CACHE_TOTAL = Counter(
+    "cxops_embedding_query_cache_total",
+    "Query-embedding cache lookups.",
+    [
+        "result",
+    ],
+)
+
+PUBLIC_CHAT_ANSWER_OUTCOMES = frozenset(
+    {
+        "grounded_reply",
+        "skip_flag_off",
+        "skip_no_run",
+        "skip_action_not_respond",
+        "skip_intent_not_information",
+        "skip_business_tool",
+        "ineligible_not_grounded",
+        "ineligible_no_sources",
+        "ineligible_empty_answer",
+        "ineligible_no_similarity",
+        "ineligible_fallback_answer",
+        "ineligible_invalid_citations",
+        "ineligible_empty_after_strip",
+        "rag_error",
+        "allowance_exhausted",
+    }
+)
+
+PUBLIC_CHAT_TURN_STAGES = frozenset(
+    {
+        "validate",
+        "persist_inbound",
+        "enqueue",
+        "allowance",
+        "agent",
+        "rag",
+        "persist_reply",
+    }
+)
+
+
+def record_public_chat_answer_decision(*, outcome: str) -> None:
+    if outcome not in PUBLIC_CHAT_ANSWER_OUTCOMES:
+        outcome = "other"
+    PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(outcome=outcome).inc()
+
+
+def record_public_chat_turn_stage(*, stage: str, seconds: float) -> None:
+    if stage not in PUBLIC_CHAT_TURN_STAGES:
+        return
+    PUBLIC_CHAT_TURN_STAGE_SECONDS.labels(stage=stage).observe(max(0.0, seconds))
+
+
+def record_embedding_cache(*, result: str) -> None:
+    EMBEDDING_QUERY_CACHE_TOTAL.labels(result="hit" if result == "hit" else "miss").inc()
