@@ -346,3 +346,6 @@ jobs:
 
       - name: Fuzz nine anonymous endpoints with local in-process ASGI
         run: python -m pytest -q --tb=short tests/contract/test_public_schemathesis.py
+
+      - name: Test three authenticated staff GET APIs and tenant RBAC (disposable only)
+        run: python -m pytest -q --tb=short tests/contract/test_staff_schemathesis.py
