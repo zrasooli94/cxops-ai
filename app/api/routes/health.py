@@ -36,7 +36,12 @@ import time
 from fastapi import APIRouter, Response, status
 from sqlalchemy import text
 
-from app.core.build_info import PROCESS_STARTED_AT, build_sha, uptime_seconds
+from app.core.build_info import (
+    PROCESS_STARTED_AT,
+    boot_seconds,
+    build_sha,
+    uptime_seconds,
+)
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 
@@ -121,4 +126,5 @@ async def version() -> dict:
         "build_sha": build_sha(),
         "started_at": PROCESS_STARTED_AT.isoformat(),
         "uptime_seconds": uptime_seconds(),
+        "boot_seconds": boot_seconds(),
     }

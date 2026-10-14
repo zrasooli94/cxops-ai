@@ -2,10 +2,10 @@ import hashlib
 import time
 from collections import OrderedDict
 
-from langchain_openai import OpenAIEmbeddings
 from pydantic import SecretStr
 
 from app.core.config import settings
+from app.core.lazy import LazyAttribute
 from app.core.logging import get_logger
 from app.core.metrics import record_embedding_cache
 
@@ -72,7 +72,13 @@ class EmbeddingService:
             settings.embedding_query_cache_size,
             settings.embedding_query_cache_ttl_seconds,
         )
-        self.client = OpenAIEmbeddings(
+
+    @LazyAttribute
+    def client(self):
+        """The embeddings client, built on first use (see ``RAGService.llm``)."""
+        from langchain_openai import OpenAIEmbeddings
+
+        return OpenAIEmbeddings(
             model=settings.embedding_model,
             api_key=SecretStr(settings.openai_api_key),
             dimensions=settings.embedding_dimensions,

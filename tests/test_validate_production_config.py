@@ -254,19 +254,32 @@ def test_local_demo_config_with_an_openai_key_has_no_openai_failure():
     assert "OPENAI_API_KEY - present" in "\n".join(reporter.lines)
 
 
-def test_openai_requirement_is_pinned_to_the_import_time_llm_construction():
+def test_openai_requirement_is_enforced_at_boot_and_read_by_the_lazy_clients():
     """Guard the runtime dependency the validator is asserting.
 
-    If someone makes the LLM lazy, the OpenAI requirement stops being a boot
-    requirement, and this assertion is what makes that change a deliberate
-    decision to revisit rather than a silent divergence between the gate and the
-    application.
+    Phase 1T made the provider clients lazy (``cached_property``) so the SDK
+    import is off the start-up path. That is exactly the decision this guard
+    exists to force: the OpenAI key must remain a *boot* requirement, which the
+    production preflight still enforces, and each client must still read it.
     """
     import inspect
 
     from app.services.agent_workflow_service import AgentWorkflowService
+    from app.services.embedding_service import EmbeddingService
+    from app.services.rag_service import RAGService
 
-    assert "openai_api_key" in inspect.getsource(AgentWorkflowService.__init__)
+    for descriptor in (
+        AgentWorkflowService.decision_llm,
+        RAGService.llm,
+        EmbeddingService.client,
+    ):
+        assert "openai_api_key" in inspect.getsource(descriptor.func)
+
+    preflight = (
+        Path(__file__).resolve().parents[1] / "scripts" / "preflight_production_env.py"
+    ).read_text()
+    assert 'os.environ.get("OPENAI_API_KEY"' in preflight
+    assert 'report.fail(\n            "OPENAI_API_KEY"' in preflight
 
 
 def test_configured_openai_key_passes_without_being_printed():

@@ -11,7 +11,13 @@ from prometheus_client import (
 )
 
 from app.api.router import api_router
-from app.core.build_info import uptime_seconds
+from app.core.build_info import (
+    boot_seconds,
+    import_phase_seconds,
+    mark_boot_complete,
+    mark_import_complete,
+    uptime_seconds,
+)
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
 from app.core.rbac import AuthorizationError, MissingCapabilityError
@@ -32,22 +38,30 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     from app.core.database import engine
     from app.core.schema_gate import check_schema
+    from app.services.provider_warmup import warm_provider_clients
     from app.services.public_chat_turn_dispatcher import turn_dispatcher
 
     # Phase 1P.9R: refuse to serve on a schema this build does not support
     # (raises in production; uvicorn then exits before binding its port).
+    mark_import_complete()  # everything is imported; the schema gate is not "import"
     started = time.perf_counter()
     await check_schema(engine)
+    mark_boot_complete()
     log.info(
         "startup_complete",
         schema_gate_ms=round((time.perf_counter() - started) * 1000, 1),
         process_uptime_s=uptime_seconds(),
+        boot_seconds=boot_seconds(),
+        app_import_seconds=import_phase_seconds(),
     )
 
-    task = asyncio.get_running_loop().create_task(turn_dispatcher.run_maintenance())
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(turn_dispatcher.run_maintenance())
+    warm_task = loop.create_task(warm_provider_clients())
     try:
         yield
     finally:
+        warm_task.cancel()
         task.cancel()
         await turn_dispatcher.drain(timeout=10.0)
 

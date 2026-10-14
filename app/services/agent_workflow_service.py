@@ -9,7 +9,6 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
-from langchain_openai import ChatOpenAI
 from langgraph.graph import (
     END,
     START,
@@ -26,6 +25,7 @@ from app.core.db_connection import (
     dedicated_lock_connection,
     release_idle_connection,
 )
+from app.core.lazy import LazyAttribute
 from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_auto_approval,
@@ -229,7 +229,14 @@ class AgentState(TypedDict, total=False):
 
 
 class AgentWorkflowService:
-    def __init__(self) -> None:
+    @LazyAttribute
+    def decision_llm(self):
+        """The structured decision model, built on first use (Phase 1T).
+
+        See ``RAGService.llm``: the OpenAI SDK import is deferred off the
+        start-up path. Tests and fakes may still assign ``decision_llm``.
+        """
+        from langchain_openai import ChatOpenAI
 
         llm = ChatOpenAI(
             model=settings.chat_model,
@@ -252,7 +259,7 @@ class AgentWorkflowService:
         # The same open map is exactly what function calling accepts, so this
         # changes the wire format only, not the decision contract. The schema
         # itself is unchanged and still validated by Pydantic on the way back in.
-        self.decision_llm = llm.with_structured_output(
+        return llm.with_structured_output(
             AgentDecision,
             include_raw=True,
             method="function_calling",
