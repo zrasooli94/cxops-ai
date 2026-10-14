@@ -8,6 +8,7 @@ cto/rto as well as globally bounded concurrency, not wait_for cancellation.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -21,11 +22,31 @@ EMAIL_SMTP_HOSTS = frozenset({
     "email-smtp.ap-southeast-1.amazonaws.com",
     "email-smtp.us-east-1.amazonaws.com",
 })
-EMAIL_PATTERN = re.compile(r"^[^@\s/?#]+@[^@\s/?#]+\.[^@\s/?#]+$")
+# One plain address: no commas, semicolons, spaces, angle brackets or quotes
+# (Apprise itself splits recipient lists on those, which would be fan-out).
+EMAIL_PATTERN = re.compile(
+    r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+$"
+)
 TELEGRAM_PATTERN = re.compile(r"^tgram://[0-9]{5,15}:[A-Za-z0-9_-]{20,120}/-?[0-9]{1,20}$")
 CHANNELS = ("email", "telegram")
 CONNECT_TIMEOUT = "2"
 READ_TIMEOUT = "4"
+
+
+def silence_apprise_logging() -> None:
+    """Apprise logs the Telegram bot token (the request URL) and raw provider
+    error text at DEBUG, and e-mail recipients/hosts at INFO/WARNING. This
+    service emits its own bounded, secret-free events, so Apprise's logger is
+    muted and detached from the root handlers. Verified by test with the root
+    logger at DEBUG."""
+    apprise_logger = logging.getLogger("apprise")
+    apprise_logger.setLevel(logging.CRITICAL + 1)
+    apprise_logger.propagate = False
+    if not apprise_logger.handlers:
+        apprise_logger.addHandler(logging.NullHandler())
+
+
+silence_apprise_logging()
 
 
 class NotificationDestinationError(ValueError):
@@ -101,6 +122,7 @@ async def send_staff_handoff(*, channel: str, configured: str, title: str, body:
     # Lazy import keeps Apprise's plugin system off the API's import path.
     from apprise import Apprise
 
+    silence_apprise_logging()  # Apprise may have been imported elsewhere first
     sender = Apprise()
     try:
         if not sender.add(url):

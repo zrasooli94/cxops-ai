@@ -210,6 +210,21 @@ class TurnDispatcher:
         while self._tasks and time.monotonic() < deadline:
             await asyncio.wait(set(self._tasks), timeout=max(0.0, deadline - time.monotonic()))
 
+    async def shutdown(self, timeout: float = 5.0) -> None:
+        """Graceful stop: wait up to ``timeout``, then cancel what is left.
+
+        A cancelled job keeps its ``processing`` claim and is recovered like
+        any crashed one (stale-claim recovery / startup recovery), so nothing
+        is lost; what must not happen is a task outliving the application.
+        """
+        await self.drain(timeout=timeout)
+        pending = [task for task in self._tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._inflight.clear()
+
     @property
     def inflight(self) -> int:
         return len(self._inflight)

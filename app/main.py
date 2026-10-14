@@ -77,7 +77,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         task.cancel()
         if notification_task is not None:
             notification_task.cancel()
-            await handoff_dispatcher.drain(timeout=5.0)
+            await handoff_dispatcher.shutdown(timeout=5.0)
         await turn_dispatcher.drain(timeout=10.0)
 
 
