@@ -83,14 +83,165 @@ def test_boot_metrics_report_only_after_startup_completes(monkeypatch):
     from app.core import build_info
 
     monkeypatch.setattr(build_info, "_boot_complete_age", None)
+    monkeypatch.setattr(build_info, "_import_complete_age", None)
     assert build_info.boot_seconds() is None
     assert build_info.import_phase_seconds() is None
 
-    monkeypatch.setattr(build_info, "process_age_seconds", lambda: 41.26)
+
+def test_import_phase_excludes_the_database_schema_check(monkeypatch):
+    """app_import_seconds ends when lifespan begins; boot_seconds ends after the
+    schema gate. The 4 s gap below is the schema check and must not be import."""
+    from app.core import build_info
+
+    monkeypatch.setattr(build_info, "_boot_complete_age", None)
+    monkeypatch.setattr(build_info, "_import_complete_age", None)
     monkeypatch.setattr(build_info, "IMPORT_STARTED_AGE_SECONDS", 3.0)
+
+    ages = iter([13.0, 17.26])  # import complete, then boot complete
+    monkeypatch.setattr(build_info, "process_age_seconds", lambda: next(ages))
+
+    build_info.mark_import_complete()
+    assert build_info.boot_seconds() is None  # not booted yet
+    assert build_info.import_phase_seconds() == 10.0
+
     build_info.mark_boot_complete()
-    assert build_info.boot_seconds() == 41.3
-    assert build_info.import_phase_seconds() == 38.3
+    assert build_info.import_phase_seconds() == 10.0  # unchanged by the gate
+    assert build_info.boot_seconds() == 17.3
+    build_info.mark_import_complete()  # idempotent: first call wins
+    assert build_info.import_phase_seconds() == 10.0
+
+
+@pytest.mark.asyncio
+async def test_lifespan_marks_import_before_and_boot_after_the_schema_gate(monkeypatch):
+    from app import main as main_module
+    from app.core import build_info, schema_gate
+    from app.services import provider_warmup
+
+    order: list[str] = []
+    monkeypatch.setattr(main_module, "mark_import_complete", lambda: order.append("import"))
+    monkeypatch.setattr(main_module, "mark_boot_complete", lambda: order.append("boot"))
+
+    async def gate(_engine):
+        order.append("gate")
+
+    async def no_warmup():
+        order.append("warmup")
+
+    monkeypatch.setattr(schema_gate, "check_schema", gate)
+    monkeypatch.setattr(provider_warmup, "warm_provider_clients", no_warmup)
+    monkeypatch.setattr(build_info, "_boot_complete_age", None)
+
+    async with main_module.lifespan(main_module.app):
+        pass
+    assert order[:3] == ["import", "gate", "boot"]
+
+
+# --- exactly-once, thread-safe client construction ------------------------------
+
+
+def test_lazy_attribute_builds_once_under_concurrent_first_access():
+    import threading
+    import time
+
+    from app.core.lazy import LazyAttribute
+
+    built: list[int] = []
+
+    class Holder:
+        @LazyAttribute
+        def client(self):
+            built.append(1)
+            time.sleep(0.15)  # slow enough for every thread to miss together
+            return object()
+
+    holder = Holder()
+    results: list[object] = []
+    barrier = threading.Barrier(8)
+
+    def reader():
+        barrier.wait()
+        results.append(holder.client)
+
+    threads = [threading.Thread(target=reader) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(built) == 1
+    assert len({id(r) for r in results}) == 1
+
+
+def test_lazy_attribute_is_assignable_and_class_access_returns_the_descriptor():
+    from app.core.lazy import LazyAttribute
+
+    class Holder:
+        @LazyAttribute
+        def client(self):
+            raise AssertionError("must not be built once assigned")
+
+    assert isinstance(Holder.client, LazyAttribute)
+    holder = Holder()
+    fake = object()
+    holder.client = fake
+    assert holder.client is fake
+
+
+@pytest.mark.asyncio
+async def test_first_request_during_warmup_shares_one_client_per_provider(monkeypatch):
+    """The warm-up thread and an early request race for the same clients."""
+    import asyncio
+    import sys
+    import threading
+    import time
+    import types
+
+    from app.services import provider_warmup
+    from app.services.agent_workflow_service import AgentWorkflowService
+    from app.services.embedding_service import EmbeddingService
+    from app.services.rag_service import RAGService
+
+    constructed = {"chat": 0, "embeddings": 0}
+    lock = threading.Lock()
+
+    class SlowChat:
+        def __init__(self, **kwargs):
+            with lock:
+                constructed["chat"] += 1
+            time.sleep(0.2)
+
+        def with_structured_output(self, *_a, **_k):
+            return self
+
+    class SlowEmbeddings:
+        def __init__(self, **kwargs):
+            with lock:
+                constructed["embeddings"] += 1
+            time.sleep(0.2)
+
+    stub = types.SimpleNamespace(ChatOpenAI=SlowChat, OpenAIEmbeddings=SlowEmbeddings)
+    monkeypatch.setitem(sys.modules, "langchain_openai", stub)
+
+    rag, embeddings, workflow = RAGService(), EmbeddingService(), AgentWorkflowService()
+    import app.services.agent_workflow_service as awf
+    import app.services.embedding_service as emb
+    import app.services.rag_service as rag_mod
+
+    monkeypatch.setattr(rag_mod, "rag_service", rag)
+    monkeypatch.setattr(emb, "embedding_service", embeddings)
+    monkeypatch.setattr(awf, "agent_workflow_service", workflow)
+
+    warm = asyncio.create_task(provider_warmup.warm_provider_clients())
+    await asyncio.sleep(0.05)  # warm-up thread is mid-construction
+
+    early = await asyncio.gather(
+        asyncio.to_thread(lambda: rag.llm),
+        asyncio.to_thread(lambda: embeddings.client),
+        asyncio.to_thread(lambda: workflow.decision_llm),
+        asyncio.to_thread(lambda: rag.llm),
+    )
+    assert await warm is not None
+    assert constructed == {"chat": 2, "embeddings": 1}  # llm + decision_llm, one each
+    assert early[0] is early[3] is rag.llm
 
 
 def test_process_age_is_a_small_non_negative_number_or_unsupported():

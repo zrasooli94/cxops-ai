@@ -15,6 +15,7 @@ from app.core.build_info import (
     boot_seconds,
     import_phase_seconds,
     mark_boot_complete,
+    mark_import_complete,
     uptime_seconds,
 )
 from app.core.config import settings
@@ -42,6 +43,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     # Phase 1P.9R: refuse to serve on a schema this build does not support
     # (raises in production; uvicorn then exits before binding its port).
+    mark_import_complete()  # everything is imported; the schema gate is not "import"
     started = time.perf_counter()
     await check_schema(engine)
     mark_boot_complete()

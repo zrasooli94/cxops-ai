@@ -59,11 +59,23 @@ was the only large, avoidable block.
   the clients are built on a worker thread so the first customer turn does not
   pay the SDK import. Failure is logged and never fatal; the request path
   raises the real error.
-* Instrumentation: `/version.boot_seconds` (process exec -> start-up complete,
-  from `/proc`, Linux only) and `startup_complete` now logs `boot_seconds` and
-  `app_import_seconds` beside `schema_gate_ms`. A slow first request can be
-  attributed without the dashboard: platform wake (before `started_at`) vs
-  interpreter/imports vs schema gate.
+* Instrumentation (Linux, from `/proc`), three separate numbers:
+  `app_import_seconds` = first `app` import -> `lifespan` start (marked *before*
+  the database is touched, so the schema check is not counted);
+  `schema_gate_ms` = the schema check alone; `boot_seconds`
+  (`/version` and the log) = process exec -> start-up complete, i.e. interpreter
+  + imports + schema gate. A slow first request can be attributed without the
+  dashboard: platform wake (before `started_at`) vs imports vs schema gate.
+  An earlier draft computed `app_import_seconds` after the gate and so included
+  it; a test now pins the ordering.
+* Client construction is exactly-once and thread-safe: the clients use
+  `app.core.lazy.LazyAttribute` (a locked, double-checked, assignable
+  descriptor) instead of `functools.cached_property`, which stopped locking in
+  Python 3.12. The warm-up thread and an early request race for the same
+  clients; a test with slow stub constructors asserts one construction per
+  provider and that all callers share it. The event-loop thread that loses the
+  race waits on the lock for the remainder of that construction (hundreds of
+  ms), never builds a second client.
 * `scripts/benchmark_startup.py`: reproducible import benchmark (see script
   docstring for the `docker run --cpus` recipe).
 
@@ -98,17 +110,43 @@ Checked against the models, migrations and event payloads at `7fd5a64`:
 
 ## 5. Audit access implementation
 
-See `docs/runbooks/phase1t-audit-access.md`. Not an Alembic migration on
+See `docs/runbooks/phase1t-audit-access.md` for the exact grant, activation,
+verification, expiry and revocation procedure. Not an Alembic migration on
 purpose: it is temporary, per-tenant, owner-run, and must not become part of
 schema history or run on every environment. The generator
-(`python -m scripts.audit_access grant|revoke`) only prints SQL.
+(`python -m scripts.audit_access grant|activate|revoke`) only prints SQL.
 
-Tests (`tests/test_phase1t_audit_access.py`, run on a disposable PostgreSQL as
-the audit role via `SET ROLE`): only the pinned tenant's rows appear in every
-view even with a second tenant seeded; `SELECT` on eleven base tables is
-`permission denied`; insert/update/delete/create (in the audit schema, in
-`public`, and views) are denied; no sensitive column exists in any view and no
-seeded secret value appears in any result; role is NOLOGIN, connection-limited,
-not superuser/BYPASSRLS, with read-only default and statement timeouts;
-a missing tenant or an existing role/schema aborts the script and applies
-nothing; revocation removes role and schema and is idempotent.
+Corrections after independent review:
+
+* **Activation SQL**: `VALID UNTIL (now() + interval ...)` is not valid
+  PostgreSQL. Activation is now its own script that computes the timestamp
+  server-side and applies it with `format('ALTER ROLE %I LOGIN VALID UNTIL %L')`;
+  it refuses a missing role or one without this tool's marker.
+* **Revocation**: no `CASCADE`. It drops exactly the eight known views, then the
+  schema in restricted form, so unexpected content aborts and rolls back; the
+  role is locked out (`NOLOGIN`, committed) before anything else; sessions are
+  terminated and *proved* gone (a missing privilege or a surviving session is an
+  error); it refuses to drop a role/schema without the tool's marker; it prints
+  `REVOCATION COMPLETE` only when the role and schema are absent.
+
+Tests (`tests/test_phase1t_audit_access.py`, disposable PostgreSQL; the role
+is activated with an ephemeral random password passed as a bound parameter and
+**authenticated directly**, not via `SET ROLE`):
+
+* Isolation: only the pinned tenant's rows in every view with a second tenant
+  seeded; slug re-pointing does not move the views; no sensitive column exists
+  and no seeded secret value appears in any result.
+* Privileges: `SELECT` on base tables is `permission denied`; insert, delete and
+  create are denied, also after the session turns read-only off.
+* Settings in force on a real login: `default_transaction_read_only=on`,
+  `statement_timeout=10s` (a `pg_sleep(12)` is cancelled at about 10 s),
+  `search_path`, and the connection limit (a third connection is refused).
+* Lifecycle: activation sets a computed expiry; after `VALID UNTIL` passes, new
+  password logins fail while an already-open session survives expiry alone;
+  revocation terminates that session, removes role and schema, and is
+  idempotent.
+* Failure safety: a missing tenant aborts and applies nothing; a pre-existing
+  same-name role or schema is neither adopted by grant nor dropped by revoke; a
+  foreign object inside the audit schema makes revoke fail visibly, leaves the
+  role `NOLOGIN` and everything else intact, and a re-run after cleanup
+  succeeds.

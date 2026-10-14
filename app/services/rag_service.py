@@ -1,4 +1,3 @@
-from functools import cached_property
 from time import perf_counter
 from uuid import uuid4
 
@@ -11,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db_connection import release_idle_connection
+from app.core.lazy import LazyAttribute
 from app.services.ai_observability_service import (
     AIObservabilityService,
 )
@@ -26,7 +26,7 @@ from app.services.rag_helpers import (
 
 
 class RAGService:
-    @cached_property
+    @LazyAttribute
     def llm(self):
         """The answer model client, built on first use (Phase 1T).
 

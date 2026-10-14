@@ -2,7 +2,6 @@ import hashlib
 import json
 import time
 from datetime import UTC, datetime
-from functools import cached_property
 from typing import Any, Literal, TypedDict, cast
 from uuid import uuid4
 
@@ -26,6 +25,7 @@ from app.core.db_connection import (
     dedicated_lock_connection,
     release_idle_connection,
 )
+from app.core.lazy import LazyAttribute
 from app.core.logging import get_logger
 from app.core.metrics import (
     record_agent_auto_approval,
@@ -229,7 +229,7 @@ class AgentState(TypedDict, total=False):
 
 
 class AgentWorkflowService:
-    @cached_property
+    @LazyAttribute
     def decision_llm(self):
         """The structured decision model, built on first use (Phase 1T).
 

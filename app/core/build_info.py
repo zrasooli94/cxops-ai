@@ -67,21 +67,32 @@ def process_age_seconds() -> float | None:
 # Taken as soon as this module is first imported, i.e. right after the
 # interpreter and the web framework were loaded and ``app`` began importing.
 IMPORT_STARTED_AGE_SECONDS = process_age_seconds()
+_import_complete_age: float | None = None
 _boot_complete_age: float | None = None
 
 
+def mark_import_complete() -> None:
+    """The application is fully imported; called as ``lifespan`` begins, i.e.
+    before any database work, so schema-gate time is not counted as import."""
+    global _import_complete_age
+    if _import_complete_age is None:
+        _import_complete_age = process_age_seconds()
+
+
 def mark_boot_complete() -> None:
+    """Start-up finished (schema gate passed); the port is about to serve."""
     global _boot_complete_age
     _boot_complete_age = process_age_seconds()
 
 
 def boot_seconds() -> float | None:
-    """Process start -> start-up complete, or ``None`` before/unsupported."""
+    """Process exec -> start-up complete (imports + schema gate), or ``None``."""
     return None if _boot_complete_age is None else round(_boot_complete_age, 1)
 
 
 def import_phase_seconds() -> float | None:
-    """Time the application's own imports took (start of ``app`` -> complete)."""
-    if _boot_complete_age is None or IMPORT_STARTED_AGE_SECONDS is None:
+    """The application's own import phase only: first ``app`` import ->
+    ``lifespan`` start. Excludes the database schema check."""
+    if _import_complete_age is None or IMPORT_STARTED_AGE_SECONDS is None:
         return None
-    return round(_boot_complete_age - IMPORT_STARTED_AGE_SECONDS, 1)
+    return round(_import_complete_age - IMPORT_STARTED_AGE_SECONDS, 1)

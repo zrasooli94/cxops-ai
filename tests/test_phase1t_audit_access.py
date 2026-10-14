@@ -10,14 +10,21 @@ and revocation removes everything.
 import json
 import os
 import secrets
+import time
 import uuid
+from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
 import pytest_asyncio
 
 from scripts import audit_access
-from scripts.audit_access import AuditAccessError, render_grant_sql, render_revoke_sql
+from scripts.audit_access import (
+    AuditAccessError,
+    render_activate_sql,
+    render_grant_sql,
+    render_revoke_sql,
+)
 
 SENSITIVE_COLUMNS = {
     "body", "question", "answer", "subject", "description", "requester_email",
@@ -131,6 +138,7 @@ async def _seed_tenant(conn, slug: str, *, label: str) -> dict:
 
 
 async def _cleanup(conn, slug: str, org_ids: list[int]) -> None:
+    await conn.execute("ROLLBACK")  # a test may have left an aborted transaction
     await conn.execute(render_revoke_sql(slug))
     for table in (
         "agent_action_events",
@@ -317,6 +325,7 @@ def test_renderer_validates_inputs_and_never_embeds_a_secret():
         with pytest.raises(AuditAccessError):
             render_grant_sql("rispu", days=days)
     sql = render_grant_sql("rispu", days=7)
+    assert "interval '7 days'" not in sql  # the old, invalid activation expression
     code = "\n".join(
         line for line in sql.splitlines() if not line.lstrip().startswith("--")
     )
@@ -327,3 +336,235 @@ def test_renderer_validates_inputs_and_never_embeds_a_secret():
     assert "GRANT SELECT ON ALL TABLES IN SCHEMA" in sql
     assert "ON public." not in sql  # no grant on any base table
     assert "SUPERUSER" not in upper.replace("NOSUPERUSER", "")
+
+
+# ---------------------------------------------------------------------------
+# Real password authentication as the audit role (not SET ROLE)
+# ---------------------------------------------------------------------------
+
+
+async def _set_password(conn, role: str) -> str:
+    """Give the role an ephemeral random password without it entering SQL text
+    that a failure could print: it travels as a bound parameter and is applied
+    with ``format(%L)`` server side."""
+    password = secrets.token_urlsafe(24)
+    await conn.execute("SELECT set_config('audit.test_pw', $1, false)", password)
+    await conn.execute(
+        f"DO $$ BEGIN EXECUTE format('ALTER ROLE %I PASSWORD %L', '{role}', "
+        "current_setting('audit.test_pw')); END $$"
+    )
+    await conn.execute("SELECT set_config('audit.test_pw', '', false)")
+    return password
+
+
+async def _login(role: str, password: str) -> asyncpg.Connection:
+    parts = urlsplit(_dsn())
+    return await asyncpg.connect(
+        host=parts.hostname,
+        port=parts.port,
+        user=role,
+        password=password,
+        database=parts.path.lstrip("/"),
+        timeout=10,
+    )
+
+
+async def _provision(conn, slug: str, *, days: int = 7) -> tuple[str, str, str]:
+    schema, role = audit_access.identifiers(slug)
+    await conn.execute(render_grant_sql(slug, days=days))
+    password = await _set_password(conn, role)
+    await conn.execute(render_activate_sql(slug, days=days))
+    return schema, role, password
+
+
+@pytest.mark.asyncio
+async def test_activation_sql_is_valid_and_sets_a_computed_expiry(conn, two_tenants):
+    slug, _a, _b = two_tenants
+    _schema, role = audit_access.identifiers(slug)
+    await conn.execute(render_grant_sql(slug))
+    before = await conn.fetchrow(
+        "SELECT rolcanlogin, rolvaliduntil FROM pg_roles WHERE rolname = $1", role
+    )
+    assert before["rolcanlogin"] is False and before["rolvaliduntil"] is None
+
+    await conn.execute(render_activate_sql(slug, days=3))
+    after = await conn.fetchrow(
+        "SELECT rolcanlogin, rolvaliduntil, (rolvaliduntil - now()) AS remaining "
+        "FROM pg_roles WHERE rolname = $1", role,
+    )
+    assert after["rolcanlogin"] is True
+    days = after["remaining"].total_seconds() / 86400
+    assert 2.99 < days <= 3.0
+
+    # the printed script must not itself contain an unquoted expression
+    assert "(now() + interval" not in render_activate_sql(slug)
+    assert "make_interval(days =>" in render_activate_sql(slug)
+    assert "%L" in render_activate_sql(slug)
+
+
+@pytest.mark.asyncio
+async def test_activation_refuses_a_missing_role_or_one_the_tool_did_not_create(conn, two_tenants):
+    slug, _a, _b = two_tenants
+    _schema, role = audit_access.identifiers(slug)
+
+    with pytest.raises(asyncpg.PostgresError, match="does not exist"):
+        await conn.execute(render_activate_sql(slug))
+    await conn.execute("ROLLBACK")
+
+    await conn.execute(f'CREATE ROLE "{role}" NOLOGIN')  # same name, no marker
+    try:
+        with pytest.raises(asyncpg.PostgresError, match="not created by the audit-access tool"):
+            await conn.execute(render_activate_sql(slug))
+        await conn.execute("ROLLBACK")
+        assert (
+            await conn.fetchval("SELECT rolcanlogin FROM pg_roles WHERE rolname = $1", role)
+            is False
+        )
+    finally:
+        await conn.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+
+@pytest.mark.asyncio
+async def test_connecting_as_the_audit_role_enforces_isolation_and_read_only(conn, two_tenants):
+    slug, a, b = two_tenants
+    schema, role, password = await _provision(conn, slug)
+
+    audit = await _login(role, password)
+    try:
+        assert await audit.fetchval("SELECT current_user") == role
+        assert await audit.fetchval("SHOW default_transaction_read_only") == "on"
+        assert await audit.fetchval("SHOW statement_timeout") == "10s"
+        assert await audit.fetchval("SELECT current_setting('search_path')") == schema
+
+        ids = {r["id"] for r in await audit.fetch("SELECT id FROM sessions")}
+        assert ids == {a["session_id"]}
+        runs = {r["id"] for r in await audit.fetch("SELECT id FROM agent_runs")}
+        assert a["run_id"] in runs and b["run_id"] not in runs
+        assert (await audit.fetchval("SELECT count(*) FROM tickets")) == 1
+        assert (await audit.fetchval("SELECT version_num FROM schema_revision")) is not None
+
+        for table in ("tickets", "organizations", "agent_runs", "ai_request_logs",
+                      "alembic_version", "integration_jobs"):
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await audit.fetch(f"SELECT * FROM public.{table}")
+        denied = (asyncpg.InsufficientPrivilegeError, asyncpg.ReadOnlySQLTransactionError)
+        with pytest.raises(denied):
+            await audit.execute("INSERT INTO tickets (id) VALUES (1)")
+        with pytest.raises(denied):
+            await audit.execute("CREATE TABLE public.audit_probe (id int)")
+        # even after turning the read-only default off, privileges still deny writes
+        await audit.execute("SET default_transaction_read_only = off")
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await audit.execute("DELETE FROM tickets")
+    finally:
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_statement_timeout_and_connection_limit_apply_to_real_logins(conn, two_tenants):
+    slug, _a, _b = two_tenants
+    _schema, role, password = await _provision(conn, slug)
+
+    first = await _login(role, password)
+    second = await _login(role, password)
+    try:
+        with pytest.raises(asyncpg.TooManyConnectionsError):
+            await _login(role, password)
+
+        started = time.perf_counter()
+        with pytest.raises(asyncpg.QueryCanceledError):
+            await first.fetch("SELECT pg_sleep(12)")
+        assert 9.0 < time.perf_counter() - started < 12.0
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_credentials_cannot_open_new_connections(conn, two_tenants):
+    slug, _a, _b = two_tenants
+    _schema, role, password = await _provision(conn, slug)
+
+    live = await _login(role, password)  # opened while valid
+    try:
+        await conn.execute(f"ALTER ROLE \"{role}\" VALID UNTIL '2000-01-01 00:00:00+00'")
+        with pytest.raises(asyncpg.InvalidPasswordError):
+            await _login(role, password)
+        # a session opened before expiry is not ended by expiry alone ...
+        assert await live.fetchval("SELECT 1") == 1
+    finally:
+        await live.close()
+
+
+@pytest.mark.asyncio
+async def test_revocation_terminates_live_sessions_and_removes_everything(conn, two_tenants):
+    slug, _a, _b = two_tenants
+    schema, role, password = await _provision(conn, slug)
+
+    live = await _login(role, password)
+    assert await live.fetchval("SELECT 1") == 1
+
+    await conn.execute(render_revoke_sql(slug))
+
+    with pytest.raises((asyncpg.ConnectionDoesNotExistError, asyncpg.AdminShutdownError,
+                        asyncpg.InterfaceError)):
+        await live.fetchval("SELECT 1")
+    assert await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role) is None
+    assert await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema) is None
+    with pytest.raises((asyncpg.InvalidPasswordError, asyncpg.InvalidAuthorizationSpecificationError)):
+        await _login(role, password)
+    await conn.execute(render_revoke_sql(slug))  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_revoke_refuses_to_touch_objects_it_did_not_create(conn, two_tenants):
+    slug, _a, _b = two_tenants
+    schema, role = audit_access.identifiers(slug)
+    await conn.execute(f'CREATE ROLE "{role}" NOLOGIN')
+    await conn.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        with pytest.raises(asyncpg.PostgresError, match="was not created by the audit-access tool"):
+            await conn.execute(render_revoke_sql(slug))
+        await conn.execute("ROLLBACK")
+        assert await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role) == 1
+        assert await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema) == 1
+        # and a grant for a name collision aborts rather than adopting them
+        with pytest.raises(asyncpg.PostgresError, match="already exists"):
+            await conn.execute(render_grant_sql(slug))
+        await conn.execute("ROLLBACK")
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}"')
+        await conn.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+
+@pytest.mark.asyncio
+async def test_revoke_fails_visibly_and_keeps_the_role_locked_when_the_schema_is_not_clean(
+    conn, two_tenants
+):
+    slug, _a, _b = two_tenants
+    schema, role, _password = await _provision(conn, slug)
+    await conn.execute(f'CREATE TABLE "{schema}".unexpected_extra (id int)')
+
+    with pytest.raises(asyncpg.PostgresError, match="depend|cannot drop"):
+        await conn.execute(render_revoke_sql(slug))
+    await conn.execute("ROLLBACK")
+
+    # incomplete revocation is not reported as success, and the role is locked out
+    assert await conn.fetchval("SELECT rolcanlogin FROM pg_roles WHERE rolname = $1", role) is False
+    assert await conn.fetchval("SELECT 1 FROM pg_namespace WHERE nspname = $1", schema) == 1
+    # unrelated objects were untouched
+    assert await conn.fetchval("SELECT count(*) FROM public.organizations") >= 2
+
+    await conn.execute(f'DROP TABLE "{schema}".unexpected_extra')
+    await conn.execute(render_revoke_sql(slug))
+    assert await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role) is None
+
+
+def test_revoke_script_has_no_cascade_and_ends_with_an_explicit_success_row():
+    sql = render_revoke_sql("rispu")
+    assert "CASCADE" not in sql.upper()
+    assert "DROP VIEW IF EXISTS" in sql and 'DROP SCHEMA "audit_rispu"' in sql
+    assert sql.rstrip().endswith("IS NULL;")
+    assert "REVOCATION COMPLETE" in sql
+    for forbidden in ("PASSWORD", "DROP TABLE", "TRUNCATE", "DELETE FROM"):
+        assert forbidden not in sql.upper()
