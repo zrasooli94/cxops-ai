@@ -31,6 +31,26 @@ Depends on Phase 1U-B's disposable-only Schemathesis job.
 - No production Python dependencies, migrations, new services or paid model
   evaluations. Staged as a separate CI test file and workflow step only.
 
+## First fuzzing discovery: oversized integer IDs
+
+**REPRODUCED:** Schemathesis generated `session_id=2147483648` for
+`GET /staff/public-chat/sessions/{session_id}/business-actions`.
+FastAPI treated this as an unrestricted Python integer, but the PostgreSQL
+key uses `INTEGER` (signed 32-bit). asyncpg rejected the parameter and
+the route failed with an unhandled error, instead of a controlled 4xx.
+
+**STAGED FIX:** The four staff session routes (assign, release, resolve, and
+business-actions) now declare `Path(ge=1, le=2147483647)`. Values outside
+that range return HTTP 422 **before** database binding, regardless of role.
+Added deterministic regression checks for zero, negative, just-over-int32,
+and extremely large values with a synthetic owner JWT; the original seeded
+session remains unchanged. This is a narrow backward-compatible **runtime
+request-validation fix** and therefore needs separate independent review
+before PR merge. All valid PostgreSQL IDs remain accepted.
+
+This finding is an actual bug exposed by the new generator, rather than an
+excuse to weaken the assertions or suppress a fuzzing case.
+
 ## Exclusions and follow-up
 
 - These are read-only staff API contract tests and negative write-permission
