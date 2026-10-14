@@ -43,6 +43,7 @@ def test_contract_guard_accepts_explicit_disposable_local_database():
         ("AUTH_MODE", "jwks"),
         ("OPENAI_API_KEY", "private-token-canary"),
         ("EVALUATION_OPENAI_API_KEY", "private-token-canary"),
+        ("AUTH_JWT_SECRET", "private-token-canary"),
         ("PUBLIC_LEAD_CAPTURE_ENABLED", "true"),
         ("PUBLIC_CHAT_ASYNC_ENABLED", "true"),
         ("HANDOFF_NOTIFICATIONS_ENABLED", "true"),

@@ -16,7 +16,7 @@ linked conversation in a single transaction.
 from datetime import UTC, datetime
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
@@ -129,7 +129,7 @@ async def list_handoff_sessions(
     response_model=StaffHandoffSessionSummary,
 )
 async def assign_session(
-    session_id: int,
+    session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
     db: DatabaseSession,
     tenant: CurrentTenant,
     principal: CurrentPrincipal,
@@ -156,7 +156,7 @@ async def assign_session(
     response_model=StaffHandoffSessionSummary,
 )
 async def release_session(
-    session_id: int,
+    session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
     db: DatabaseSession,
     tenant: CurrentTenant,
     _authz: HandoffWriteAuthz,
@@ -181,7 +181,7 @@ async def release_session(
     response_model=StaffHandoffSessionSummary,
 )
 async def resolve_session(
-    session_id: int,
+    session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
     db: DatabaseSession,
     tenant: CurrentTenant,
     _authz: HandoffWriteAuthz,
@@ -213,7 +213,7 @@ async def resolve_session(
     response_model=StaffBusinessActionsResponse,
 )
 async def list_session_business_actions(
-    session_id: int,
+    session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
     db: DatabaseSession,
     tenant: CurrentTenant,
     _authz: HandoffReadAuthz,

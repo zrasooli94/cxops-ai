@@ -36,6 +36,8 @@ def validate_disposable_contract_env(environ: Mapping[str, str] | None = None) -
         raise UnsafeContractTarget("contract pilot requires isolated test authentication")
     if env.get("OPENAI_API_KEY") or env.get("EVALUATION_OPENAI_API_KEY"):
         raise UnsafeContractTarget("contract pilot must have no AI provider keys")
+    if env.get("AUTH_JWT_SECRET"):
+        raise UnsafeContractTarget("contract pilot refuses preconfigured JWT signing credentials")
     for key in (
         "PUBLIC_LEAD_CAPTURE_ENABLED",
         "PUBLIC_CHAT_ASYNC_ENABLED",
