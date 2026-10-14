@@ -192,6 +192,18 @@ class Settings(BaseSettings):
     handoff_notification_telegram_url: str = ""
     handoff_notification_max_per_hour: int = 6
 
+    @field_validator("handoff_notifications_enabled", mode="before")
+    @classmethod
+    def _handoff_empty_flag_is_off(cls, value):
+        # GitHub Actions injects empty values for unset variables. Distinguish
+        # this from explicit OFF inside the worker's actual delivery gate.
+        return False if value == "" else value
+
+    @field_validator("handoff_notification_activated_at", mode="before")
+    @classmethod
+    def _handoff_empty_activation_is_unset(cls, value):
+        return None if value == "" else value
+
     # Public web chat (Phase 1P.1)
     public_chat_session_token_entropy_bytes: int = 32
     public_chat_max_active_sessions_per_config: int = 2000
