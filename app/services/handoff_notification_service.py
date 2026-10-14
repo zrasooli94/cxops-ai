@@ -58,8 +58,11 @@ async def stage_initial_handoff(
     db: AsyncSession, *, organization_id: int, session_id: int
 ) -> int | None:
     """Insert in the caller's open transaction, never commit the handoff here."""
-    if not settings.handoff_notifications_enabled or activated_at() is None:
+    activation = activated_at()
+    if not settings.handoff_notifications_enabled:
         return None
+    if activation is None or activation > datetime.now(UTC):
+        raise RuntimeError("handoff notification rollout timestamp is not active")
     if not await _correct_tenant(db, organization_id):
         return None
     key = first_handoff_key(organization_id, session_id)

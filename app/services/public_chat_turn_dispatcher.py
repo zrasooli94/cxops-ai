@@ -164,7 +164,9 @@ class TurnDispatcher:
     async def recover_on_startup(self) -> int:
         """Resume jobs plus reconcile missed initial handoffs after activation."""
         if self.job_type == "handoff.notify":
-            from app.services.handoff_notification_service import reconcile_missing_handoffs
+            from app.services.handoff_notification_service import (
+                reconcile_missing_handoffs,
+            )
 
             async with AsyncSessionLocal() as db:
                 repaired = await reconcile_missing_handoffs(db)
@@ -285,15 +287,18 @@ class TurnDispatcher:
                     )
             except JobDeferredError as exc:
                 await db.rollback()
+                deferred_delay = (
+                    60 if self.job_type == "handoff.notify" else DEFER_DELAY_SECONDS
+                )
                 deferred = await IntegrationJobRepository.defer_claimed(
                     db,
                     job_id=job_id,
                     claimed_at=claimed_at,
-                    delay_seconds=DEFER_DELAY_SECONDS,
+                    delay_seconds=deferred_delay,
                     reason=str(exc),
                 )
                 if deferred is not None:
-                    self._resubmit_later(job_id, organization_id, DEFER_DELAY_SECONDS)
+                    self._resubmit_later(job_id, organization_id, deferred_delay)
             except Exception as exc:  # noqa: BLE001
                 await db.rollback()
                 failed = await IntegrationJobRepository.mark_failed(

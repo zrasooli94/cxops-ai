@@ -5,7 +5,6 @@ Telegram, Apprise network call or production credential is used.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -152,7 +151,7 @@ async def test_first_handoff_is_atomic_and_duplicate_safe(db, client, org_scope,
 @pytest.mark.asyncio
 async def test_foreign_tenant_cannot_trigger_handoff_job(db, client, org_scope, monkeypatch):
     _enable(monkeypatch)
-    org, session = await _session(db, client, org_scope)
+    _org, session = await _session(db, client, org_scope)
     other = await org_scope()
     with pytest.raises(ValueError, match="does not belong"):
         await PublicChatRepository.handoff_to_human(

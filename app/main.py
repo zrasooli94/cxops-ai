@@ -40,7 +40,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.core.schema_gate import check_schema
     from app.services.provider_warmup import warm_provider_clients
     from app.services.public_chat_turn_dispatcher import (
-        handoff_dispatcher, turn_dispatcher,
+        handoff_dispatcher,
+        turn_dispatcher,
     )
 
     # Phase 1P.9R: refuse to serve on a schema this build does not support

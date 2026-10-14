@@ -113,7 +113,7 @@ async def send_staff_handoff(*, channel: str, configured: str, title: str, body:
         )
     except NotificationDestinationError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - sanitize ALL provider/library errors
         # Underlying exceptions may include a credential-bearing service URL.
         raise NotificationTransportError("notification provider error") from None
     if not bool(result):

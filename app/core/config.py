@@ -204,6 +204,18 @@ class Settings(BaseSettings):
     def _handoff_empty_activation_is_unset(cls, value):
         return None if value == "" else value
 
+    @model_validator(mode="after")
+    def _validate_handoff_rollout(self) -> "Settings":
+        if self.handoff_notifications_enabled:
+            activation = self.handoff_notification_activated_at
+            if activation is None or activation.tzinfo is None:
+                raise ValueError("handoff activation requires an aware UTC timestamp")
+            if self.handoff_notification_pilot_tenant != "rispu":
+                raise ValueError("handoff pilot is restricted to RISPU")
+            if not 1 <= self.handoff_notification_max_per_hour <= 6:
+                raise ValueError("handoff cap must remain between 1 and 6")
+        return self
+
     # Public web chat (Phase 1P.1)
     public_chat_session_token_entropy_bytes: int = 32
     public_chat_max_active_sessions_per_config: int = 2000
