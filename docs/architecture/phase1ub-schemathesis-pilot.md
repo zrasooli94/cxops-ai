@@ -28,7 +28,7 @@ or changing production dependencies.
    agents and tools are unreachable.
 7. Use bounded generation (12 Hypothesis fuzz examples/operation, plus
    Schemathesis's examples and boundary coverage). Use deterministic seeds.
-8. Only check no 5xx, no tracebacks / echoed bearer credentials, bounded
+8. Check no unexpected 5xx (the deliberately disabled lead-submission POST may return 503), no tracebacks / echoed bearer credentials, bounded
    response size, and response schema for documented 200/202/422 responses.
    **Undocumented 401/403/404/429/503** are accepted as an existing OpenAPI
    documentation gap, not silently declared to conform.
@@ -59,3 +59,28 @@ without leaking generated content into public logs.
 If the spike yields findings, fix them in an isolated follow-up PR; never
 weaken tenant authorization or accept 5xx responses as a baseline.
 Transitive dependency license and reproducible lock are future release gates.
+
+## Discovery from first actual CI execution
+
+- **Unsupported methods are generated intentionally.** Schemathesis uses cases
+  such as `TRACE` against an operation normally declared as `GET` or
+  `POST`. The pilot now asserts that those attempts are rejected (405) and
+  still guards against 500 or response leakage. A request's actual method is
+  not silently mistaken for the original OpenAPI operation method.
+- **Expected disabled-service response.** When lead capture is explicitly OFF,
+  `POST /public/leads` returns 503. The pilot permits that *one* known
+  response, while unexpected 5xx remain release failures.
+- **Known OpenAPI semantic gap.** The `LeadSubmission.website` field is
+  represented as a string but the Pydantic implementation requires a valid
+  domain; Schemathesis can generate schema-compliant values that the service
+  rejects with 422. This is recorded for a follow-up OpenAPI description
+  improvement. The pilot uses operation-level **response-schema-only**
+  validation for documented 200/202/422 responses and does not claim to
+  certify positive-request acceptance or every undocumented 4xx.
+- **Provider warm-up without model secrets.** The ASGI lifespan emits a
+  bounded warm-up error when `OPENAI_API_KEY` is absent; tests should verify
+  that no model network calls occur. This is not live-model coverage.
+
+The targeted pilot is evidence of anonymous API robustness under generated
+inputs, *not* full production RAG behavior, business-workflow correctness, or
+certification of the complete OpenAPI contract.
