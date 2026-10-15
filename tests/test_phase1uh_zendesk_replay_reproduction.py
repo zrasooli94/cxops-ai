@@ -73,4 +73,6 @@ async def test_relabelled_unsigned_invocation_enqueues_twice_on_current_contract
         "captured-delivery", "relabelled-delivery"
     ]
     assert all(item["organization_id"] == 42 for item in queued)
+    assert queued[0]["signed_delivery_fingerprint"] == queued[1]["signed_delivery_fingerprint"]
+    assert len(queued[0]["signed_delivery_fingerprint"]) == 64
     # Not a database-concurrency or writeback-impact test: enqueue is mocked.
