@@ -5,6 +5,9 @@ Status: draft implementation; authenticated staging is NOT live.
 ## Implementation
 
 - Official `@neondatabase/auth` Next.js server SDK, pinned to `0.6.0-beta`.
+- SDK middleware matches only `/staging` and refreshes session cookies in a
+  mutable request context before rendering; `/staging/login`, production
+  routes, other APIs and static assets are excluded.
 - New dynamic `/staging` portal with server-action sign-in/sign-out, loading
   and generic failure states. Existing Nhost session, BFF and production
   authentication paths are unchanged.

@@ -104,6 +104,9 @@ async function main() {
     assert.ok(stagingHtml.includes("Staging is being connected"));
     assert.ok(!stagingHtml.includes('name="password"'), "Disabled Neon staging must not collect credentials");
     assert.ok(staging.headers.get("cache-control")?.includes("no-store"), "Staging session page must never be publicly cached");
+    const stagingLogin = await request("/staging/login");
+    assert.equal(stagingLogin.status, 200);
+    assert.ok(!(await stagingLogin.text()).includes('name="password"'), "Direct staging login must honor the same gate");
 
     const probes = [
       ["GET", "/api/backend/me/organizations", undefined, 503],

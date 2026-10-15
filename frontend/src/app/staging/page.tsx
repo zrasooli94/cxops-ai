@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { neonStagingEnabled, stagingIdentity, stagingSubjects, STAGING_BACKEND_URL } from "@/lib/staging/neon-policy";
 import { stagingAuth } from "@/lib/staging/neon-server";
-import { StagingSignInForm } from "./SignInForm";
 import { stagingSignOut } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,7 @@ export default async function StagingPage() {
   if (enabled) {
     try { identity = await stagingIdentity(stagingAuth(), stagingSubjects(process.env)); } catch { unavailable = true; }
   }
+  if (enabled && !identity && !unavailable) redirect("/staging/login");
   let organizations: { id: number; name: string }[] = [];
   let backendStatus = "Not checked";
   if (identity) {
@@ -38,7 +39,7 @@ export default async function StagingPage() {
       <h2 className="mt-6 font-semibold">Test workspaces</h2>
       {organizations.length ? <ul className="mt-3 space-y-2">{organizations.map(org => <li key={org.id} className="rounded-xl border border-slate-200 p-4">{org.name}</li>)}</ul> : <p className="mt-3 text-sm text-slate-600">No verified workspace memberships loaded.</p>}
       <form action={stagingSignOut}><button className="mt-6 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold">Sign out</button></form>
-    </> : unavailable ? <p role="alert" className="mt-6 text-sm text-red-700">Staging authentication is temporarily unavailable. Please try again.</p> : <StagingSignInForm />}
+    </> : <p role="alert" className="mt-6 text-sm text-red-700">Staging authentication is temporarily unavailable. Please try again.</p>}
     <Link href="/login" className="mt-8 inline-block text-sm text-violet-700">Back to sign-in information →</Link>
   </section></main>;
 }

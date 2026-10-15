@@ -22,5 +22,5 @@ export async function stagingSignOut(): Promise<void> {
   if (!neonStagingEnabled(process.env)) redirect("/staging");
   const result = await stagingAuth().signOut();
   if (result.error) throw new Error("Staging sign-out is temporarily unavailable");
-  redirect("/staging");
+  redirect("/staging/login");
 }
