@@ -27,3 +27,10 @@ ff7352a39855dd801272623c1813494ea3d89539:tests/test_replit_config.py:generic-api
 # variable name. The constants are now assembled at import so no later commit
 # carries the literal; only this historical blob needs the entry.
 5eb499ee80bfa6828816cd25991c0ac50d64d881:tests/test_phase1u_notification_hardening.py:generic-api-key:59
+
+# 675c0436 (Phase 1W, PR #36): tests/test_staging_neon_jwt.py line 55
+# described an Ed25519 test function's *parameter annotation* and default
+# dynamically generated synthetic test key. NO key bytes or credentials were
+# committed. The misleading variable spelling was changed in a later commit.
+# This exact historical false-positive is exempt; all new secrets still fail.
+675c04361cc372581cf9df9ea1a538a60955e24b:tests/test_staging_neon_jwt.py:generic-api-key:55
