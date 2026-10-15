@@ -33,7 +33,7 @@ def test_openapi_has_distinct_bearer_schemes_and_no_global_staff_default():
     assert defined[STAFF_BEARER_NAME]["bearerFormat"] == "JWT"
     assert "bearerFormat" not in defined[CHAT_BEARER_NAME]
     assert "membership" in defined[STAFF_BEARER_NAME]["description"]
-    assert "opaque" in defined[CHAT_BEARER_NAME]["description"]
+    assert "opaque" in defined[CHAT_BEARER_NAME]["description"].lower()
 
 
 def test_staff_reads_and_writes_require_jwt_and_correct_capability():
@@ -140,7 +140,20 @@ def test_runtime_jwt_dependency_remains_header_based():
     # The metadata adapter may not insert SecurityBase or HTTPBearer into the
     # runtime dependency tree: existing JWT validation owns all 401/403 checks.
     auth_routes = [r for r in app.routes if isinstance(r, APIRoute)]
-    assert any(_has_dependency(r.dependant, get_current_principal_dep) for r in auth_routes)
-    assert any(_has_dependency(r.dependant, require_session_token) for r in auth_routes)
+    def calls(node):
+        name = getattr(node.call, "__qualname__", str(type(node.call)))
+        module = getattr(node.call, "__module__", "unknown")
+        return [(module, name)] + [
+            item for dep in node.dependencies for item in calls(dep)
+        ]
+
+    staff = next(
+        r for r in auth_routes if r.path_format == "/staff/public-chat/handoff"
+    )
+    visitor = next(
+        r for r in auth_routes if r.path_format == "/public/chat/messages"
+    )
+    assert _has_dependency(staff.dependant, get_current_principal_dep), calls(staff.dependant)
+    assert _has_dependency(visitor.dependant, require_session_token), calls(visitor.dependant)
     assert get_current_principal_dep.__name__ == "get_current_principal_dep"
     assert require_session_token.__name__ == "require_session_token"

@@ -349,3 +349,6 @@ jobs:
 
       - name: Test three authenticated staff GET APIs and tenant RBAC (disposable only)
         run: python -m pytest -q --tb=short tests/contract/test_staff_schemathesis.py
+
+      - name: Verify JWT, visitor bearer and staff capability OpenAPI documentation
+        run: python -m pytest -q --tb=short tests/test_phase1uf_openapi_security.py
