@@ -37,6 +37,14 @@ jobs:
         run: |
           python -m mypy app
 
+      - name: Offline staging auth and runtime safety tests
+        run: |
+          python -m pytest -q \
+            tests/test_staging_neon_jwt.py \
+            tests/test_staging_neon_auth_integration.py \
+            tests/test_phase1w_staging_runtime.py \
+            tests/test_phase1w_staging_http_gate.py
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
