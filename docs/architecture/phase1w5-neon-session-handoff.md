@@ -1,5 +1,7 @@
 # Phase 1W5 — Official Neon session handoff, staging only
 
+Historical checkpoint. Superseded by [Phase 1W6 staging verification](phase1w6-staging-verification.md).
+
 Status: draft implementation; authenticated staging is NOT live.
 
 ## Implementation
