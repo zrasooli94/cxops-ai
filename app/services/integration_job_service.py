@@ -73,6 +73,13 @@ class JobDeferredError(Exception):
     """
 
 
+class ZendeskDeliveryConflictError(Exception):
+    """A signed Zendesk delivery maps onto a row this tenant does not own.
+
+    Carries no detail by design: the route answers with a generic 409.
+    """
+
+
 class PermanentJobError(ValueError):
     """A job that can never succeed by being retried.
 
@@ -144,21 +151,84 @@ class IntegrationJobService:
             ) from exc
 
     @staticmethod
+    def zendesk_dedupe_key(organization_id: int, invocation_id: str) -> str:
+        """Tenant-scoped durable key for a Zendesk invocation.
+
+        The invocation header is unsigned and chosen by the sender, and
+        ``dedupe_key`` is globally unique, so a raw key let one tenant's value
+        collide with another's. Scoping by the TRUSTED organization removes
+        that collision class entirely.
+        """
+        return f"zendesk:{organization_id}:{invocation_id}"
+
+    @staticmethod
+    async def _zendesk_existing(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        invocation_id: str,
+        signed_delivery_fingerprint: str | None,
+    ) -> IntegrationJob | None:
+        """The same tenant's earlier job for this delivery, if any.
+
+        Looks up the scoped key, then the legacy raw key written by earlier
+        revisions (only if it belongs to THIS tenant and is a Zendesk event),
+        then the exact signed-delivery fingerprint. A row owned by another
+        tenant is never returned and never treated as a duplicate.
+        """
+        candidates = [
+            await IntegrationJobRepository.get_by_dedupe_key(
+                db=db,
+                dedupe_key=IntegrationJobService.zendesk_dedupe_key(
+                    organization_id, invocation_id
+                ),
+            ),
+            await IntegrationJobRepository.get_by_dedupe_key(
+                db=db, dedupe_key=invocation_id
+            ),
+        ]
+        if signed_delivery_fingerprint:
+            candidates.append(
+                await IntegrationJobRepository.get_by_signed_delivery_fingerprint(
+                    db=db, fingerprint=signed_delivery_fingerprint
+                )
+            )
+        for row in candidates:
+            if row is None:
+                continue
+            if (
+                row.organization_id == organization_id
+                and row.job_type == IntegrationJobService.ZENDESK_TICKET_EVENT
+            ):
+                return row
+        # A fingerprint hit that belongs to someone else cannot be shown to
+        # the caller; it is only reachable by a SHA-256 collision.
+        if (
+            signed_delivery_fingerprint
+            and candidates[-1] is not None
+            and candidates[-1].organization_id != organization_id
+        ):
+            raise ZendeskDeliveryConflictError()
+        return None
+
+    @staticmethod
     async def enqueue_zendesk_event(
         db: AsyncSession,
         *,
         invocation_id: str,
+        signed_delivery_fingerprint: str | None = None,
         event_type: str,
         zendesk_ticket_id: int,
         payload: dict,
         organization_id: int,
     ) -> JobAccepted:
-        existing = await IntegrationJobRepository.get_by_dedupe_key(
-            db=db,
-            dedupe_key=invocation_id,
+        existing = await IntegrationJobService._zendesk_existing(
+            db,
+            organization_id=organization_id,
+            invocation_id=invocation_id,
+            signed_delivery_fingerprint=signed_delivery_fingerprint,
         )
-
-        if existing:
+        if existing is not None:
             return JobAccepted(
                 event_id=invocation_id,
                 job_id=existing.id,
@@ -168,7 +238,10 @@ class IntegrationJobService:
 
         job = IntegrationJob(
             organization_id=organization_id,
-            dedupe_key=invocation_id,
+            dedupe_key=IntegrationJobService.zendesk_dedupe_key(
+                organization_id, invocation_id
+            ),
+            signed_delivery_fingerprint=signed_delivery_fingerprint,
             job_type=(IntegrationJobService.ZENDESK_TICKET_EVENT),
             payload={
                 "invocation_id": invocation_id,
@@ -186,12 +259,14 @@ class IntegrationJobService:
 
         except IntegrityError:
             await db.rollback()
-
-            existing = await IntegrationJobRepository.get_by_dedupe_key(
-                db=db,
-                dedupe_key=invocation_id,
+            # A concurrent request inserted the same scoped key or the same
+            # signed delivery between our check and our insert.
+            existing = await IntegrationJobService._zendesk_existing(
+                db,
+                organization_id=organization_id,
+                invocation_id=invocation_id,
+                signed_delivery_fingerprint=signed_delivery_fingerprint,
             )
-
             if existing is None:
                 raise
 

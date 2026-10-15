@@ -1,4 +1,6 @@
+import hashlib
 import json
+import re
 from typing import Annotated
 
 from fastapi import (
@@ -22,6 +24,7 @@ from app.repositories.zendesk_oauth_token_repository import (
 from app.schemas.job import JobAccepted
 from app.services.integration_job_service import (
     IntegrationJobService,
+    ZendeskDeliveryConflictError,
 )
 
 router = APIRouter(
@@ -30,6 +33,12 @@ router = APIRouter(
 )
 
 log = get_logger(__name__)
+
+# The invocation header is NOT covered by Zendesk's signature, so it is
+# attacker-influenced input: bound it before it reaches a log line, a unique
+# key or the database.
+_INVOCATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$")
+_FINGERPRINT_DOMAIN = b"cxops-zendesk-delivery-v1\x00"
 
 DatabaseSession = Annotated[
     AsyncSession,
@@ -98,7 +107,30 @@ async def receive_zendesk_ticket_webhook(
             detail="Missing Zendesk invocation ID.",
         )
 
-    raw_body = await request.body()
+    if _INVOCATION_ID.fullmatch(invocation_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Zendesk invocation ID.",
+        )
+
+    max_body = get_settings().zendesk_webhook_max_body_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > max_body:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Webhook body too large.",
+        )
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > max_body:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Webhook body too large.",
+            )
+        chunks.append(chunk)
+    raw_body = b"".join(chunks)
 
     replay_window = get_settings().zendesk_webhook_replay_window_seconds
 
@@ -142,11 +174,36 @@ async def receive_zendesk_ticket_webhook(
             detail="Invalid Zendesk event payload.",
         )
 
-    return await IntegrationJobService.enqueue_zendesk_event(
-        db=db,
-        invocation_id=invocation_id,
-        event_type=event_type,
-        zendesk_ticket_id=ticket_id,
-        payload=payload,
-        organization_id=connection.organization_id,
-    )
+    # Fingerprint exactly the authenticated timestamp + raw bytes, scoped to
+    # the trusted connection. The invocation header is deliberately excluded.
+    signed_delivery_fingerprint = hashlib.sha256(
+        _FINGERPRINT_DOMAIN
+        + len(integration_id.encode()).to_bytes(4, "big")
+        + integration_id.encode()
+        + len(timestamp.encode()).to_bytes(4, "big")
+        + timestamp.encode()
+        + raw_body
+    ).hexdigest()
+
+    try:
+        return await IntegrationJobService.enqueue_zendesk_event(
+            db=db,
+            invocation_id=invocation_id,
+            signed_delivery_fingerprint=signed_delivery_fingerprint,
+            event_type=event_type,
+            zendesk_ticket_id=ticket_id,
+            payload=payload,
+            organization_id=connection.organization_id,
+        )
+    except ZendeskDeliveryConflictError:
+        # Never a 500 (Zendesk would retry) and never any detail about the
+        # other row: a generic, non-retryable conflict.
+        log.warning(
+            "zendesk_webhook_delivery_conflict",
+            organization_id=connection.organization_id,
+            integration_id=integration_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Webhook delivery conflict.",
+        ) from None

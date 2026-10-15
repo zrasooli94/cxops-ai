@@ -40,6 +40,20 @@ class ZendeskWebhookService:
             event_key=invocation_id,
         )
 
+        if event is not None and event.ticket_id is not None:
+            owned = await TicketRepository.get_by_id_for_tenant(
+                db=db,
+                ticket_id=event.ticket_id,
+                organization_id=organization_id,
+            )
+            if owned is None:
+                # ``event_key`` is globally unique and the invocation id is
+                # sender-chosen: an event that belongs to another tenant must
+                # neither be reused nor reported as "already processed".
+                from app.services.integration_job_service import PermanentJobError
+
+                raise PermanentJobError("Zendesk event key belongs to another tenant")
+
         if event and event.writeback_completed:
             return WebhookReceipt(
                 event_id=invocation_id,

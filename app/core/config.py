@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     zendesk_oauth_scope: str = "read write"
     zendesk_oauth_state_ttl_seconds: int = 600
     zendesk_webhook_replay_window_seconds: int = 300
+    # Hard cap on a Zendesk webhook body, enforced while streaming and before
+    # authentication (event payloads are a few KB).
+    zendesk_webhook_max_body_bytes: int = 262_144
     generic_webhook_replay_window_seconds: int = 300
 
     # Encryption at rest for Zendesk OAuth tokens and webhook secrets.

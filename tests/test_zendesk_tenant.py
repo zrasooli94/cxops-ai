@@ -712,8 +712,13 @@ async def test_duplicate_invocation_is_deduped(make_client, zendesk_env):
     assert r1.json()["job_id"] == r2.json()["job_id"]
 
     async with AsyncSessionLocal() as session:
+        # The durable key is scoped by the TRUSTED organization (the invocation
+        # header is unsigned and sender-chosen).
         result = await session.execute(
-            select(IntegrationJob).where(IntegrationJob.dedupe_key == invocation)
+            select(IntegrationJob).where(
+                IntegrationJob.dedupe_key
+                == f"zendesk:{zendesk_env['org_a_id']}:{invocation}"
+            )
         )
         job = result.scalar_one_or_none()
         assert job is not None

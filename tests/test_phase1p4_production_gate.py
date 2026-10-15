@@ -45,8 +45,8 @@ from app.models.public_chat import PublicChatConfiguration
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "config" / "tenants" / "a1-cash-for-cars.yaml"
 
-EXPECTED_HEAD = "1q0a0001"
-PREVIOUS_HEAD = "1p9b0001"
+EXPECTED_HEAD = "1u0h0001"
+PREVIOUS_HEAD = "1q0a0001"
 
 # A1's real production origins, per config/tenants/a1-cash-for-cars.yaml.
 A1_APEX = "https://a1cashforcars.com.au"
