@@ -117,7 +117,6 @@ async def receive_zendesk_ticket_webhook(
             organization_id=connection.organization_id,
             integration_id=integration_id,
             invocation_id=invocation_id,
-        signed_delivery_fingerprint=signed_delivery_fingerprint,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -158,6 +157,7 @@ async def receive_zendesk_ticket_webhook(
     return await IntegrationJobService.enqueue_zendesk_event(
         db=db,
         invocation_id=invocation_id,
+        signed_delivery_fingerprint=signed_delivery_fingerprint,
         event_type=event_type,
         zendesk_ticket_id=ticket_id,
         payload=payload,
