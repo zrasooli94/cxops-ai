@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ComponentType, ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-function Notification({ children }: { children: React.ReactNode }) {
+function Notification({ children }: { children: ReactNode }) {
   return <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-950">{children}</div>;
 }
 
@@ -30,7 +31,7 @@ function StateCard({
   title, value, note, icon: Icon,
 }: {
   title: string; value: number | string; note: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: ComponentType<{ className?: string }>;
 }) {
   return <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
     <div className="flex items-center justify-between">
@@ -59,7 +60,7 @@ async function readStagingEndpoint(path: string, token: string, tenant: number) 
   const response = await fetch(STAGING_BACKEND_URL + path, {
     headers: {
       Authorization: "Bearer " + token,
-      "X-CXOps-Organization-ID": String(tenant),
+      ...(tenant > 0 ? { "X-CXOps-Organization-ID": String(tenant) } : {}),
       Accept: "application/json",
     },
     cache: "no-store",
