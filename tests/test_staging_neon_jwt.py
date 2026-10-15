@@ -1,15 +1,20 @@
 """Synthetic-only adversarial JWT verification for Neon staging; zero network."""
 import base64
 import json
+import time
 
+import httpx
 import pytest
+import respx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from staging.neon_jwt import (
     STAGING_AUTH_ORIGIN,
+    STAGING_JWKS_URL,
     NeonStagingIdentityUnavailable,
     NeonStagingTokenError,
+    verify_neon_staging_token,
     verify_signed_staging_jwt,
 )
 
@@ -187,3 +192,38 @@ def test_verified_token_does_not_embed_cxops_tenant_authorization():
     assert "organization_id" not in actual
     assert "permissions" not in actual
     assert "is_staff" not in actual
+
+
+@pytest.mark.asyncio
+async def test_jwks_adapter_uses_exact_pinned_staging_endpoint_without_live_network():
+    with respx.mock(assert_all_called=True) as router:
+        pinned = router.get(STAGING_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=JWKS)
+        )
+        actual = await verify_neon_staging_token(_sign({
+            **BASE_CLAIMS, "iat": int(time.time()) - 30,
+            "exp": int(__import__("time").time()) + 870,
+        }))
+        assert pinned.called
+        assert actual["sub"] == "synthetic-staging-user-id"
+
+
+@pytest.mark.asyncio
+async def test_malformed_staging_token_never_triggers_external_auth_request():
+    with respx.mock(assert_all_called=False) as router:
+        probe = router.get(STAGING_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=JWKS)
+        )
+        with pytest.raises(NeonStagingTokenError):
+            await verify_neon_staging_token("malformed")
+        assert not probe.called
+
+
+@pytest.mark.asyncio
+async def test_jwks_network_errors_and_oversized_responses_fail_closed():
+    with respx.mock(assert_all_called=True) as router:
+        router.get(STAGING_JWKS_URL).mock(
+            return_value=httpx.Response(200, content=b"x" * 32769)
+        )
+        with pytest.raises(NeonStagingIdentityUnavailable):
+            await verify_neon_staging_token(_sign())
