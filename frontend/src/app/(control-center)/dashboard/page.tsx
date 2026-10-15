@@ -13,6 +13,7 @@ import Link from "next/link";
 import { type ComponentType, useCallback, useEffect, useState } from "react";
 
 import DashboardNavCards from "./nav-cards";
+import StaffHandoffOverview from "./handoff-overview";
 import { CAPABILITIES } from "@/lib/authorization/capabilities";
 import { useAuthorization } from "@/lib/authorization/context";
 import {
@@ -82,6 +83,7 @@ export default function DashboardPage() {
   const { can } = useAuthorization();
   const canReadMetrics = can(CAPABILITIES.OBSERVABILITY_READ);
   const canReadServiceOps = canViewServiceOperations(can);
+  const canReadHandoffs = can(CAPABILITIES.TICKET_READ);
 
   const [metrics, setMetrics] = useState<OperationalMetrics | null>(null);
   const [serviceOps, setServiceOps] = useState<ServiceOperationsSummary | null>(null);
@@ -199,6 +201,8 @@ export default function DashboardPage() {
           </section>
 
           <DashboardNavCards />
+
+          {canReadHandoffs && <StaffHandoffOverview />}
 
           {canReadServiceOps && (
             <section className="mb-12">
