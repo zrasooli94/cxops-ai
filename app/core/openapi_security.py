@@ -19,8 +19,9 @@ from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, iter_route_contexts
 
-from app.api.deps import get_current_principal_dep
+from app.api.deps import get_current_principal_dep, verify_ticket_event_signature
 from app.api.routes.public_chat import require_session_token
+from app.api.routes.zendesk_webhooks import receive_zendesk_ticket_webhook
 
 STAFF_BEARER_NAME = "StaffJWTBearer"
 CHAT_BEARER_NAME = "PublicChatSessionBearer"
@@ -51,6 +52,135 @@ SECURITY_SCHEMES: dict[str, dict[str, str]] = {
 }
 
 
+
+# A webhook signature is NOT an Authorization bearer token. OpenAPI's apiKey
+# security type names the signature header; timestamp/invocation requirements
+# are separately modeled as mandatory request headers below. One header alone
+# never constitutes a valid authenticated webhook.
+GENERIC_HMAC_NAME = "TicketEventHMAC"
+ZENDESK_HMAC_NAME = "ZendeskWebhookHMAC"
+
+MACHINE_SECURITY_SCHEMES: dict[str, dict[str, str]] = {
+    GENERIC_HMAC_NAME: {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CXOps-Signature",
+        "description": (
+            "64 hexadecimal HMAC-SHA256 signature over UTF-8 "
+            "X-CXOps-Timestamp EXACTLY AS SENT, concatenated with the raw "
+            "HTTP body bytes (no delimiter). X-CXOps-Timestamp is mandatory "
+            "and subject to GENERIC_WEBHOOK_REPLAY_WINDOW_SECONDS. The "
+            "server-side secret is never a client-visible API key. No staff "
+            "JWT or public-chat bearer is accepted as machine authentication. "
+            "Time-window validation is NOT single-use replay prevention."
+        ),
+    },
+    ZENDESK_HMAC_NAME: {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Zendesk-Webhook-Signature",
+        "description": (
+            "Base64 HMAC-SHA256 of the exact UTF-8 "
+            "X-Zendesk-Webhook-Signature-Timestamp string followed immediately "
+            "by raw HTTP body bytes. A webhook secret is resolved ONLY from "
+            "the organization-owned connection identified by integration_id. "
+            "Timestamp and X-Zendesk-Webhook-Invocation-Id are mandatory. "
+            "Invocation ID is NOT included in the HMAC; it is a separate "
+            "idempotency key, not a cryptographic single-use nonce. "
+            "No staff JWT or visitor bearer token grants access."
+        ),
+    },
+}
+
+MACHINE_HEADERS: dict[str, tuple[tuple[str, str], ...]] = {
+    GENERIC_HMAC_NAME: (
+        (
+            "X-CXOps-Timestamp",
+            "Timestamp as sent by the producer: signed with the raw body; "
+            "ISO-8601 or positive Unix epoch, within configured replay window.",
+        ),
+    ),
+    ZENDESK_HMAC_NAME: (
+        (
+            "X-Zendesk-Webhook-Signature-Timestamp",
+            "Timestamp as sent by Zendesk: signed with raw body; must be within "
+            "the configured Zendesk replay window.",
+        ),
+        (
+            "X-Zendesk-Webhook-Invocation-Id",
+            "Required delivery/idempotency identifier. This header is NOT "
+            "part of the Zendesk HMAC and cannot prove a one-time request.",
+        ),
+    ),
+}
+
+MACHINE_METADATA: dict[str, dict[str, str]] = {
+    GENERIC_HMAC_NAME: {
+        "x-cxops-hmac-input": "utf8(exact-timestamp-header) + raw-body-bytes",
+        "x-cxops-hmac-output": "sha256-hex",
+        "x-cxops-replay-window-config": "GENERIC_WEBHOOK_REPLAY_WINDOW_SECONDS",
+        "x-cxops-deduplication-key": "signed-payload.event_id",
+    },
+    ZENDESK_HMAC_NAME: {
+        "x-cxops-hmac-input": "utf8(exact-timestamp-header) + raw-body-bytes",
+        "x-cxops-hmac-output": "sha256-base64",
+        "x-cxops-replay-window-config": "ZENDESK_WEBHOOK_REPLAY_WINDOW_SECONDS",
+        "x-cxops-deduplication-key": "unsigned-header.X-Zendesk-Webhook-Invocation-Id",
+    },
+}
+
+MACHINE_RESPONSES: dict[str, dict[str, str]] = {
+    GENERIC_HMAC_NAME: {
+        "401": "Missing or invalid HMAC signature / timestamp",
+        "422": "Invalid signed JSON ticket-event payload",
+        "503": "Server-side ticket-event signing secret not configured",
+    },
+    ZENDESK_HMAC_NAME: {
+        "400": "Missing Zendesk webhook invocation ID",
+        "401": "Missing or invalid signature, timestamp or integration secret",
+        "404": "Integration ID not found",
+        "422": "Malformed Zendesk event JSON or missing ticket fields",
+    },
+}
+
+
+def _document_machine_headers(operation: dict[str, Any], scheme: str) -> None:
+    """Document required non-secret headers separately from the signature key.
+
+    Reject incompatible existing definitions instead of silently rewriting
+    an OpenAPI contract already installed by another dependency or router.
+    """
+    parameters = operation.setdefault("parameters", [])
+    for name, description in MACHINE_HEADERS[scheme]:
+        expected = {
+            "name": name,
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string", "minLength": 1},
+            "description": description,
+        }
+        matching = [
+            parameter
+            for parameter in parameters
+            if parameter.get("in") == "header"
+            and parameter.get("name", "").lower() == name.lower()
+        ]
+        if matching:
+            if len(matching) != 1 or matching[0] != expected:
+                raise ValueError("OpenAPI webhook header conflicts with machine contract")
+        else:
+            parameters.append(expected)
+
+    for key, value in MACHINE_METADATA[scheme].items():
+        current = operation.setdefault(key, value)
+        if current != value:
+            raise ValueError("OpenAPI webhook metadata conflicts with signed-message contract")
+
+    responses = operation.setdefault("responses", {})
+    for code, description in MACHINE_RESPONSES[scheme].items():
+        responses.setdefault(code, {"description": description})
+
+
 def _has_dependency(node: Dependant, target: Callable[..., Any]) -> bool:
     """Follow FastAPI's exact dependency graph, including nested RBAC deps."""
     return node.call is target or any(
@@ -59,18 +189,18 @@ def _has_dependency(node: Dependant, target: Callable[..., Any]) -> bool:
 
 
 def document_authentication(app: FastAPI, spec: dict[str, Any]) -> dict[str, Any]:
-    """Apply two auth schemes only to routes that enforce them at runtime.
+    """Apply the actual auth type only to routes that enforce it at runtime.
 
-    This is idempotent under FastAPI's existing OpenAPI schema cache. Machine
-    HMAC webhooks and unauthenticated OAuth callback routes are intentionally
-    not represented as staff or visitor bearer endpoints; no global security
-    requirement is introduced.
+    This is idempotent under FastAPI's existing OpenAPI schema cache.
+    Signed machine webhooks use distinct header-based HMAC contracts; OAuth
+    callbacks are deliberately not labeled with staff or visitor bearers.
+    No global security requirement is introduced.
     """
     if "security" in spec:
         raise ValueError("CXOps must not acquire a global bearer security requirement")
     components = spec.setdefault("components", {})
     schemes = components.setdefault("securitySchemes", {})
-    for name, definition in SECURITY_SCHEMES.items():
+    for name, definition in {**SECURITY_SCHEMES, **MACHINE_SECURITY_SCHEMES}.items():
         current = schemes.setdefault(name, dict(definition))
         if current != definition:
             raise ValueError("OpenAPI bearer scheme conflicts with CXOps contract")
@@ -83,13 +213,25 @@ def document_authentication(app: FastAPI, spec: dict[str, Any]) -> dict[str, Any
             continue
         is_staff = _has_dependency(route.dependant, get_current_principal_dep)
         is_chat = _has_dependency(route.dependant, require_session_token)
-        if is_staff and is_chat:
-            raise ValueError(
-                "A route cannot require both staff JWT and visitor session token"
-            )
-        if not is_staff and not is_chat:
+        is_generic = _has_dependency(
+            route.dependant, verify_ticket_event_signature
+        )
+        # Zendesk authenticates in the actual route handler rather than a
+        # FastAPI dependency. Bind to the real callable, never a matching URL
+        # substring that would incorrectly label another public route.
+        is_zendesk = route.dependant.call is receive_zendesk_ticket_webhook
+        if sum((is_staff, is_chat, is_generic, is_zendesk)) > 1:
+            raise ValueError("One route cannot mix staff, visitor and machine authentication")
+        if not any((is_staff, is_chat, is_generic, is_zendesk)):
             continue
-        scheme = STAFF_BEARER_NAME if is_staff else CHAT_BEARER_NAME
+        if is_staff:
+            scheme = STAFF_BEARER_NAME
+        elif is_chat:
+            scheme = CHAT_BEARER_NAME
+        elif is_generic:
+            scheme = GENERIC_HMAC_NAME
+        else:
+            scheme = ZENDESK_HMAC_NAME
         for method in route.methods or ():
             operation = spec.get("paths", {}).get(route.path_format, {}).get(
                 method.lower()
@@ -101,4 +243,6 @@ def document_authentication(app: FastAPI, spec: dict[str, Any]) -> dict[str, Any
             if existing is not None and existing != expected:
                 raise ValueError("OpenAPI operation conflicts with runtime bearer type")
             operation["security"] = expected
+            if scheme in MACHINE_SECURITY_SCHEMES:
+                _document_machine_headers(operation, scheme)
     return spec

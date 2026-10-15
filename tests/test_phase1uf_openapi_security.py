@@ -7,12 +7,15 @@ from __future__ import annotations
 
 from fastapi.routing import APIRoute, iter_route_contexts
 
-from app.api.deps import get_current_principal_dep
+from app.api.deps import get_current_principal_dep, verify_ticket_event_signature
 from app.api.routes.public_chat import require_session_token
+from app.api.routes.zendesk_webhooks import receive_zendesk_ticket_webhook
 from app.core.openapi_security import (
     CHAT_BEARER_NAME,
+    GENERIC_HMAC_NAME,
     SECURITY_SCHEMES,
     STAFF_BEARER_NAME,
+    ZENDESK_HMAC_NAME,
     _has_dependency,
 )
 from app.main import app
@@ -107,11 +110,21 @@ def test_documentation_matches_every_route_current_dependency_graph():
             continue
         needs_staff = _has_dependency(route.dependant, get_current_principal_dep)
         needs_chat = _has_dependency(route.dependant, require_session_token)
-        assert not (needs_staff and needs_chat)
+        needs_generic = _has_dependency(
+            route.dependant, verify_ticket_event_signature
+        )
+        needs_zendesk = route.dependant.call is receive_zendesk_ticket_webhook
+        assert sum((needs_staff, needs_chat, needs_generic, needs_zendesk)) <= 1
         expected = (
             [{STAFF_BEARER_NAME: []}]
             if needs_staff
-            else [{CHAT_BEARER_NAME: []}] if needs_chat else None
+            else [{CHAT_BEARER_NAME: []}]
+            if needs_chat
+            else [{GENERIC_HMAC_NAME: []}]
+            if needs_generic
+            else [{ZENDESK_HMAC_NAME: []}]
+            if needs_zendesk
+            else None
         )
         for method in route.methods or ():
             operation = spec.get("paths", {}).get(route.path_format, {}).get(
