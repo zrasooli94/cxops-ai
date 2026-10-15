@@ -48,6 +48,24 @@ provider access has been enabled.** Production and its credentials are unchanged
   synthetic test users without pausing or reusing production. Nhost's free
   organization allows only one active project at a time.
 
+## Verified branch-specific Vercel Preview wiring
+
+The Vercel project now has a **branch-only Preview override** for
+`feature/phase1w-preview-isolation-gate`, with no edit to the original
+Production/Preview shared variable record:
+
+- `BACKEND_API_URL` points to
+  `https://cxops-ai-staging-bootstrap.onrender.com` **on this branch only**.
+- `CXOPS_STAGING_BACKEND_URL` matches that bootstrap-only origin.
+- `CXOPS_PREVIEW_AUTH_ENABLED=false` and
+  `CXOPS_STAGING_ISOLATION_VERIFIED=false` remain explicit fail-closed flags.
+
+These are public, non-secret environment values. They only apply to **new**
+Preview deployments built after the override was added. The bootstrap endpoint
+does not yet provide real CXOps APIs or authentication. Do not enable either
+flag until separate staging Nhost identity, an empty migrated DB and a
+provider-disabled backend have passed independent review.
+
 ## New defensive behavior on this branch
 
 The Vercel Preview environment fails closed for:
