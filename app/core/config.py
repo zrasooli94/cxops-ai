@@ -123,6 +123,25 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _isolate_staging_neon_auth(self) -> "Settings":
+        """Do not allow Neon staging identity in a production or dev process.
+
+        Production's Nhost RS256 policy remains unchanged. Staging tokens
+        require the *separate* branch-local Neon Managed Auth verifier, never
+        local HS256, dev bypasses, or production Nhost's JWKS.
+        """
+        if self.auth_mode == "neon_staging" and self.environment != "staging":
+            raise ValueError("AUTH_MODE=neon_staging is valid only in staging")
+        if self.environment == "staging":
+            if self.auth_mode != "neon_staging":
+                raise ValueError("ENVIRONMENT=staging requires AUTH_MODE=neon_staging")
+            if self.auth_dev_mode:
+                raise ValueError("AUTH_DEV_MODE cannot be enabled in staging")
+            if self.debug:
+                raise ValueError("DEBUG cannot be enabled in staging")
+        return self
+
+    @model_validator(mode="after")
     def _reject_debug_in_production(self) -> "Settings":
         """DEBUG=true leaks stack traces and SQL to HTTP responses and logs.
 
