@@ -2,25 +2,30 @@
 
 import { AlertTriangle, ArrowUpRight, RefreshCw, Users } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toHandoffOverview, type HandoffOverview } from "@/lib/dashboard/handoff-overview";
 import { fetchPublicChatSummary } from "@/lib/public-chat/staff";
 
 export default function StaffHandoffOverview() {
+  const currentRequest = useRef<AbortController | null>(null);
   const [snapshot, setSnapshot] = useState<HandoffOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const refresh = useCallback(async () => {
+    currentRequest.current?.abort();
+    const controller = new AbortController();
+    currentRequest.current = controller;
+    const signal = controller.signal;
     setLoading(true);
     setError("");
     try {
       const summary = await fetchPublicChatSummary("24h", (_url, _options) =>
         fetch(_url, { ..._options, signal }));
-      if (!signal?.aborted) setSnapshot(toHandoffOverview(summary));
+      if (!signal.aborted) setSnapshot(toHandoffOverview(summary));
     } catch {
-      if (!signal?.aborted) {
+      if (!signal.aborted) {
         setSnapshot(null);
         setError("Handoff status is unavailable. Try refreshing.");
       }
@@ -30,13 +35,12 @@ export default function StaffHandoffOverview() {
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
     const start = window.setTimeout(() => {
-      void refresh(controller.signal);
+      void refresh();
     }, 0);
     return () => {
       window.clearTimeout(start);
-      controller.abort();
+      currentRequest.current?.abort();
     };
   }, [refresh]);
 
@@ -58,6 +62,7 @@ export default function StaffHandoffOverview() {
           </Link>
         </div>
       </div>
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{loading ? "Updating handoff queue" : error ? error : "Handoff queue updated"}</div>
       {error ? (
         <p role="alert" className="mt-4 text-sm text-red-700">{error}</p>
       ) : loading && !snapshot ? (
