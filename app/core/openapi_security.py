@@ -93,7 +93,7 @@ def document_authentication(app: FastAPI, spec: dict[str, Any]) -> dict[str, Any
             )
             if operation is None:
                 continue
-            expected = [{scheme: []}]
+            expected: list[dict[str, list[str]]] = [{scheme: []}]
             existing = operation.get("security")
             if existing is not None and existing != expected:
                 raise ValueError("OpenAPI operation conflicts with runtime bearer type")

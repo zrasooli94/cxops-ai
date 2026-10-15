@@ -14,7 +14,7 @@ linked conversation in a single transaction.
 """
 
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,7 +61,7 @@ HandoffWriteAuthz = Annotated[
 
 # Documentation only; these status codes already originate from the existing
 # principal, tenant and capability checks (not an OpenAPI security bypass).
-STAFF_AUTH_RESPONSES = {
+STAFF_AUTH_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"description": "Missing or invalid staff JWT"},
     403: {"description": "Organization membership missing or capability denied"},
     409: {"description": "Ambiguous tenant selection or conflicting session state"},
