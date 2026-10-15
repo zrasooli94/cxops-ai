@@ -2,8 +2,10 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
+from app.core import auth
 from app.core.auth import get_current_principal
 from app.core.config import Settings
 from staging.neon_jwt import (
@@ -74,7 +76,6 @@ def test_staging_rejects_wrong_auth_mode_dev_bypass_or_live_provider_secrets(val
 
 @pytest.mark.asyncio
 async def test_staging_api_accepts_only_verified_neon_identity(monkeypatch):
-    import app.core.auth as auth
 
     config = SimpleNamespace(
         environment="staging", auth_mode="neon_staging", auth_dev_mode=False,
@@ -101,8 +102,6 @@ async def test_staging_api_accepts_only_verified_neon_identity(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_staging_rejects_bad_tokens_and_unreachable_identity(monkeypatch):
-    import app.core.auth as auth
-    from fastapi import HTTPException
 
     monkeypatch.setattr(
         auth, "get_settings",
@@ -131,7 +130,6 @@ async def test_staging_rejects_bad_tokens_and_unreachable_identity(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_production_nhost_code_does_not_call_staging_verifier(monkeypatch):
-    import app.core.auth as auth
 
     monkeypatch.setattr(
         auth, "get_settings",
