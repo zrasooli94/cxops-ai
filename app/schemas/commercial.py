@@ -7,7 +7,7 @@ an endpoint that does not explicitly accept it.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -41,6 +41,28 @@ LeadIndustry = Literal[
 
 RoleName = Literal["owner", "admin", "supervisor", "agent", "viewer"]
 
+# The shared business-website parser accepts bare hosts, normalizes URLs and
+# performs semantic checks (dotted host, supported scheme, no credentials).
+# JSON Schema's plain string/maxLength constraints cannot express all of this
+# without changing which legacy submissions are accepted; describe the rule
+# explicitly, with valid positive examples, instead of adding a stricter,
+# misleading pattern/format constraint.
+WEBSITE_INPUT_DESCRIPTION = (
+    "Optional business website: a bare dotted hostname (example.com) or "
+    "an http:// or https:// URL (https://shop.example.com/contact). "
+    "The server trims surrounding spaces and requires a dotted hostname "
+    "without whitespace; embedded credentials and other URL schemes are rejected. "
+    "Bare hosts use HTTPS. Accepted values are normalized to "
+    "scheme://lowercase-host[:port], discarding path, query and fragment. "
+    "Additional hostname, port and normalized-length checks run on the server "
+    "and are not fully expressible by this JSON Schema string field."
+)
+WEBSITE_INPUT_EXAMPLES = ["example.com", "https://shop.example.com:8443/contact"]
+WEBSITE_SCHEMA_METADATA: dict[str, Any] = {
+    "x-cxops-website-validator": "server-side-http-or-https-dotted-host",
+    "x-cxops-normalizes-to": "scheme://lowercase-host[:port]",
+}
+
 
 def _strip_required(value: str) -> str:
     candidate = value.strip()
@@ -55,7 +77,13 @@ class LeadSubmission(BaseModel):
     company_name: str = Field(min_length=1, max_length=200)
     contact_name: str = Field(min_length=1, max_length=200)
     email: EmailStr = Field(max_length=320)
-    website: str | None = Field(default=None, max_length=255)
+    website: str | None = Field(
+        default=None,
+        max_length=255,
+        description=WEBSITE_INPUT_DESCRIPTION,
+        examples=WEBSITE_INPUT_EXAMPLES,
+        json_schema_extra=WEBSITE_SCHEMA_METADATA,
+    )
     industry: LeadIndustry
     inquiry: str | None = Field(default=None, max_length=2000)
     # Explicit consent to be contacted about this request. ``True`` only.
@@ -83,7 +111,13 @@ class OperatorLeadCreate(BaseModel):
     company_name: str = Field(min_length=1, max_length=200)
     contact_name: str = Field(min_length=1, max_length=200)
     email: EmailStr = Field(max_length=320)
-    website: str | None = Field(default=None, max_length=255)
+    website: str | None = Field(
+        default=None,
+        max_length=255,
+        description=WEBSITE_INPUT_DESCRIPTION,
+        examples=WEBSITE_INPUT_EXAMPLES,
+        json_schema_extra=WEBSITE_SCHEMA_METADATA,
+    )
     industry: LeadIndustry
     inquiry: str | None = Field(default=None, max_length=2000)
 

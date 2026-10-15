@@ -33,6 +33,8 @@ from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
 from app.main import app
+from app.schemas.commercial import WEBSITE_INPUT_EXAMPLES, LeadSubmission
+from app.services.lead_service import RECEIVED, LeadService
 
 PUBLIC_OPERATIONS = frozenset({
     ("GET", "/public/chat/config"),
@@ -113,3 +115,91 @@ def test_anonymous_public_operations_are_robust_to_generated_inputs(case):
         # Keep that discovery in the review document instead of weakening the
         # application's domain validator.
         case.operation.validate_response(response, case=case)
+
+
+def _synthetic_lead_body(website: str | None) -> dict:
+    """Only synthetic data. No customer/production values or credentials."""
+    return {
+        "company_name": "Example Repair",
+        "contact_name": "Test Contact",
+        "email": "contract-test@example.com",
+        "website": website,
+        "industry": "automotive",
+        "inquiry": "Testing an offline request contract",
+        "consent": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("website", "normalized"),
+    [
+        ("example.com", "https://example.com"),
+        ("https://shop.example.com:8443/contact", "https://shop.example.com:8443"),
+        ("  http://Shop.Example.COM/products?q=1  ", "http://shop.example.com"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_documented_website_positive_requests_replayed_through_schemathesis(
+    website, normalized, monkeypatch
+):
+    """Use real FastAPI/Pydantic input validation, but fake the lead service.
+
+    Lead capture remains OFF globally. The fake never opens an outbound
+    connection, spends tokens, sends mail or inserts a lead row. The 202
+    response proves the positive input passed through the request boundary.
+    """
+    captured = []
+
+    async def fake_submit(cls, _db, **fields):
+        captured.append(fields)
+        return dict(RECEIVED)
+
+    monkeypatch.setattr(LeadService, "submit", classmethod(fake_submit))
+    operation = schema["/public/leads"]["POST"]
+    case = operation.Case(
+        body=_synthetic_lead_body(website), media_type="application/json"
+    )
+    result = case.call()
+    assert result.status_code == 202
+    assert len(captured) == 1
+    assert captured[0]["website"] == normalized
+    assert captured[0]["email"] == "contract-test@example.com"
+    assert "contract-test@example.com" not in result.text
+    operation.validate_response(result, case=case)
+
+
+@pytest.mark.parametrize(
+    "website",
+    ["ftp://example.com", "localhost", "https://user:pass@example.com"],
+)
+def test_semantically_invalid_website_never_reaches_lead_service(
+    website, monkeypatch
+):
+    calls = []
+
+    async def forbid_submit(cls, _db, **fields):
+        calls.append(fields)
+        raise AssertionError("invalid website unexpectedly entered lead service")
+
+    monkeypatch.setattr(LeadService, "submit", classmethod(forbid_submit))
+    operation = schema["/public/leads"]["POST"]
+    case = operation.Case(
+        body=_synthetic_lead_body(website), media_type="application/json"
+    )
+    result = case.call()
+    assert result.status_code == 422
+    assert not calls
+    operation.validate_response(result, case=case)
+
+
+def test_live_openapi_examples_replay_as_valid_server_inputs():
+    """Guard against examples that violate the actual semantic validator."""
+    request_schema = app.openapi()["components"]["schemas"]["LeadSubmission"]
+    assert request_schema["properties"]["website"]["examples"] == WEBSITE_INPUT_EXAMPLES
+    for website in WEBSITE_INPUT_EXAMPLES:
+        normalized = LeadSubmission.model_validate(
+            _synthetic_lead_body(website)
+        ).website
+        assert isinstance(normalized, str)
+        assert normalized.startswith("https://")
