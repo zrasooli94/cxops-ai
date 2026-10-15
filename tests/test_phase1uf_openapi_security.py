@@ -5,7 +5,7 @@ mocked authorization decision, or production secrets.
 """
 from __future__ import annotations
 
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 
 from app.api.deps import get_current_principal_dep
 from app.api.routes.public_chat import require_session_token
@@ -102,8 +102,8 @@ def test_other_staff_and_machine_auth_are_never_conflated():
 
 def test_documentation_matches_every_route_current_dependency_graph():
     spec = app.openapi()
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.include_in_schema:
+    for route in iter_route_contexts(app.routes):
+        if not isinstance(route.original_route, APIRoute) or not route.include_in_schema:
             continue
         needs_staff = _has_dependency(route.dependant, get_current_principal_dep)
         needs_chat = _has_dependency(route.dependant, require_session_token)
@@ -137,6 +137,20 @@ def test_schema_cache_is_idempotent_and_never_leaks_credentials():
 
 
 def test_runtime_jwt_dependency_remains_header_based():
+    # FastAPI included routers are lazy; mirror its own OpenAPI flattening
+    # instead of inspecting only top-level app.routes.
+    auth_routes = [
+        r for r in iter_route_contexts(app.routes)
+        if isinstance(r.original_route, APIRoute)
+    ]
+    staff = next(
+        r for r in auth_routes if r.path_format == "/staff/public-chat/handoff"
+    )
+    visitor = next(
+        r for r in auth_routes if r.path_format == "/public/chat/messages"
+    )
+    assert _has_dependency(staff.dependant, get_current_principal_dep)
+    assert _has_dependency(visitor.dependant, require_session_token)
     # The metadata adapter may not insert SecurityBase or HTTPBearer into the
     # runtime dependency tree: existing JWT validation owns all 401/403 checks.
     auth_routes = [r for r in app.routes if isinstance(r, APIRoute)]

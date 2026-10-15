@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 
 from app.api.deps import get_current_principal_dep
 from app.api.routes.public_chat import require_session_token
@@ -75,8 +75,11 @@ def document_authentication(app: FastAPI, spec: dict[str, Any]) -> dict[str, Any
         if current != definition:
             raise ValueError("OpenAPI bearer scheme conflicts with CXOps contract")
 
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.include_in_schema:
+    # FastAPI 0.141 uses _IncludedRouter to keep nested routers lazy.
+    # This is the same flattening API used by FastAPI's own get_openapi():
+    # inspecting app.routes directly sees only the wrapper, not its endpoints.
+    for route in iter_route_contexts(app.routes):
+        if not isinstance(route.original_route, APIRoute) or not route.include_in_schema:
             continue
         is_staff = _has_dependency(route.dependant, get_current_principal_dep)
         is_chat = _has_dependency(route.dependant, require_session_token)

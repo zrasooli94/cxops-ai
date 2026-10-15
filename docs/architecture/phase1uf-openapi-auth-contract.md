@@ -36,6 +36,15 @@ releasing or resolving. Response docs advertise 401 invalid credentials, 403
 membership/capability denial, and 409 ambiguous tenant selection/conflict.
 These are **vendor extensions / documentation**, not OAuth scopes.
 
+The app includes nested FastAPI routers, which in pinned FastAPI 0.141 are
+represented as lazy `_IncludedRouter` objects at the top level. The adapter
+uses FastAPI's own `routing.iter_route_contexts(app.routes)` flattening
+function (also used by `get_openapi`) to resolve effective full paths and
+dependency graphs. Using `app.routes` directly missed the nested JWT and
+visitor-token routes; a prior CI run exposed and prevented that unsafe
+documentation result. A future FastAPI upgrade must rerun the complete
+OpenAPI route-inventory tests before release.
+
 ## Security invariants
 
 - The JWT parser and signature verification, claim validation, error mapping,
