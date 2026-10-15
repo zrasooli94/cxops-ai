@@ -68,6 +68,10 @@ jobs:
         working-directory: frontend
         run: npm run test:auth
 
+      - name: Preview isolation safety tests
+        working-directory: frontend
+        run: npm run test:staging
+
   backend-tests:
     name: Backend Tests (Unit)
     runs-on: ubuntu-latest
