@@ -38,6 +38,13 @@ export default async function StagingPage() {
       <div className="mt-6 rounded-2xl bg-violet-50 p-5"><h2 className="font-semibold">Welcome, {identity.user.name}</h2><p className="mt-2 text-sm">{backendStatus}</p></div>
       <h2 className="mt-6 font-semibold">Test workspaces</h2>
       {organizations.length ? <ul className="mt-3 space-y-2">{organizations.map(org => <li key={org.id} className="rounded-xl border border-slate-200 p-4">{org.name}</li>)}</ul> : <p className="mt-3 text-sm text-slate-600">No verified workspace memberships loaded.</p>}
+      {backendStatus === "Identity verified by staging API" && organizations.length === 1 &&
+        <Link href="/staging/operations" className="mt-6 flex items-center justify-between rounded-2xl border border-violet-200 bg-violet-600 p-5 text-white shadow-sm transition hover:bg-violet-700">
+          <span><strong className="block text-base">Open staging Control Center</strong>
+            <span className="mt-1 block text-xs text-violet-100">Explore synthetic tickets, customers and real queue metrics</span>
+          </span>
+          <span aria-hidden="true" className="text-2xl">→</span>
+        </Link>}
       <form action={stagingSignOut}><button className="mt-6 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold">Sign out</button></form>
     </> : <p role="alert" className="mt-6 text-sm text-red-700">Staging authentication is temporarily unavailable. Please try again.</p>}
     <Link href="/login" className="mt-8 inline-block text-sm text-violet-700">Back to sign-in information →</Link>
