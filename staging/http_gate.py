@@ -19,6 +19,9 @@ _INITIAL_STAGING_READ_PATHS = frozenset({
     "/me/organizations",
     "/me/tenant",
     "/me/authorization",
+    # Existing tenant- and capability-gated read routes, synthetic records only.
+    "/tickets",
+    "/customers",
     "/staff/public-chat/handoff",
     "/staff/public-chat/summary",
 })
