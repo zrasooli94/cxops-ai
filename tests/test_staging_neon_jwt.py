@@ -2,9 +2,9 @@
 import base64
 import json
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-import pytest
 
 from staging.neon_jwt import (
     STAGING_AUTH_ORIGIN,
