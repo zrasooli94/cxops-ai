@@ -430,9 +430,29 @@ def _settings_with(**overrides):
         "BACKEND_PUBLIC_URL": "https://api.example.com",
         # Pinned, not inherited: see the docstring above.
         "OPENAI_API_KEY": "",
+        "ZENDESK_CLIENT_SECRET": "",
+        "ZENDESK_WEBHOOK_SECRET": "",
+        "TICKET_EVENT_WEBHOOK_SECRET": "",
+        "HANDOFF_NOTIFICATIONS_ENABLED": False,
+        "HANDOFF_NOTIFICATION_EMAIL_URL": "",
+        "HANDOFF_NOTIFICATION_TELEGRAM_URL": "",
+        "AUTH_DEV_MODE": False,
     }
     base.update(overrides)
     return Settings(_env_file=None, **base)
+
+
+def test_staging_fixture_does_not_inherit_provider_secrets(monkeypatch):
+    """CI's synthetic provider settings must not escape into isolated fixtures."""
+    for name in (
+        "OPENAI_API_KEY", "ZENDESK_CLIENT_SECRET", "ZENDESK_WEBHOOK_SECRET",
+        "TICKET_EVENT_WEBHOOK_SECRET", "HANDOFF_NOTIFICATION_EMAIL_URL",
+        "HANDOFF_NOTIFICATION_TELEGRAM_URL",
+    ):
+        monkeypatch.setenv(name, "synthetic-inherited-value")
+    monkeypatch.setenv("HANDOFF_NOTIFICATIONS_ENABLED", "true")
+    monkeypatch.setenv("AUTH_DEV_MODE", "true")
+    test_non_production_environment_is_warned_not_silently_accepted()
 
 
 def test_secrets_report_presence_without_printing_values():
