@@ -56,6 +56,7 @@ async def test_distinct_signatures_do_not_suppress_legitimate_deliveries():
         db.add(org)
         await db.commit()
         await db.refresh(org)
+        organization_id = org.id
         try:
             results = []
             for suffix in ("a", "b"):
