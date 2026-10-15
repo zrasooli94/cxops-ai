@@ -11,11 +11,11 @@ from pydantic import ValidationError
 
 from app.main import app
 from app.schemas.commercial import (
-    LeadSubmission,
-    OperatorLeadCreate,
     WEBSITE_INPUT_DESCRIPTION,
     WEBSITE_INPUT_EXAMPLES,
     WEBSITE_SCHEMA_METADATA,
+    LeadSubmission,
+    OperatorLeadCreate,
 )
 
 BASE = {

@@ -33,7 +33,7 @@ from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
 from app.main import app
-from app.schemas.commercial import LeadSubmission, WEBSITE_INPUT_EXAMPLES
+from app.schemas.commercial import WEBSITE_INPUT_EXAMPLES, LeadSubmission
 from app.services.lead_service import RECEIVED, LeadService
 
 PUBLIC_OPERATIONS = frozenset({
