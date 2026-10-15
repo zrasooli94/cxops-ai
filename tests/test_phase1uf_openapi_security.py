@@ -147,6 +147,26 @@ def test_runtime_jwt_dependency_remains_header_based():
             item for dep in node.dependencies for item in calls(dep)
         ]
 
+    assert auth_routes, [
+        (type(r).__module__, type(r).__name__, getattr(r, "path", None))
+        for r in app.routes
+    ]
+    staff_candidates = [
+        (type(r).__name__, getattr(r, "path_format", None), getattr(r, "path", None))
+        for r in app.routes
+        if "staff" in str(getattr(r, "path", ""))
+    ]
+    visitor_candidates = [
+        (type(r).__name__, getattr(r, "path_format", None), getattr(r, "path", None))
+        for r in app.routes
+        if "public/chat/messages" in str(getattr(r, "path", ""))
+    ]
+    assert any(r.path_format == "/staff/public-chat/handoff" for r in auth_routes), (
+        staff_candidates
+    )
+    assert any(r.path_format == "/public/chat/messages" for r in auth_routes), (
+        visitor_candidates
+    )
     staff = next(
         r for r in auth_routes if r.path_format == "/staff/public-chat/handoff"
     )
