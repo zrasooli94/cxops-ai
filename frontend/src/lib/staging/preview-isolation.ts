@@ -28,7 +28,11 @@ function safeRemoteOrigin(raw: string | undefined): string | null {
     if (value.search || value.hash) return null;
     if (value.pathname !== "/" && value.pathname !== "") return null;
     if (value.port && value.port !== "443") return null;
-    if (!host || PRODUCTION_HOSTS.has(host)) return null;
+    // Canonical HTTPS hostnames only; trailing dots and IP literals could
+    // otherwise bypass a text-based production-domain exclusion.
+    if (!host || host.endsWith(".") || host.startsWith("[") ||
+        /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(host) ||
+        PRODUCTION_HOSTS.has(host)) return null;
     if (host === "localhost" || host === "127.0.0.1" || host === "::1" ||
         host.endsWith(".localhost") || host.endsWith(".local") ||
         host.endsWith(".internal") || host.startsWith("10.") ||
