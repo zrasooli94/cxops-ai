@@ -7,7 +7,7 @@ an endpoint that does not explicitly accept it.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -58,7 +58,7 @@ WEBSITE_INPUT_DESCRIPTION = (
     "and are not fully expressible by this JSON Schema string field."
 )
 WEBSITE_INPUT_EXAMPLES = ["example.com", "https://shop.example.com:8443/contact"]
-WEBSITE_SCHEMA_METADATA = {
+WEBSITE_SCHEMA_METADATA: dict[str, Any] = {
     "x-cxops-website-validator": "server-side-http-or-https-dotted-host",
     "x-cxops-normalizes-to": "scheme://lowercase-host[:port]",
 }
