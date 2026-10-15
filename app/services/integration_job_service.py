@@ -148,6 +148,7 @@ class IntegrationJobService:
         db: AsyncSession,
         *,
         invocation_id: str,
+        signed_delivery_fingerprint: str | None = None,
         event_type: str,
         zendesk_ticket_id: int,
         payload: dict,
@@ -156,15 +157,28 @@ class IntegrationJobService:
         existing = await IntegrationJobRepository.get_by_dedupe_key(
             db=db,
             dedupe_key=invocation_id,
+            signed_delivery_fingerprint=signed_delivery_fingerprint,
         )
 
         if existing:
+            if existing.organization_id != organization_id or existing.job_type != IntegrationJobService.ZENDESK_TICKET_EVENT:
+                raise ValueError("Zendesk invocation ID collides with an unrelated job")
             return JobAccepted(
                 event_id=invocation_id,
                 job_id=existing.id,
                 duplicate=True,
                 status=existing.status,
             )
+
+        if signed_delivery_fingerprint:
+            prior_delivery = await IntegrationJobRepository.get_by_signed_delivery_fingerprint(
+                db=db, fingerprint=signed_delivery_fingerprint,
+            )
+            if prior_delivery:
+                if prior_delivery.organization_id != organization_id or prior_delivery.job_type != IntegrationJobService.ZENDESK_TICKET_EVENT:
+                    raise ValueError("Zendesk fingerprint collided with unrelated job")
+                return JobAccepted(event_id=invocation_id, job_id=prior_delivery.id,
+                                   duplicate=True, status=prior_delivery.status)
 
         job = IntegrationJob(
             organization_id=organization_id,
@@ -192,6 +206,14 @@ class IntegrationJobService:
                 dedupe_key=invocation_id,
             )
 
+            if existing is not None and (existing.organization_id != organization_id or existing.job_type != IntegrationJobService.ZENDESK_TICKET_EVENT):
+                raise ValueError("Zendesk invocation ID collides with an unrelated job")
+            if existing is None and signed_delivery_fingerprint:
+                existing = await IntegrationJobRepository.get_by_signed_delivery_fingerprint(
+                    db=db, fingerprint=signed_delivery_fingerprint,
+                )
+                if existing is not None and (existing.organization_id != organization_id or existing.job_type != IntegrationJobService.ZENDESK_TICKET_EVENT):
+                    raise ValueError("Zendesk fingerprint collides with unrelated job")
             if existing is None:
                 raise
 
