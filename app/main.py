@@ -24,6 +24,7 @@ from app.core.rbac import AuthorizationError, MissingCapabilityError
 from app.core.request_context import (
     RequestCorrelationMiddleware,
 )
+from staging.http_gate import staging_request_allowed
 
 log = get_logger(__name__)
 
@@ -98,6 +99,28 @@ app = FastAPI(
 )
 
 app.add_middleware(RequestCorrelationMiddleware)
+
+
+@app.middleware("http")
+async def staging_read_only_access_gate(
+    request: Request,
+    call_next,
+):
+    """No outbound or mutating routes while staging is being qualified.
+
+    A missing or forged identity cannot bypass this first-pass HTTP gate.
+    If/when synthetic read-only staging launches, the existing authentication
+    and tenant membership dependencies still apply to every staff route.
+    """
+    if settings.environment == "staging" and not staging_request_allowed(
+        request.method, request.url.path
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Staging operations are not enabled."},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")
