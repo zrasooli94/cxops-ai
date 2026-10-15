@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import main, core
+from app import main
 from app.core import schema_gate
 
 
