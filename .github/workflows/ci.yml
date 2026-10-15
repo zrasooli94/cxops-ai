@@ -137,7 +137,15 @@ jobs:
 
       - name: Build
         working-directory: frontend
+        env:
+          VERCEL_ENV: preview
         run: npm run build
+
+      - name: Preview isolation HTTP smoke (loopback only)
+        working-directory: frontend
+        env:
+          VERCEL_ENV: preview
+        run: node scripts/preview-isolation-smoke.mjs
 
   rag-evaluation:
     name: RAG Evaluation (Live - Optional)
