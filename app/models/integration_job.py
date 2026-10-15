@@ -24,7 +24,7 @@ class IntegrationJob(Base):
 
     # Optional for older jobs and other job types; exact signed Zendesk delivery fingerprint.
     signed_delivery_fingerprint: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True,
+        String(64), nullable=True,
     )
 
     job_type: Mapped[str] = mapped_column(
