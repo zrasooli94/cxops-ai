@@ -1,8 +1,9 @@
 # Phase 1W — Isolated authenticated staging, release gate
 
-**State:** Preparation only. NO staging service, test identity tenant, or empty
-database has been provisioned or funded. Nothing here authorizes production
-changes, a live deployment, copying production data, or emailing customers.
+**State:** Free-tier resource provisioning PARTIALLY COMPLETE. A brand-new empty
+Neon staging project and a bootstrap-only Render Free web service exist. **No
+staging identity project, real CXOps API, test schema, staff login or external
+provider access has been enabled.** Production and its credentials are unchanged.
 
 ## Verified baseline
 
@@ -11,8 +12,8 @@ changes, a live deployment, copying production data, or emailing customers.
   **production-scoped**. `BACKEND_API_URL` currently applies to both
   Production and Preview, with no verified separate staging target.
 - Render has a production CXOps Docker service attached to `master` with
-  automatic deployment enabled. There is no separately verified CXOps staging
-  service in that workspace.
+  automatic deployment enabled. A separate Render **Free** staging bootstrap service
+  now exists, but it is not the real CXOps backend and has no database access.
 - Neon `cxops-ai`: current project contains a primary production branch and
   prior branches initialized with **parent production data**. Do not treat
   existing branches as empty testing datasets; never expose copied customer
@@ -20,6 +21,32 @@ changes, a live deployment, copying production data, or emailing customers.
 - PR #33 (Zendesk replay protections) is deliberately draft with a pending
   production migration decision. PR #35 (Phase 1V handoff dashboard and
   synthetic interaction demo) is independent and draft.
+
+## Verified free-tier staging resources (2026-10-16)
+
+- Neon organization `Zrasooli94` is on plan **Free**.
+- Separate new Neon project `cxops-ai-staging-synthetic` (`rough-hall-90121003`),
+  Singapore, PostgreSQL 16. Branch `staging` (`br-spring-truth-azv32ox5`);
+  database `cxops_staging`. **Verified zero application tables**, no production
+  parent branch/snapshot and no customer data copied.
+- Render service `cxops-ai-staging-bootstrap` (`srv-db8g0s8u01pc7383jj90`),
+  explicit plan **Free**, region Singapore, `autoDeploy=no`,
+  URL `https://cxops-ai-staging-bootstrap.onrender.com`.
+  Initial deployment confirmed **LIVE** from commit
+  `6a1ab5e2f44461ba7361b07ab6727f628969100c`.
+  It runs only `python -m staging.bootstrap`: a stdlib status/holding server.
+  No database credentials, Nhost secrets, Zendesk, OpenAI or notification
+  configuration are attached; write/API requests fail closed.
+- The bootstrap service and empty Neon database are **not yet connected**.
+  Actual customer/staff workflows are intentionally unavailable until a
+  separate free identity project and staged migrations are independently verified.
+- Budget note: Render's free compute tier has shared workspace hour, bandwidth
+  and build-minute limits; some usage overages can be billed if a payment method
+  exists. No upgrades or paid charges are authorized.
+- Blocker: Nhost has no available connected provider tool here. The owner must
+  establish an **independent Starter/free Nhost organization/project** for
+  synthetic test users without pausing or reusing production. Nhost's free
+  organization allows only one active project at a time.
 
 ## New defensive behavior on this branch
 
@@ -86,5 +113,6 @@ production database connections. That requires external infrastructure audit.
 - Any test sends a real webhook, model request or customer notification.
 - Backend cannot be demonstrated to have zero production database access.
 
-**Current result:** groundwork only; flags are not enabled, and no live
-authenticated staging session is claimed.
+**Current result:** a separate empty Free database and a live Free bootstrap
+holding service exist. No authentication, production data access or real CXOps
+staging operations are active; Vercel enable flags remain OFF.
