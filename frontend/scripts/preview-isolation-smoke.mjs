@@ -98,6 +98,13 @@ async function main() {
       "Preview should display isolation notice, not a credential form");
     assert.ok(!loginHtml.includes('name="password"'), "Preview must not expose a login form");
 
+    const staging = await request("/staging");
+    assert.equal(staging.status, 200);
+    const stagingHtml = await staging.text();
+    assert.ok(stagingHtml.includes("Staging is being connected"));
+    assert.ok(!stagingHtml.includes('name="password"'), "Disabled Neon staging must not collect credentials");
+    assert.ok(staging.headers.get("cache-control")?.includes("no-store"), "Staging session page must never be publicly cached");
+
     const probes = [
       ["GET", "/api/backend/me/organizations", undefined, 503],
       ["POST", "/api/backend/staff/public-chat/handoff", "{}", 503],
@@ -129,7 +136,7 @@ async function main() {
     }
     assert.equal(receivedBackendRequests, 0,
       "Preview must make ZERO requests to its configured backend");
-    process.stdout.write("PASS: Preview login and 11 routes fail closed; zero backend calls.\n");
+    process.stdout.write("PASS: Preview login, Neon staging and 11 routes fail closed; zero backend calls.\n");
   } finally {
     await stopChild(child);
     await closeServer(fakeBackend);

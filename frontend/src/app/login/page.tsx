@@ -25,11 +25,15 @@ export default async function LoginPage() {
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-violet-700">CXOps AI · Preview environment</p>
           <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">Staff sign-in is not enabled on this preview</h1>
           <p className="mt-4 text-sm leading-7 text-slate-600">
-            This preview does not yet have a separate test identity and isolated backend.
+            The isolated staging identity and backend are being connected and verified.
             Production credentials are intentionally not accepted here. Your existing
             CXOps AI account is unchanged.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
+            <Link href="/staging"
+              className="inline-flex items-center rounded-xl border border-violet-200 px-5 py-3 text-sm font-semibold text-violet-700 hover:bg-violet-50">
+              Open staging workspace →
+            </Link>
             <Link href="https://cxops-ocds9ldjz-zrasooli95.vercel.app/demo/handoff"
               className="inline-flex items-center rounded-xl bg-violet-700 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800">
               Open interactive handoff demo →

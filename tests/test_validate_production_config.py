@@ -379,7 +379,19 @@ def test_http_urls_fail_because_the_gate_always_applies_production_rules():
 
 
 def test_non_production_environment_is_warned_not_silently_accepted():
-    cfg = _settings_with(ENVIRONMENT="staging", DEBUG=False)
+    # Staging now has its own mandatory identity/database boundary. Exercise
+    # the production reporter with a valid isolated staging configuration,
+    # rather than weakening that boundary to accommodate this older fixture.
+    cfg = _settings_with(
+        ENVIRONMENT="staging",
+        DEBUG=False,
+        AUTH_MODE="neon_staging",
+        DATABASE_URL=(
+            "postgresql+asyncpg://cxops_staging:synthetic@"
+            "ep-tiny-dawn-azixl9yk.c-3.ap-southeast-1.aws.neon.tech/"
+            "cxops_staging?ssl=require"
+        ),
+    )
     reporter = _reporter()
     validator.check_runtime_flags(cfg, reporter)
 
