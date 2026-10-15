@@ -2,9 +2,9 @@
 import base64
 import json
 
-import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import pytest
 
 from staging.neon_jwt import (
     STAGING_AUTH_ORIGIN,
@@ -12,7 +12,6 @@ from staging.neon_jwt import (
     NeonStagingTokenError,
     verify_signed_staging_jwt,
 )
-
 
 NOW = 1_800_000_000
 PRIVATE_KEY = Ed25519PrivateKey.generate()
@@ -52,7 +51,7 @@ def _sign(
     claims: dict | None = None,
     *,
     header: dict | None = None,
-    private_key: Ed25519PrivateKey = PRIVATE_KEY,
+    signer: Ed25519PrivateKey = PRIVATE_KEY,
 ) -> str:
     header_data = header if header is not None else {
         "alg": "EdDSA", "typ": "JWT", "kid": KID,
@@ -60,7 +59,7 @@ def _sign(
     parts = ".".join([
         _encode_json(header_data), _encode_json(claims or BASE_CLAIMS)
     ])
-    signature = private_key.sign(parts.encode("ascii"))
+    signature = signer.sign(parts.encode("ascii"))
     return parts + "." + base64.urlsafe_b64encode(signature).decode().rstrip("=")
 
 
@@ -121,7 +120,7 @@ def test_tampered_payload_rejected_even_with_correct_key():
 def test_foreign_signing_key_and_kid_collision_rejected():
     different = Ed25519PrivateKey.generate()
     with pytest.raises(NeonStagingTokenError):
-        _verify(_sign(private_key=different))
+        _verify(_sign(signer=different))
     with pytest.raises(NeonStagingTokenError):
         _verify(_sign(header={"alg": "EdDSA", "kid": "unknown"}))
     with pytest.raises(NeonStagingTokenError):
