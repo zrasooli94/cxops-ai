@@ -90,6 +90,11 @@ const BACKEND_API_URL =
 const BACKEND_PROBES = ["/health", "/ready", "/version"] as const;
 
 function rewrites() {
+  // Next.js rewrites bypass the app's Route Handler isolation checks.
+  // Disable *all* backend proxy rewrites on Vercel Preview, even if staging
+  // credentials are later enabled. Probe the staging service directly.
+  if (process.env.VERCEL_ENV === "preview") return [];
+
   return BACKEND_PROBES.map((path) => ({
     source: path,
     destination: `${BACKEND_API_URL}${path}`,
