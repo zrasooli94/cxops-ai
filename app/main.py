@@ -153,7 +153,7 @@ def _cxops_openapi() -> dict:
     return document_authentication(app, _builtin_openapi())
 
 
-setattr(app, "openapi", _cxops_openapi)
+app.openapi = _cxops_openapi  # type: ignore[method-assign]
 
 # NOTE (Phase 1P.3): liveness (/health), readiness (/ready), and build identity
 # (/version) all live in app/api/routes/health.py. An earlier database-aware
