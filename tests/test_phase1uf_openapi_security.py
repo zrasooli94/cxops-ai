@@ -137,69 +137,21 @@ def test_schema_cache_is_idempotent_and_never_leaks_credentials():
 
 
 def test_runtime_jwt_dependency_remains_header_based():
-    # FastAPI included routers are lazy; mirror its own OpenAPI flattening
-    # instead of inspecting only top-level app.routes.
+    # Match the FastAPI 0.141 effective routes; neither schema scheme should
+    # add a SecurityBase dependency or bypass the existing HTTP auth checks.
     auth_routes = [
-        r for r in iter_route_contexts(app.routes)
-        if isinstance(r.original_route, APIRoute)
+        route for route in iter_route_contexts(app.routes)
+        if isinstance(route.original_route, APIRoute)
     ]
     staff = next(
-        r for r in auth_routes if r.path_format == "/staff/public-chat/handoff"
+        route for route in auth_routes
+        if route.path_format == "/staff/public-chat/handoff"
     )
     visitor = next(
-        r for r in auth_routes if r.path_format == "/public/chat/messages"
+        route for route in auth_routes
+        if route.path_format == "/public/chat/messages"
     )
     assert _has_dependency(staff.dependant, get_current_principal_dep)
     assert _has_dependency(visitor.dependant, require_session_token)
-    # The metadata adapter may not insert SecurityBase or HTTPBearer into the
-    # runtime dependency tree: existing JWT validation owns all 401/403 checks.
-    auth_routes = [r for r in app.routes if isinstance(r, APIRoute)]
-    def calls(node):
-        name = getattr(node.call, "__qualname__", str(type(node.call)))
-        module = getattr(node.call, "__module__", "unknown")
-        return [(module, name)] + [
-            item for dep in node.dependencies for item in calls(dep)
-        ]
-
-    assert auth_routes, [
-        (type(r).__module__, type(r).__name__, getattr(r, "path", None))
-        for r in app.routes
-    ]
-    staff_candidates = [
-        (type(r).__name__, getattr(r, "path_format", None), getattr(r, "path", None))
-        for r in app.routes
-        if "staff" in str(getattr(r, "path", ""))
-    ]
-    visitor_candidates = [
-        (type(r).__name__, getattr(r, "path_format", None), getattr(r, "path", None))
-        for r in app.routes
-        if "public/chat/messages" in str(getattr(r, "path", ""))
-    ]
-    assert any(r.path_format == "/staff/public-chat/handoff" for r in auth_routes), (
-        "STAFF_CANDIDATES", staff_candidates,
-        "ALL_ROUTE_COUNT", len(app.routes),
-        "FIRST_ROUTE_TYPES_PATHS", [
-            (type(r).__module__, type(r).__name__, getattr(r, "path_format", None), getattr(r, "path", None))
-            for r in app.routes[:18]
-        ],
-        "LAST_ROUTE_TYPES_PATHS", [
-            (type(r).__module__, type(r).__name__, getattr(r, "path_format", None), getattr(r, "path", None))
-            for r in app.routes[-18:]
-        ],
-        "SCHEMA_STAFF_PATHS", [
-            key for key in app.openapi()["paths"] if "staff" in key
-        ],
-    )
-    assert any(r.path_format == "/public/chat/messages" for r in auth_routes), (
-        visitor_candidates
-    )
-    staff = next(
-        r for r in auth_routes if r.path_format == "/staff/public-chat/handoff"
-    )
-    visitor = next(
-        r for r in auth_routes if r.path_format == "/public/chat/messages"
-    )
-    assert _has_dependency(staff.dependant, get_current_principal_dep), calls(staff.dependant)
-    assert _has_dependency(visitor.dependant, require_session_token), calls(visitor.dependant)
     assert get_current_principal_dep.__name__ == "get_current_principal_dep"
     assert require_session_token.__name__ == "require_session_token"
