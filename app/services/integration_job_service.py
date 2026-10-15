@@ -157,7 +157,6 @@ class IntegrationJobService:
         existing = await IntegrationJobRepository.get_by_dedupe_key(
             db=db,
             dedupe_key=invocation_id,
-            signed_delivery_fingerprint=signed_delivery_fingerprint,
         )
 
         if existing:
@@ -183,6 +182,7 @@ class IntegrationJobService:
         job = IntegrationJob(
             organization_id=organization_id,
             dedupe_key=invocation_id,
+            signed_delivery_fingerprint=signed_delivery_fingerprint,
             job_type=(IntegrationJobService.ZENDESK_TICKET_EVENT),
             payload={
                 "invocation_id": invocation_id,
