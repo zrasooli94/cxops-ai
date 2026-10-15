@@ -295,6 +295,12 @@ jobs:
       - name: Build backend image
         run: docker build -t cxops-api:test .
 
+      - name: Verify staging JWT module is packaged (network disabled)
+        run: |
+          docker run --rm --network none --entrypoint python cxops-api:test -c \
+            "from staging.neon_jwt import STAGING_AUTH_ORIGIN, verify_signed_staging_jwt; from app.core.auth import get_current_principal; assert STAGING_AUTH_ORIGIN.startswith('https://')"
+
+
       - name: Build frontend image
         run: docker build -t cxops-frontend:test ./frontend
 
