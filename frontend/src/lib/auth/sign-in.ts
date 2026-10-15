@@ -4,6 +4,7 @@ import { createNhostServerClient } from "@/lib/nhost/server";
 import { FetchError } from "@nhost/nhost-js/fetch";
 import { NhostConfigurationError, structuredAuthLog } from "@/lib/auth/diagnostics";
 import { postSignInSuccess, type PostSignInResult } from "@/lib/auth/sign-in-result";
+import { previewGateFromEnvironment } from "@/lib/staging/preview-isolation";
 
 export type SignInResult = PostSignInResult;
 
@@ -40,6 +41,12 @@ function logSignInDiagnostic(error: unknown): void {
 }
 
 export async function signIn(formData: FormData): Promise<PostSignInResult> {
+  // Server-side enforcement: forged form submissions cannot bypass the
+  // preview notice to send credentials to a production identity provider.
+  if (previewGateFromEnvironment() === "blocked") {
+    return { ok: false, error: "Preview staff sign-in is unavailable until isolated staging is verified." };
+  }
+
   const email = formData.get("email")?.toString().trim().toLowerCase() ?? "";
   const password = formData.get("password")?.toString() ?? "";
 
