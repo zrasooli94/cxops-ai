@@ -93,6 +93,7 @@ def _get_signing_key(jwks: object, kid: str) -> Ed25519PublicKey:
         or key.get("crv") != "Ed25519"
         or key.get("alg", "EdDSA") != "EdDSA"
         or key.get("use", "sig") != "sig"
+        or not isinstance(key.get("key_ops", ["verify"]), list)
         or ("verify" not in key.get("key_ops", ["verify"]))
     ):
         raise NeonStagingTokenError("Unsupported staging JWK")
@@ -193,18 +194,32 @@ async def verify_neon_staging_token(token: str) -> dict[str, Any]:
     No redirects, proxy environment or arbitrary JWKS URLs are accepted. The
     response is size bounded and failures return a generic 503 to the caller.
     """
+    # Reject structurally invalid/unbounded inputs before any external JWKS
+    # request. A public bearer endpoint must not turn garbage into outbound
+    # requests against the Free plan's shared authentication service.
+    if (
+        not isinstance(token, str)
+        or len(token) > _MAX_TOKEN_SIZE
+        or token.count(".") != 2
+    ):
+        raise NeonStagingTokenError("Malformed staging bearer token")
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(3.0, connect=1.5),
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            response = await client.get(
-                STAGING_JWKS_URL, headers={"Accept": "application/json"}
-            )
-            if response.status_code != 200 or len(response.content) > _MAX_JWKS_BYTES:
-                raise NeonStagingIdentityUnavailable("Staging JWKS unavailable")
-            jwks = response.json()
-    except (httpx.RequestError, ValueError) as exc:
+            async with client.stream(
+                "GET", STAGING_JWKS_URL, headers={"Accept": "application/json"}
+            ) as response:
+                if response.status_code != 200:
+                    raise NeonStagingIdentityUnavailable("Staging JWKS unavailable")
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > _MAX_JWKS_BYTES:
+                        raise NeonStagingIdentityUnavailable("Oversized staging JWKS")
+                jwks = json.loads(raw)
+    except (httpx.RequestError, ValueError, UnicodeError) as exc:
         raise NeonStagingIdentityUnavailable("Staging JWKS unavailable") from exc
     return verify_signed_staging_jwt(token, jwks=jwks)
