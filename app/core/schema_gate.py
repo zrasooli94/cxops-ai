@@ -126,7 +126,7 @@ async def check_schema(engine: AsyncEngine, *, enforce: bool | None = None) -> S
         elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
     )
     status = SchemaStatus(classify(current, heads, known), current, heads)
-    must_enforce = settings.environment == "production" if enforce is None else enforce
+    must_enforce = settings.environment in ("production", "staging") if enforce is None else enforce
     fields = {
         "verdict": status.verdict,
         "current": sorted(current),
@@ -134,7 +134,7 @@ async def check_schema(engine: AsyncEngine, *, enforce: bool | None = None) -> S
     }
     if status.verdict == "at_head":
         log.info("schema_gate_ok", **fields)
-    elif status.verdict == "ahead":
+    elif status.verdict == "ahead" and settings.environment != "staging":
         log.warning("schema_gate_database_ahead_of_build", **fields)
     else:
         log.error("schema_gate_refused", enforced=must_enforce, **fields)
