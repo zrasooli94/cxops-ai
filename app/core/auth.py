@@ -13,6 +13,11 @@ from app.core.jwks import (
 )
 from app.core.logging import get_logger
 from app.core.principal import AuthenticatedPrincipal
+from staging.neon_jwt import (
+    NeonStagingIdentityUnavailable,
+    NeonStagingTokenError,
+    verify_neon_staging_token,
+)
 
 log = get_logger(__name__)
 
@@ -40,6 +45,14 @@ class DevModeAuthenticationError(AuthenticationError):
 def _validate_auth_mode() -> None:
     """Ensure auth mode is properly configured for the environment."""
     s = get_settings()
+    if s.auth_mode == "neon_staging" and s.environment != "staging":
+        raise DevModeAuthenticationError(
+            "Staging identity cannot run outside ENVIRONMENT=staging"
+        )
+    if s.environment == "staging" and s.auth_mode != "neon_staging":
+        raise DevModeAuthenticationError(
+            "Staging must use isolated Neon Auth"
+        )
     if s.environment == "production":
         if s.auth_dev_mode:
             log.error("dev_mode_enabled_in_production")
@@ -157,6 +170,12 @@ async def get_current_principal(
         if s.auth_mode == "jwks":
             payload = await verify_jwks_token(token)
             auth_method = "jwks"
+        elif s.auth_mode == "neon_staging":
+            # Exactly one identity provider and only on ENVIRONMENT=staging.
+            # Access to customer data still requires a separate tenant
+            # membership lookup against the isolated staging database.
+            payload = await verify_neon_staging_token(token)
+            auth_method = "neon_staging_ed25519"
         else:
             payload = await verify_hs256_token(token)
             auth_method = "jwt"
@@ -181,6 +200,20 @@ async def get_current_principal(
             detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except NeonStagingTokenError as e:
+        # Do not reveal exact claims/signature details to the client.
+        log.warning("auth_neon_staging_token_invalid")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid staging authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
+    except NeonStagingIdentityUnavailable as e:
+        log.error("auth_neon_staging_jwks_unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Staging authentication service unavailable",
+        ) from e
     except JWKSAlgorithmError as e:
         log.warning("auth_jwks_algorithm", error=str(e))
         raise HTTPException(
