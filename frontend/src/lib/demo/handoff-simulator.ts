@@ -145,7 +145,7 @@ export type DemoAction = "assign" | "release" | "resolve";
 
 /** Status changes are local-only and intentionally mirror basic staff transition guards. */
 export function transitionDemo(cases: readonly DemoCase[], id: string, action: DemoAction): DemoCase[] {
-  return cases.map((item) => {
+  return cases.map((item): DemoCase => {
     if (item.id !== id) return item;
     if (action === "assign" && item.status === "waiting") {
       return { ...item, status: "assigned", owner: "You (demo)" };
@@ -163,7 +163,7 @@ export function transitionDemo(cases: readonly DemoCase[], id: string, action: D
 export function addDemoReply(cases: readonly DemoCase[], id: string, body: string): DemoCase[] {
   const message = body.trim();
   if (!message || message.length > 500) return [...cases];
-  return cases.map((item) => {
+  return cases.map((item): DemoCase => {
     if (item.id !== id || item.status !== "assigned") return item;
     return {
       ...item,
