@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import http.client
 import json
-from threading import Thread
 from http.server import ThreadingHTTPServer
+from threading import Thread
 
 from staging.bootstrap import StagingBootstrapHandler
 
