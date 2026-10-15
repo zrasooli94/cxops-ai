@@ -26,6 +26,8 @@ Status: draft implementation; authenticated staging is NOT live.
   portal is the initial read-only proof surface.
 - Corrected the older production-validator test to build a valid isolated
   staging configuration; no runtime validation was weakened.
+- Explicit AJV 8 development peer satisfies the SDK's transitive UI resolver
+  under CI's npm 10; ESLint retains its own compatible AJV 6 dependency.
 
 ## Verified infrastructure inspection
 
