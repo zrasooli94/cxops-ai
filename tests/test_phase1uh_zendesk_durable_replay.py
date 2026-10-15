@@ -23,18 +23,19 @@ async def test_signed_delivery_replay_only_enqueues_one_durable_job():
         db.add(org)
         await db.commit()
         await db.refresh(org)
+        organization_id = org.id
         try:
             one = await IntegrationJobService.enqueue_zendesk_event(
                 db=db, invocation_id=f"first-{label}",
                 signed_delivery_fingerprint=fingerprint,
                 event_type="ticket.created", zendesk_ticket_id=123,
-                payload={"type": "synthetic"}, organization_id=org.id,
+                payload={"type": "synthetic"}, organization_id=organization_id,
             )
             two = await IntegrationJobService.enqueue_zendesk_event(
                 db=db, invocation_id=f"relabelled-{label}",
                 signed_delivery_fingerprint=fingerprint,
                 event_type="ticket.created", zendesk_ticket_id=123,
-                payload={"type": "synthetic"}, organization_id=org.id,
+                payload={"type": "synthetic"}, organization_id=organization_id,
             )
             assert one.duplicate is False
             assert two.duplicate is True
@@ -42,7 +43,7 @@ async def test_signed_delivery_replay_only_enqueues_one_durable_job():
         finally:
             await db.rollback()
             await db.execute(delete(IntegrationJob).where(
-                IntegrationJob.organization_id == org.id))
+                IntegrationJob.organization_id == organization_id))
             await db.delete(org)
             await db.commit()
 
@@ -62,7 +63,7 @@ async def test_distinct_signatures_do_not_suppress_legitimate_deliveries():
                     db=db, invocation_id=f"{suffix}-{label}",
                     signed_delivery_fingerprint=(suffix + label).ljust(64, "0"),
                     event_type="ticket.created", zendesk_ticket_id=123,
-                    payload={"type": "synthetic"}, organization_id=org.id,
+                    payload={"type": "synthetic"}, organization_id=organization_id,
                 )
                 results.append(result)
             assert not results[0].duplicate and not results[1].duplicate
@@ -70,6 +71,6 @@ async def test_distinct_signatures_do_not_suppress_legitimate_deliveries():
         finally:
             await db.rollback()
             await db.execute(delete(IntegrationJob).where(
-                IntegrationJob.organization_id == org.id))
+                IntegrationJob.organization_id == organization_id))
             await db.delete(org)
             await db.commit()
