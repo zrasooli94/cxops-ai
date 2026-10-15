@@ -141,6 +141,20 @@ async def authorization_error_handler(
 
 app.include_router(api_router)
 
+# Phase 1U-F: enrich only the generated OpenAPI document. The actual
+# Authorization headers, JWT validation, membership lookup and RBAC
+# dependencies are unchanged. Visitor chat bearer != staff identity JWT.
+from app.core.openapi_security import document_authentication
+
+_builtin_openapi = app.openapi
+
+
+def _cxops_openapi() -> dict:
+    return document_authentication(app, _builtin_openapi())
+
+
+app.openapi = _cxops_openapi  # type: ignore[method-assign]
+
 # NOTE (Phase 1P.3): liveness (/health), readiness (/ready), and build identity
 # (/version) all live in app/api/routes/health.py. An earlier database-aware
 # /health was registered here *after* the router, so the router's static route

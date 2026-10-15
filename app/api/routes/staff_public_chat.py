@@ -14,7 +14,7 @@ linked conversation in a single transaction.
 """
 
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +59,14 @@ HandoffWriteAuthz = Annotated[
     Depends(RequireCapability(Capability.TICKET_WRITE)),
 ]
 
+# Documentation only; these status codes already originate from the existing
+# principal, tenant and capability checks (not an OpenAPI security bypass).
+STAFF_AUTH_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {"description": "Missing or invalid staff JWT"},
+    403: {"description": "Organization membership missing or capability denied"},
+    409: {"description": "Ambiguous tenant selection or conflicting session state"},
+}
+
 
 def _staff_error(exc: Exception) -> None:
     if isinstance(exc, PublicChatStaffSessionNotFoundError):
@@ -77,6 +85,8 @@ def _staff_error(exc: Exception) -> None:
 @router.get(
     "/summary",
     response_model=PublicChatPilotSummaryResponse,
+    responses=STAFF_AUTH_RESPONSES,
+    openapi_extra={"x-cxops-required-capability": Capability.TICKET_READ.value},
 )
 async def public_chat_pilot_summary(
     db: DatabaseSession,
@@ -108,6 +118,8 @@ async def public_chat_pilot_summary(
 @router.get(
     "/handoff",
     response_model=StaffHandoffSessionsResponse,
+    responses=STAFF_AUTH_RESPONSES,
+    openapi_extra={"x-cxops-required-capability": Capability.TICKET_READ.value},
 )
 async def list_handoff_sessions(
     db: DatabaseSession,
@@ -127,6 +139,8 @@ async def list_handoff_sessions(
 @router.post(
     "/sessions/{session_id}/assign",
     response_model=StaffHandoffSessionSummary,
+    responses=STAFF_AUTH_RESPONSES,
+    openapi_extra={"x-cxops-required-capability": Capability.TICKET_WRITE.value},
 )
 async def assign_session(
     session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
@@ -154,6 +168,8 @@ async def assign_session(
 @router.post(
     "/sessions/{session_id}/release",
     response_model=StaffHandoffSessionSummary,
+    responses=STAFF_AUTH_RESPONSES,
+    openapi_extra={"x-cxops-required-capability": Capability.TICKET_WRITE.value},
 )
 async def release_session(
     session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
@@ -179,6 +195,8 @@ async def release_session(
 @router.post(
     "/sessions/{session_id}/resolve",
     response_model=StaffHandoffSessionSummary,
+    responses=STAFF_AUTH_RESPONSES,
+    openapi_extra={"x-cxops-required-capability": Capability.TICKET_WRITE.value},
 )
 async def resolve_session(
     session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
@@ -211,6 +229,8 @@ async def resolve_session(
 @router.get(
     "/sessions/{session_id}/business-actions",
     response_model=StaffBusinessActionsResponse,
+    responses=STAFF_AUTH_RESPONSES,
+    openapi_extra={"x-cxops-required-capability": Capability.TICKET_READ.value},
 )
 async def list_session_business_actions(
     session_id: Annotated[int, Path(ge=1, le=2_147_483_647)],
