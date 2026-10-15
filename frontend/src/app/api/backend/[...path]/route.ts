@@ -19,6 +19,7 @@ import { ACTIVE_ORGANIZATION_COOKIE_NAME } from "@/lib/tenant/cookie-helpers";
 import { refreshSessionOnce, type BffRefreshDeps } from "@/lib/session/bff-helpers";
 import { SESSION_COOKIE_NAME } from "@/lib/session/helpers";
 import { createNhostServerClient } from "@/lib/nhost/server";
+import { previewGateFromEnvironment } from "@/lib/staging/preview-isolation";
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ??
@@ -57,6 +58,16 @@ async function proxy(
     }>;
   },
 ) {
+  // The current Vercel Preview backend URL is shared with production.
+  // Block at the proxy boundary BEFORE attempting session refresh, backend
+  // calls or forwarding potentially privileged requests.
+  if (previewGateFromEnvironment() === "blocked") {
+    return NextResponse.json(
+      { detail: "Preview staff API access is disabled until isolated staging is verified." },
+      { status: 503 },
+    );
+  }
+
   const { path } = await context.params;
 
   const backendUrl = new URL(
