@@ -96,20 +96,26 @@ MACHINE_HEADERS: dict[str, tuple[tuple[str, str], ...]] = {
     GENERIC_HMAC_NAME: (
         (
             "X-CXOps-Timestamp",
-            "Timestamp as sent by the producer: signed with the raw body; "
-            "ISO-8601 or positive Unix epoch, within configured replay window.",
+            (
+                "Timestamp as sent by the producer: signed with the raw body; "
+                "ISO-8601 or positive Unix epoch, within configured replay window."
+            ),
         ),
     ),
     ZENDESK_HMAC_NAME: (
         (
             "X-Zendesk-Webhook-Signature-Timestamp",
-            "Timestamp as sent by Zendesk: signed with raw body; must be within "
-            "the configured Zendesk replay window.",
+            (
+                "Timestamp as sent by Zendesk: signed with raw body; must be within "
+                "the configured Zendesk replay window."
+            ),
         ),
         (
             "X-Zendesk-Webhook-Invocation-Id",
-            "Required delivery/idempotency identifier. This header is NOT "
-            "part of the Zendesk HMAC and cannot prove a one-time request.",
+            (
+                "Required delivery/idempotency identifier. This header is NOT "
+                "part of the Zendesk HMAC and cannot prove a one-time request."
+            ),
         ),
     ),
 }

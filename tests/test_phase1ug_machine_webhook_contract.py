@@ -233,10 +233,14 @@ def test_zendesk_signature_cannot_be_replaced_by_generic_hex_or_staff_jwt():
     body = b'{"type":"zen:event-type:ticket.created","detail":{"id":99}}'
     timestamp = NOW.isoformat()
     signature = _zendesk_sign(body, timestamp)
-    args = dict(
-        secret=ZENDESK_SECRET, timestamp=timestamp,
-        body=body, signature=signature, replay_window_seconds=300, now=NOW,
-    )
+    args = {
+        "secret": ZENDESK_SECRET,
+        "timestamp": timestamp,
+        "body": body,
+        "signature": signature,
+        "replay_window_seconds": 300,
+        "now": NOW,
+    }
     assert verify_zendesk_signature(**args)
     assert not verify_zendesk_signature(**{**args, "signature": _generic_sign(body, timestamp)})
     assert not verify_zendesk_signature(**{**args, "secret": ""})
