@@ -16,6 +16,7 @@ from staging.http_gate import staging_request_allowed
         "/health", "/ready", "/version",
         "/me/organizations", "/me/tenant", "/me/authorization",
         "/staff/public-chat/handoff", "/staff/public-chat/summary",
+        "/tickets", "/customers",
     ],
 )
 def test_only_explicit_health_and_authenticated_staff_reads_allowed(path):
