@@ -85,7 +85,9 @@ def test_two_webhook_schemes_are_distinct_from_staff_and_visitor_bearers():
         assert definition["name"] != "Authorization"
         assert {STAFF_BEARER_NAME: []} not in operation["security"]
         assert {CHAT_BEARER_NAME: []} not in operation["security"]
-        assert "JWT" not in definition["description"].split("signature")[0]
+        # Mentioning that staff JWTs do not grant webhook access is correct
+        # documentation. Security classification itself must stay apiKey.
+        assert definition["type"] != "http"
 
     assert schemes[GENERIC_HMAC_NAME]["name"] == "X-CXOps-Signature"
     assert schemes[ZENDESK_HMAC_NAME]["name"] == "X-Zendesk-Webhook-Signature"
