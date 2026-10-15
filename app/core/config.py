@@ -139,6 +139,29 @@ class Settings(BaseSettings):
                 raise ValueError("AUTH_DEV_MODE cannot be enabled in staging")
             if self.debug:
                 raise ValueError("DEBUG cannot be enabled in staging")
+            parts = urlsplit(self.database_url)
+            db_options = dict(parse_qsl(parts.query))
+            if (
+                parts.scheme != "postgresql+asyncpg"
+                or parts.hostname
+                != "ep-tiny-dawn-azixl9yk.c-3.ap-southeast-1.aws.neon.tech"
+                or parts.path != "/cxops_staging"
+                or parts.username != "cxops_staging"
+                or db_options.get("ssl") not in ("require", "verify-full")
+            ):
+                raise ValueError(
+                    "Staging DATABASE_URL must point only to the new isolated "
+                    "cxops_staging Neon database over required TLS"
+                )
+            if (
+                self.openai_api_key or self.handoff_notifications_enabled
+                or self.zendesk_client_secret or self.zendesk_webhook_secret
+                or self.ticket_event_webhook_secret
+            ):
+                raise ValueError(
+                    "Staging must not carry live AI, notification, "
+                    "Zendesk or machine-webhook credentials"
+                )
         return self
 
     @model_validator(mode="after")
