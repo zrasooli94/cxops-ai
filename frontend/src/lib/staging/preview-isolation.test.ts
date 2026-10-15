@@ -49,6 +49,9 @@ describe("preview staff isolation gate", () => {
     for (const url of [
       "https://cxops-ai.onrender.com",
       "https://cxops-ai.onrender.com/",
+      "https://cxops-ai.onrender.com.",
+      "https://127.0.0.2",
+      "https://[::1]",
       "http://cxops-ai-staging.onrender.com",
       "http://127.0.0.1:8000",
       "https://localhost",
