@@ -29,6 +29,10 @@ def _settings(**overrides: object) -> Settings:
         "auth_dev_mode": False,
         "database_url": STAGING_DB,
         "openai_api_key": "",
+        "zendesk_client_secret": "",
+        "zendesk_webhook_secret": "",
+        "ticket_event_webhook_secret": "",
+        "handoff_notifications_enabled": False,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
