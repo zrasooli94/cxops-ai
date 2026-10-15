@@ -121,6 +121,17 @@ class IntegrationJobRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def get_by_signed_delivery_fingerprint(
+        db: AsyncSession, fingerprint: str,
+    ) -> IntegrationJob | None:
+        result = await db.execute(
+            select(IntegrationJob).where(
+                IntegrationJob.signed_delivery_fingerprint == fingerprint
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def create(
         db: AsyncSession,
         job: IntegrationJob,
