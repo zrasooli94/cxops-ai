@@ -1,4 +1,5 @@
 import json
+import hashlib
 from typing import Annotated
 
 from fastapi import (
@@ -116,6 +117,7 @@ async def receive_zendesk_ticket_webhook(
             organization_id=connection.organization_id,
             integration_id=integration_id,
             invocation_id=invocation_id,
+        signed_delivery_fingerprint=signed_delivery_fingerprint,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -141,6 +143,17 @@ async def receive_zendesk_ticket_webhook(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Invalid Zendesk event payload.",
         )
+
+    # Fingerprint exactly the authenticated timestamp + raw bytes, scoped to
+    # the trusted connection. The invocation header is deliberately excluded.
+    signed_delivery_fingerprint = hashlib.sha256(
+        b"cxops-zendesk-delivery-v1\\0"
+        + len(integration_id.encode()).to_bytes(4, "big")
+        + integration_id.encode()
+        + len(timestamp.encode()).to_bytes(4, "big")
+        + timestamp.encode()
+        + raw_body
+    ).hexdigest()
 
     return await IntegrationJobService.enqueue_zendesk_event(
         db=db,
