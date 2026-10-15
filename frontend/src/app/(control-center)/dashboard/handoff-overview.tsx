@@ -31,8 +31,13 @@ export default function StaffHandoffOverview() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal);
-    return () => controller.abort();
+    const start = window.setTimeout(() => {
+      void refresh(controller.signal);
+    }, 0);
+    return () => {
+      window.clearTimeout(start);
+      controller.abort();
+    };
   }, [refresh]);
 
   return (
