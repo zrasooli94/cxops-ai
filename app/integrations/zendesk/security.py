@@ -82,7 +82,12 @@ def verify_zendesk_signature(
 
     expected_signature = base64.b64encode(digest).decode("utf-8")
 
-    return hmac.compare_digest(
-        expected_signature,
-        signature,
-    )
+    # Compare BYTES. ``hmac.compare_digest`` raises TypeError for a ``str``
+    # holding non-ASCII text, and the header is attacker-controlled, so the
+    # str form turned an unauthenticated malformed header into an HTTP 500.
+    try:
+        candidate = signature.encode("utf-8")
+    except (UnicodeEncodeError, AttributeError):
+        return False
+
+    return hmac.compare_digest(expected_signature.encode("ascii"), candidate)
