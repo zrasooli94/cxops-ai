@@ -112,6 +112,18 @@ async def staging_read_only_access_gate(
     If/when synthetic read-only staging launches, the existing authentication
     and tenant membership dependencies still apply to every staff route.
     """
+    # This experimental route is invisible in *every* production request,
+    # including unauthenticated requests. Reject before JWT, tenant lookup,
+    # route dependencies or any database access can occur.
+    if (
+        request.url.path == "/staging/ticket-action"
+        and settings.environment != "staging"
+    ):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Not found"},
+            headers={"Cache-Control": "no-store"},
+        )
     if settings.environment == "staging" and not staging_request_allowed(
         request.method, request.url.path
     ):
