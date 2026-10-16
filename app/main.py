@@ -116,7 +116,7 @@ async def staging_read_only_access_gate(
     # including unauthenticated requests. Reject before JWT, tenant lookup,
     # route dependencies or any database access can occur.
     if (
-        request.url.path == "/staging/ticket-action"
+        request.url.path.rstrip("/").startswith("/staging/ticket-action")
         and settings.environment != "staging"
     ):
         return JSONResponse(
