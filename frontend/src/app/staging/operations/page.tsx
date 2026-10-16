@@ -16,6 +16,7 @@ import {
   parseStagingTickets, stagingTicketMetrics,
 } from "@/lib/staging/operations-contract";
 import { stagingSignOut } from "../actions";
+import StagingTicketActions from "./ticket-actions";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
@@ -84,7 +85,7 @@ function UnavailableWorkspace({ message }: { message: string }) {
   </main>;
 }
 
-export default async function StagingOperationsPage() {
+export default async function StagingOperationsPage({ searchParams }: { searchParams?: Promise<{ workflow?: string }> }) {
   if (!neonStagingEnabled(process.env)) {
     return <UnavailableWorkspace message="Staging is not enabled. No production account or data is accessible here." />;
   }
@@ -118,6 +119,25 @@ export default async function StagingOperationsPage() {
   const tickets = ticketsResult.status === "fulfilled" ? ticketsResult.value : null;
   const customers = customersResult.status === "fulfilled" ? customersResult.value : null;
   const queue = queueResult.status === "fulfilled" ? queueResult.value : null;
+  let canPerformTicketActions = false;
+  if (
+    process.env.CXOPS_STAGING_TICKET_ACTIONS_ENABLED === "true" &&
+    process.env.CXOPS_STAGING_TICKET_AGENT_SUBJECT === identity.user.id &&
+    organization.name === "Synthetic Alpha Workshop"
+  ) {
+    try {
+      const value = await readStagingEndpoint("/me/authorization", token, organization.id);
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const authz = value as Record<string, unknown>;
+        canPerformTicketActions =
+          authz.organization_id === organization.id &&
+          authz.role === "agent" &&
+          Array.isArray(authz.capabilities) &&
+          authz.capabilities.includes("ticket.write");
+      }
+    } catch { canPerformTicketActions = false; }
+  }
+  const workflow = (await searchParams)?.workflow;
   const metrics = tickets ? stagingTicketMetrics(tickets) : null;
   const customerNames = new Map((customers ?? []).map(c => [c.id, c.name]));
   const dataUnavailable = tickets === null || customers === null || queue === null;
@@ -148,15 +168,21 @@ export default async function StagingOperationsPage() {
           <p className="mt-2 text-sm text-slate-500">{organization.name} · signed in as {identity.user.name}</p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-700">
-          <LockKeyhole className="h-4 w-4" /> Read-only staging
+          <LockKeyhole className="h-4 w-4" /> {canPerformTicketActions ? "Synthetic agent mode" : "Read-only staging"}
         </div>
       </div>
 
       <div className="mt-7 flex gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm leading-6 text-violet-900">
         <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" />
-        <p><strong>Real authenticated API, fictional records.</strong> Everything below is fetched through your tenant-authorized staging service. No live customers, production tokens, payments, integrations, AI calls or staff write actions are involved.</p>
+        <p><strong>Real authenticated API, fictional records.</strong> Everything below is fetched through your tenant-authorized staging service. No live customers, production tokens, payments, integrations or AI calls are involved. Ticket writes remain locked unless an enrolled staging-only test agent is explicitly enabled.</p>
       </div>
 
+      {(workflow === "blocked" || workflow === "conflict" || workflow === "unavailable") && (
+        <div className="mt-5"><Notification>
+          {workflow === "conflict" ? "Ticket state changed. Refresh the page and try again." :
+            "This staging action is unavailable or not authorized. No ticket was changed."}
+        </Notification></div>
+      )}
       {dataUnavailable && <div className="mt-5"><Notification>Some staging information could not be verified. Unavailable values are shown as dashes, not as zero. Please refresh later.</Notification></div>}
 
       <section className="mt-8">
@@ -231,12 +257,17 @@ export default async function StagingOperationsPage() {
         </div>
       </div>
 
+      {tickets && <StagingTicketActions
+        tickets={tickets}
+        currentSubject={identity.user.id}
+        enabled={canPerformTicketActions}
+      />}
       <section className="mt-7 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-5">
         <div>
-          <p className="text-sm font-semibold text-slate-900">Next: staff assignment and resolution</p>
-          <p className="mt-1 text-xs text-slate-500">These operations remain disabled until separately tested and reviewed.</p>
+          <p className="text-sm font-semibold text-slate-900">{canPerformTicketActions ? "Synthetic agent workflow" : "Next: staff assignment and resolution"}</p>
+          <p className="mt-1 text-xs text-slate-500">{canPerformTicketActions ? "Only fictional Alpha tickets may be updated; external integrations remain disabled." : "Agent enrollment and independent review are required before enabling writes."}</p>
         </div>
-        <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400">Write actions unavailable <ArrowUpRight className="h-4 w-4" /></span>
+        <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400">{canPerformTicketActions ? "Synthetic actions enabled" : "Write actions unavailable"} <ArrowUpRight className="h-4 w-4" /></span>
       </section>
     </div>
   </main>;
