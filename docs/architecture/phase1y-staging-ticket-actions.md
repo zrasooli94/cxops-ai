@@ -81,3 +81,33 @@ final authorization. Viewer UIs remain read-only.
 
 **Current status:** code in a draft PR, flag off, no new agent account or
 deployed writes. This is not yet a feature the owner can use in staging.
+
+
+## Post-verification, private staging-agent sign-in (default OFF)
+
+Neon email verification alone is not a session. A separately opt-in
+\`/staging/agent-signin\` route uses the **official Neon Managed Better Auth
+Email OTP sign-in** method without requiring a password in ChatGPT.
+
+- The recipient remains the branch-only server-fixed enrollment mailbox.
+  The browser cannot supply the recipient, token, or backend URL.
+- Requires Preview-only isolation, \`CXOPS_STAGING_AGENT_SIGNIN_ENABLED=true\`,
+  a pinned UUID \`CXOPS_STAGING_TICKET_AGENT_SUBJECT\` included in the isolated
+  staging subject allowlist, and a private high-entropy setup code to request
+  the email OTP. Neon owns OTP generation, expiration, attempt limits and email
+  delivery; the app does not persist, log, or return the OTP.
+- The owner enters the OTP only in the Preview interface. A signed-in Neon
+  session is **not proof of Alpha AGENT authorization**. The UI and backend
+  independently enforce \`emailVerified\`, pinned subject, durable membership,
+  exact tenant and \`ticket.write\`; user self-signup cannot create privileges.
+- Switch off \`CXOPS_STAGING_AGENT_ENROLL_ENABLED\` after confirmation, and
+  separately switch on the sign-in flag **only after** independent verification
+  plus membership review. Keep \`CXOPS_STAGING_TICKET_ACTIONS_ENABLED=false\`
+  on both frontend and backend pending write-release acceptance.
+- To deploy Phase 1Y without touching production or the PR #36 API, pin an
+  isolated, reviewed staging backend to the exact Phase 1Y SHA rather than
+  redeploying the existing Render service that tracks Phase 1W. Review any
+  free-plan service quota before creating a new service. Pin the new Preview
+  origin in Neon's trusted-origin list only when necessary.
+- A testable Preview deployment and successful CI are necessary but not
+  sufficient to authorize live write tests. Keep all PRs draft/unmerged.
