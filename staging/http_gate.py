@@ -12,6 +12,8 @@ route's transitive side effects and synthetic tenant isolation.
 """
 from __future__ import annotations
 
+import os
+
 _INITIAL_STAGING_READ_PATHS = frozenset({
     # Render defaults to probing "/" unless a health path is configured.
     # The existing root handler exposes only public static service metadata.
@@ -37,4 +39,8 @@ def staging_request_allowed(method: str, path: str) -> bool:
     Encoded suffixes, method-override headers, and arbitrary routes do not
     create alternate permissions.
     """
+    if method == "POST" and path == "/staging/ticket-action":
+        # No writes can be sent through the staging middleware unless this
+        # separate server-only, staging-branch switch is explicitly enabled.
+        return os.environ.get("CXOPS_STAGING_TICKET_ACTIONS_ENABLED") == "true"
     return method in ("GET", "HEAD") and path in _INITIAL_STAGING_READ_PATHS
