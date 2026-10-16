@@ -3,7 +3,8 @@
 import "server-only";
 
 import {
-  stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer, stagingVerificationOtp,
+  stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer,
+  stagingEnrollmentSetupCodeAccepted, stagingVerificationOtp,
 } from "@/lib/staging/agent-enrollment";
 import {
   neonStagingEnabled, stagingIdentity, stagingSubjects,
@@ -26,8 +27,11 @@ async function allowedAgentEnrollment() {
 /** Does not accept a client email, URL, JWT, mailbox setting, or SMTP secret. */
 export async function sendAgentVerificationCode(
   _previous: AgentEnrollmentResult | null,
-  _form: FormData,
+  form: FormData,
 ): Promise<AgentEnrollmentResult> {
+  if (!stagingEnrollmentSetupCodeAccepted(process.env, form.get("setup_code"))) {
+    return { outcome: "error", message: "Staging setup code was not accepted." };
+  }
   try {
     const allowed = await allowedAgentEnrollment();
     if (!allowed) return { outcome: "error", message: "Agent enrollment is not available for this staging session." };
