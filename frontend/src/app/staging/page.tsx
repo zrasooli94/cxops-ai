@@ -50,6 +50,7 @@ export default async function StagingPage() {
     <p className="mt-3 text-sm leading-7 text-slate-600">Synthetic test data only. This workspace supports read-only verification.</p>
     {!enabled ? <div className="mt-6 rounded-2xl bg-amber-50 p-5"><h2 className="font-semibold">Staging is being connected</h2><p className="mt-2 text-sm leading-6">Sign-in will open after the isolated backend, test accounts and tenant access checks pass.</p></div> : identity ? <>
       <div className="mt-6 rounded-2xl bg-violet-50 p-5"><h2 className="font-semibold">Welcome, {identity.user.name}</h2><p className="mt-2 text-sm">{backendStatus}</p></div>
+      {backendIssue && <StagingReadRecovery issue={backendIssue} />}
       <h2 className="mt-6 font-semibold">Test workspaces</h2>
       {organizations.length ? <ul className="mt-3 space-y-2">{organizations.map(org => <li key={org.id} className="rounded-xl border border-slate-200 p-4">{org.name}</li>)}</ul> : <p className="mt-3 text-sm text-slate-600">{backendIssue ? "Workspace membership check pending." : "No verified workspace memberships loaded."}</p>}
       {backendStatus === "Identity verified by staging API" && organizations.length === 1 &&
