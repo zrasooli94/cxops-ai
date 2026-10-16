@@ -2,7 +2,7 @@
  * All inputs are untrusted until matched against the pinned staging policy.
  * No email is taken from a form or client-side query string.
  */
-export interface StagingEnrollmentEnvironment extends Readonly<Record<string, string | undefined>> {}
+export type StagingEnrollmentEnvironment = Readonly<Record<string, string | undefined>>;
 
 export function stagingAgentEnrollmentTarget(env: StagingEnrollmentEnvironment): string | null {
   if (env.VERCEL_ENV !== "preview" ||
