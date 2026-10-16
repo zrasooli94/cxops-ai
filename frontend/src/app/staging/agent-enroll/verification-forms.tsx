@@ -18,6 +18,10 @@ export function AgentVerificationForms() {
         Neon will email a six-digit code to the private staging-agent address you provided.
         No code is sent until you press the button.
       </p>
+      <label htmlFor="staging-agent-setup" className="mt-4 block text-sm font-medium text-slate-700">Temporary setup code</label>
+      <input id="staging-agent-setup" name="setup_code" type="password" autoComplete="off" required minLength={24} maxLength={128} disabled={complete}
+        placeholder="Enter the one-time setup code"
+        className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100 disabled:opacity-40" />
       {sendResult && <p role="status" className={`mt-3 text-sm ${sendResult.outcome === "error" ? "text-red-700" : "text-emerald-700"}`}>{sendResult.message}</p>}
       <button type="submit" disabled={sending || complete} className="mt-4 w-full rounded-xl bg-violet-700 px-4 py-3 text-sm font-semibold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-60">
         {sending ? "Requesting code…" : "Send verification code"}
