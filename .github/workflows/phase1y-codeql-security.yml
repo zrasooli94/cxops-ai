@@ -48,3 +48,58 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
+
+      - name: Report CodeQL security findings and gate serious staging alerts
+        shell: bash
+        env:
+          ANALYSIS_LANGUAGE: ${{ matrix.language }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          
+          language = os.environ['ANALYSIS_LANGUAGE']
+          basename = {'python': 'python', 'javascript-typescript': 'javascript'}[language]
+          report = Path(os.environ['RUNNER_WORKSPACE']) / 'results' / (basename + '.sarif')
+          if not report.is_file():
+              raise SystemExit('CodeQL SARIF missing; refuse to certify an unseen scan')
+          data = json.loads(report.read_text(encoding='utf-8'))
+          findings = []
+          scope = ('app/api/routes/staging_ticket_action.py', 'app/core/auth.py',
+                   'app/api/deps.py', 'app/main.py', 'staging/',
+                   'frontend/src/app/staging/', 'frontend/src/lib/staging/',
+                   'frontend/src/proxy.ts', 'frontend/src/lib/tenant/')
+          for run in data.get('runs', []):
+              rules = {r.get('id'): r for r in run.get('tool', {}).get('driver', {}).get('rules', [])}
+              for item in run.get('results', []):
+                  rid = item.get('ruleId', 'unknown')
+                  rule = rules.get(rid, {})
+                  props = rule.get('properties') or {}
+                  raw = props.get('security-severity', item.get('properties', {}).get('security-severity'))
+                  try:
+                      score = float(raw) if raw is not None else None
+                  except (ValueError, TypeError):
+                      score = None
+                  locations = item.get('locations') or []
+                  location = (locations[0].get('physicalLocation') or {}) if locations else {}
+                  path = (location.get('artifactLocation') or {}).get('uri', 'unknown')
+                  findings.append((rid, path, score, item.get('level', 'warning')))
+          high_scope = [(rid, path, score) for rid, path, score, _ in findings
+                        if score is not None and score >= 7.0
+                        and any(path.startswith(prefix) for prefix in scope)]
+          lines = [f'### CodeQL security-extended: {language}',
+                   f'- SARIF results: **{len(findings)}**',
+                   f'- High/critical staging-scope findings (security-severity >= 7): **{len(high_scope)}**',
+                   '- A successful scanner run is not a human security review.']
+          if high_scope:
+              lines.append('#### High/critical staging findings (rule and path only)')
+              for rid, path, score in high_scope[:25]:
+                  lines.append(f'- {rid}: `{path}` ({score:.1f})')
+          summary = '\n'.join(lines) + '\n'
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
+              handle.write(summary)
+          if high_scope:
+              raise SystemExit('High/critical staging-scope CodeQL results require review; hold release')
+          PY
