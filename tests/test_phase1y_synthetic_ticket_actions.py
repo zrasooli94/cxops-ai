@@ -310,3 +310,43 @@ async def test_linked_non_synthetic_customer_cannot_be_changed_by_test_agent(
     actual = await _get_ticket(db, ticket.id)
     assert actual.assigned_subject is None
     assert actual.status == "open"
+    # The shared namespace teardown purges tickets first but does not own
+    # standalone customer fixtures. Unlink and remove our injected customer
+    # explicitly so the organization FK never outlives this test.
+    actual.customer_id = None
+    await db.commit()
+    await db.delete(suspicious_customer)
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_verified_synthetic_customer_link_remains_claimable(
+    db, client, org_scope, staging_gate,
+):
+    alpha, _ = await _setup(db, org_scope)
+    customer = Customer(
+        organization_id=alpha.id,
+        external_id="PHASE1X-ALPHA-C99",
+        name="Synthetic Sample Customer",
+        email="sample.alpha@example.test",
+    )
+    db.add(customer)
+    await db.commit()
+    await db.refresh(customer)
+    ticket = await _make_ticket(
+        db, alpha.id, external_id="PHASE1X-ALPHA-T99",
+    )
+    ticket.customer_id = customer.id
+    await db.commit()
+    response = await client.post(
+        "/staging/ticket-action",
+        json={"ticket_id": ticket.id, "action": "claim"},
+        headers=_headers(alpha.id),
+    )
+    assert response.status_code == 200, response.text
+    assert (await _get_ticket(db, ticket.id)).assigned_subject == ACTOR
+    # Do not leave a fixture outside the module's targeted purge list.
+    ticket.customer_id = None
+    await db.commit()
+    await db.delete(customer)
+    await db.commit()
