@@ -111,3 +111,10 @@ Email OTP sign-in** method without requiring a password in ChatGPT.
   origin in Neon's trusted-origin list only when necessary.
 - A testable Preview deployment and successful CI are necessary but not
   sufficient to authorize live write tests. Keep all PRs draft/unmerged.
+
+## Privacy review hardening
+
+The staging JWT authentication-success audit event deliberately redacts the
+mailbox (while retaining the synthetic subject and auth method). No real agent
+address is emitted to Render log fields. A dedicated offline regression test
+checks this; production Nhost logging behavior remains unchanged.
