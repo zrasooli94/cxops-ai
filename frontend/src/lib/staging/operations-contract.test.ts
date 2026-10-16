@@ -14,6 +14,7 @@ const ticket = {
   external_id: "PHASE1X-ALPHA-T01", subject: "Synthetic: appointment reschedule",
   status: "open", priority: "urgent", source: "synthetic_staging",
   created_at: "2026-10-16T03:00:00Z",
+  assigned_subject: null, resolved_at: null,
 };
 const customer = {
   id: 3, organization_id: 1, external_id: "PHASE1X-ALPHA-C01",
@@ -43,6 +44,7 @@ describe("Phase 1X isolated read-only dashboard contracts", () => {
       { organization_id: 2 }, { external_id: "PROD-TICKET-1" },
       { subject: "A real customer subject" }, { source: "zendesk" },
       { customer_id: -1 }, { priority: "admin" },
+      { assigned_subject: 123 }, { resolved_at: "x".repeat(120) },
     ]) {
       assert.throws(() => parseStagingTickets([{ ...ticket, ...changes }], 1));
     }
