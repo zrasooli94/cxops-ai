@@ -79,8 +79,13 @@ final authorization. Viewer UIs remain read-only.
    still sees no write controls; audit zero integration jobs/AI requests.
 8. Keep PR #38 DRAFT and don't merge to PR #36/master until signoff.
 
-**Current status:** code in a draft PR, flag off, no new agent account or
-deployed writes. This is not yet a feature the owner can use in staging.
+**Current status (2026-10-16):** The real-mailbox staging agent is verified
+in the isolated Neon Auth directory (user-supplied Neon table evidence), and
+one exact-subject Synthetic Alpha AGENT membership is present. Existing Alpha
+and Beta viewers remain unchanged. No ticket writes are enabled. The separate
+Render Free Phase 1Y API (`srv-db8ufi3rjlhs73djeieg`) deploys with writes
+disabled, with auto-deploy OFF. Production and Phase 1W read-only service are
+unmodified. Agent sign-in and ticket writes are disabled pending review.
 
 
 ## Post-verification, private staging-agent sign-in (default OFF)
@@ -118,3 +123,19 @@ The staging JWT authentication-success audit event deliberately redacts the
 mailbox (while retaining the synthetic subject and auth method). No real agent
 address is emitted to Render log fields. A dedicated offline regression test
 checks this; production Nhost logging behavior remains unchanged.
+
+## Phase 1Y Preview backend binding (default OFF)
+
+- Frontend repository pin: `https://cxops-ai-phase1y-staging-api.onrender.com` (separate Render Free service,
+  not the Phase 1W API).
+- Preview branch: `feature/phase1y-synthetic-ticket-workflow`, with
+  `BACKEND_API_URL` and `CXOPS_STAGING_BACKEND_URL` pointing to exactly
+  the above origin. `CXOPS_PREVIEW_AUTH_ENABLED=false`,
+  `CXOPS_STAGING_ISOLATION_VERIFIED=false`, and
+  `CXOPS_STAGING_TICKET_ACTIONS_ENABLED=false` remain fail-closed until
+  all staging-only release reviews pass.
+- No branch preview should use production credentials or copy sensitive
+  values through a denied transfer. Sensitive Preview config provision remains
+  a separate dependency. Do not try to reconstruct missing values.
+- Code-level regression verifies the old Phase 1W read-only API origin cannot
+  be accepted by the Phase 1Y pinned backend policy.

@@ -1,6 +1,6 @@
 /** Staging-only identity and API targets. Never infer these from production. */
 export const STAGING_AUTH_URL = "https://ep-tiny-dawn-azixl9yk.neonauth.c-3.ap-southeast-1.aws.neon.tech/cxops_staging/auth";
-export const STAGING_BACKEND_URL = "https://cxops-ai-staging-api.onrender.com";
+export const STAGING_BACKEND_URL = "https://cxops-ai-phase1y-staging-api.onrender.com";
 
 export function neonStagingEnabled(env: Readonly<Record<string, string | undefined>>): boolean {
   return env.VERCEL_ENV === "preview" &&
