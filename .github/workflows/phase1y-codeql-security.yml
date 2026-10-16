@@ -96,6 +96,11 @@ jobs:
               lines.append('#### High/critical staging findings (rule and path only)')
               for rid, path, score in high_scope[:25]:
                   lines.append(f'- {rid}: `{path}` ({score:.1f})')
+          lines.append('#### All findings (rule and path only)')
+          for rid, path, score, level in sorted(
+                  findings, key=lambda x: (not any(x[1].startswith(p) for p in scope), x[1], x[0]))[:30]:
+              severity = f'{score:.1f}' if score is not None else 'unscored'
+              lines.append(f'- {rid}: `{path}` ({severity}; {level})')
           summary = '\n'.join(lines) + '\n'
           print(summary)
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
