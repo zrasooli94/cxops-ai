@@ -27,7 +27,7 @@ export function AgentVerificationForms() {
     <form action={verifyAction} className="rounded-2xl border border-slate-200 bg-white p-5">
       <h2 className="text-base font-semibold text-slate-950">2. Verify your email</h2>
       <p className="mt-2 text-sm leading-6 text-slate-600">
-        Enter the code from your email here. Don't share it in chat or screenshots.
+        Enter the code from your email here. Do not share it in chat or screenshots.
       </p>
       <label htmlFor="staging-agent-otp" className="mt-4 block text-sm font-medium text-slate-700">Six-digit code</label>
       <input id="staging-agent-otp" name="otp" type="text" inputMode="numeric" pattern="[0-9]{6}" autoComplete="one-time-code" maxLength={6} required disabled={complete}
