@@ -21,6 +21,7 @@ from app.api.routes.service_transformation_simulation import (
 )
 from app.api.routes.sla_policies import router as sla_policies_router
 from app.api.routes.staff_public_chat import router as staff_public_chat_router
+from app.api.routes.staging_ticket_action import router as staging_ticket_action_router
 from app.api.routes.tenant import router as tenant_router
 from app.api.routes.tenant_config import router as tenant_config_router
 from app.api.routes.tickets import router as tickets_router
@@ -53,6 +54,8 @@ api_router.include_router(agent_router)
 api_router.include_router(evaluations_router)
 api_router.include_router(public_chat_router)
 api_router.include_router(staff_public_chat_router)
+# Hidden from production OpenAPI and explicitly denied unless isolated staging.
+api_router.include_router(staging_ticket_action_router)
 api_router.include_router(tenant_config_router)
 for commercial_router in commercial_routers:
     api_router.include_router(commercial_router)
