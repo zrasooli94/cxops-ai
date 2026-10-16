@@ -121,6 +121,9 @@ jobs:
       - name: Run migrations
         run: alembic upgrade head
 
+      - name: Phase 1Y synthetic workflow security tests
+        run: python -m pytest -q tests/test_phase1y_synthetic_ticket_actions.py
+
       - name: Run pytest (unit)
         run: |
           pytest -q --tb=short -m "not integration"
