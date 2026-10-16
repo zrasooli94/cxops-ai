@@ -19,11 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.logging import get_logger
 from app.core.rbac import AuthorizationContext, Capability, OrganizationRole
 from app.models.organization import Organization
+from app.models.customer import Customer
 from app.models.ticket import Ticket
 
 router = APIRouter(prefix="/staging", tags=["Isolated Staging"], include_in_schema=False)
+log = get_logger(__name__)
 
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
 WriteAuth = Annotated[
@@ -117,6 +120,27 @@ async def synthetic_ticket_action(
     ):
         raise HTTPException(status_code=404, detail="Synthetic ticket not found")
 
+    # A valid synthetic ticket may still have been linked to a mistakenly
+    # imported customer. Only explicitly fictional Alpha customers are safe
+    # to include in this one-record staging action. Refuse a non-synthetic
+    # linkage instead of silently mutating it.
+    if ticket.customer_id is not None:
+        customer = (
+            await db.execute(
+                select(Customer).where(
+                    Customer.id == ticket.customer_id,
+                    Customer.organization_id == tenant.organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if (
+            customer is None
+            or not (customer.external_id or "").startswith("PHASE1X-ALPHA-C")
+            or not customer.name.startswith("Synthetic ")
+            or not customer.email.endswith("@example.test")
+        ):
+            raise HTTPException(status_code=404, detail="Synthetic ticket not found")
+
     active = ticket.status in ("new", "open", "pending")
     if request.action == "claim":
         allowed = active and ticket.assigned_subject is None
@@ -139,6 +163,13 @@ async def synthetic_ticket_action(
     # call. Commit the already row-locked single ticket as one operation.
     await db.commit()
     await db.refresh(ticket)
+    # Structured metadata only. Do not log a bearer, email, name or body.
+    log.info(
+        "staging_synthetic_ticket_action_committed",
+        organization_id=tenant.organization_id,
+        ticket_id=ticket.id,
+        action=request.action,
+    )
     return StagingTicketActionResult(
         id=ticket.id,
         external_id=ticket.external_id or "",
