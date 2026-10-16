@@ -170,6 +170,15 @@ async def test_fails_closed_for_viewer_foreign_org_and_non_synthetic_ticket(
 
     foreign = await client.post(endpoint, json={"ticket_id": beta_ticket.id, "action": "claim"}, headers=_headers(alpha.id))
     assert foreign.status_code == 404
+
+    # A forged Beta tenant selector is a membership denial, not a way for an
+    # Alpha agent to move the trust boundary across a tenant.
+    forged_tenant = await client.post(
+        endpoint,
+        json={"ticket_id": beta_ticket.id, "action": "claim"},
+        headers=_headers(beta.id),
+    )
+    assert forged_tenant.status_code == 403
     unsafe = await client.post(endpoint, json={"ticket_id": non_synthetic.id, "action": "claim"}, headers=_headers(alpha.id))
     assert unsafe.status_code == 404
     invalid = await client.post(endpoint, json={"ticket_id": alpha_ticket.id, "action": "claim", "organization_id": beta.id}, headers=_headers(alpha.id))
