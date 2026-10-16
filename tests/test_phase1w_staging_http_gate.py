@@ -13,7 +13,7 @@ from staging.http_gate import staging_request_allowed
 @pytest.mark.parametrize(
     "path",
     [
-        "/health", "/ready", "/version",
+        "/", "/health", "/ready", "/version",
         "/me/organizations", "/me/tenant", "/me/authorization",
         "/staff/public-chat/handoff", "/staff/public-chat/summary",
         "/tickets", "/customers",
@@ -29,6 +29,9 @@ def test_only_explicit_health_and_authenticated_staff_reads_allowed(path):
     "method,path",
     [
         ("GET", "/openapi.json"),
+        ("POST", "/"),
+        ("PUT", "/"),
+        ("GET", "//"),
         ("GET", "/docs"),
         ("GET", "/metrics"),
         ("GET", "/public/chat/config"),
@@ -89,3 +92,26 @@ async def test_production_requests_still_use_existing_pipeline(monkeypatch):
     ) as client:
         response = await client.get("/openapi.json")
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_staging_root_returns_safe_200_for_render_default_health_probe(monkeypatch):
+    """Render must not reject a healthy staging API because / was gated 503.
+
+    This only tests the public static root route, not a simulated login,
+    and never makes an outbound network or database request.
+    """
+    monkeypatch.setattr(main, "settings", SimpleNamespace(environment="staging"))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app),
+        base_url="http://testserver",
+    ) as client:
+        root = await client.get("/")
+        assert root.status_code == 200
+        payload = root.json()
+        assert payload["status"] == "running"
+        assert "database" not in payload
+        assert "secret" not in payload
+        assert "token" not in payload
+        blocked = await client.post("/", json={"fake": "synthetic"})
+        assert blocked.status_code == 503
