@@ -1,3 +1,4 @@
+import { previewGateFromEnvironment } from "@/lib/staging/preview-isolation";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
@@ -27,6 +28,10 @@ import {
  * with a generic 503 and no body so no internal detail or token leaks.
  */
 export async function GET() {
+  if (previewGateFromEnvironment() === "blocked") {
+    return redirect("/login");
+  }
+
   const cookieStore = await cookies();
   const state = readSession(
     () => cookieStore.get(SESSION_COOKIE_NAME)?.value ?? null,

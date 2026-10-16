@@ -14,11 +14,21 @@ import {
   deserializeSession,
 } from "@/lib/session/helpers";
 import { accessTokenAuthHeader } from "@/lib/session/read";
+import { previewGateFromEnvironment } from "@/lib/staging/preview-isolation";
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
 
 const TENANT_SELECTOR_HEADER = "X-CXOps-Organization-ID";
+
+function requireIsolatedPreviewBackend(): void {
+  if (previewGateFromEnvironment() === "blocked") {
+    throw new AuthorizationLoadError(
+      "Preview staff backend unavailable until isolated staging is verified",
+      "unavailable",
+    );
+  }
+}
 
 export interface OrganizationMembership {
   id: number;
@@ -63,6 +73,7 @@ async function backendFetch(
   path: string,
   options: RequestInit & { organizationId?: number } = {},
 ): Promise<Response> {
+  requireIsolatedPreviewBackend();
   const authHeader = await getAuthorizationHeader();
   if (!authHeader) {
     throw new AuthorizationLoadError("Authentication required", "authentication");
@@ -103,6 +114,7 @@ async function backendFetchReadOnly(
   path: string,
   options: RequestInit & { organizationId?: number } = {},
 ): Promise<Response> {
+  requireIsolatedPreviewBackend();
   const authHeader = await getReadOnlyAuthHeader();
   if (!authHeader) {
     throw new AuthorizationLoadError("Authentication required", "authentication");

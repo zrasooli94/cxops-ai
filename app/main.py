@@ -24,6 +24,7 @@ from app.core.rbac import AuthorizationError, MissingCapabilityError
 from app.core.request_context import (
     RequestCorrelationMiddleware,
 )
+from staging.http_gate import staging_request_allowed
 
 log = get_logger(__name__)
 
@@ -38,12 +39,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     from app.core.database import engine
     from app.core.schema_gate import check_schema
-    from app.services.provider_warmup import warm_provider_clients
-    from app.services.public_chat_turn_dispatcher import (
-        handoff_dispatcher,
-        turn_dispatcher,
-    )
-
     # Phase 1P.9R: refuse to serve on a schema this build does not support
     # (raises in production; uvicorn then exits before binding its port).
     if settings.handoff_notification_config_error:
@@ -61,6 +56,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         process_uptime_s=uptime_seconds(),
         boot_seconds=boot_seconds(),
         app_import_seconds=import_phase_seconds(),
+    )
+
+    # Staging is deliberately passive until the empty, isolated database,
+    # provider-disabled API and identity enrollment pass independent review.
+    # Never start turn maintenance, notification dispatch or OpenAI warmup
+    # merely because a Free Render staging instance has come online.
+    if settings.environment == "staging":
+        log.info("staging_passive_runtime_no_workers_or_provider_warmup")
+        yield
+        return
+
+    from app.services.provider_warmup import warm_provider_clients
+    from app.services.public_chat_turn_dispatcher import (
+        handoff_dispatcher,
+        turn_dispatcher,
     )
 
     loop = asyncio.get_running_loop()
@@ -89,6 +99,28 @@ app = FastAPI(
 )
 
 app.add_middleware(RequestCorrelationMiddleware)
+
+
+@app.middleware("http")
+async def staging_read_only_access_gate(
+    request: Request,
+    call_next,
+):
+    """No outbound or mutating routes while staging is being qualified.
+
+    A missing or forged identity cannot bypass this first-pass HTTP gate.
+    If/when synthetic read-only staging launches, the existing authentication
+    and tenant membership dependencies still apply to every staff route.
+    """
+    if settings.environment == "staging" and not staging_request_allowed(
+        request.method, request.url.path
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Staging operations are not enabled."},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")

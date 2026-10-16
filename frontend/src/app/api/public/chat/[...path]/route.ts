@@ -2,6 +2,7 @@ import {
   NextRequest,
   NextResponse,
 } from "next/server";
+import { previewGateFromEnvironment } from "@/lib/staging/preview-isolation";
 
 // Public web-chat BFF proxy (Phase 1P.1).
 //
@@ -26,6 +27,15 @@ async function proxy(
     }>;
   },
 ) {
+  // Do not let public widget keys or visitor tokens from an unverified preview
+  // reach the production chat backend shared by Vercel Preview settings.
+  if (previewGateFromEnvironment() === "blocked") {
+    return NextResponse.json(
+      { detail: "Preview chat API is unavailable until staging isolation is verified." },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
+
   const { path } = await context.params;
 
   const backendUrl = new URL(

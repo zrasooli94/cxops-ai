@@ -1,3 +1,4 @@
+import { previewGateFromEnvironment } from "@/lib/staging/preview-isolation";
 import { NextRequest } from "next/server";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
@@ -22,6 +23,10 @@ import { ACTIVE_ORGANIZATION_COOKIE_NAME } from "@/lib/tenant/cookie-helpers";
  * /dashboard.
  */
 export async function GET(request: NextRequest) {
+  if (previewGateFromEnvironment() === "blocked") {
+    return redirect("/login");
+  }
+
   const safeNext = sanitizeNextPath(
     new URL(request.url).searchParams.get("next"),
   );

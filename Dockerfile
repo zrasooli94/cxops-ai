@@ -19,6 +19,7 @@ RUN python -m pip install --upgrade pip \
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+COPY staging ./staging
 COPY scripts ./scripts
 
 EXPOSE 8000

@@ -8,11 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --experimental-strip-types --test 'src/lib/**/*.test.ts'",
+    "test:staging": "node --experimental-strip-types --test src/lib/staging/preview-isolation.test.ts src/lib/staging/neon-policy.test.ts src/lib/staging/agent-enrollment.test.ts src/lib/staging/operations-contract.test.ts",
     "test:session": "node --experimental-strip-types --test src/lib/session/helpers.test.ts src/lib/session/read.test.ts src/lib/session/recovery-helpers.test.ts src/lib/session/bff-helpers.test.ts src/lib/session/logout.test.ts src/lib/tenant/cookie.test.ts",
     "test:auth": "node --experimental-strip-types --test src/lib/session/helpers.test.ts src/lib/session/read.test.ts src/lib/session/recovery-helpers.test.ts src/lib/session/bff-helpers.test.ts src/lib/session/logout.test.ts src/lib/auth/auth-helpers.test.ts src/lib/auth/sign-in-result.test.ts src/lib/auth/proxy-helpers.test.ts src/lib/authorization/helpers.test.ts src/lib/authorization/navigation.test.ts src/lib/authorization/agent.test.ts src/lib/customer/customer.test.ts src/lib/rag/evidence.test.ts src/lib/tenant/cookie.test.ts src/lib/operations/team-load.test.ts src/lib/dashboard/escalation-summary.test.ts src/lib/evaluations.test.ts src/lib/transformation/transformation.test.ts src/lib/pilot/automotive-pilot.test.ts src/lib/simulation/simulation.test.ts src/lib/experiments/experiments.test.ts src/lib/commercial/commercial.test.ts src/lib/public-chat/theme.test.ts src/lib/public-chat/handoff-copy.test.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
+    "@neondatabase/auth": "0.6.0-beta",
     "@nhost/nhost-js": "^4.8.0",
     "gsap": "^3.15.0",
     "lenis": "^1.3.26",
@@ -26,6 +28,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "ajv": "8.20.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "tailwindcss": "^4",
