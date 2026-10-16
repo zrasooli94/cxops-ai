@@ -22,6 +22,7 @@ from app.core.principal import AuthenticatedPrincipal
 from app.core.rbac import OrganizationRole
 from app.main import app
 from app.models.ai_request_log import AIRequestLog
+from app.models.customer import Customer
 from app.models.integration_job import IntegrationJob
 from app.models.ticket import Ticket
 from staging.http_gate import staging_request_allowed
@@ -278,3 +279,34 @@ async def test_disabled_staging_route_rejects_anonymous_before_auth_or_db(
     )
     assert response.status_code == 503
     assert response.json() == {"detail": "Staging operations are not enabled."}
+
+
+@pytest.mark.asyncio
+async def test_linked_non_synthetic_customer_cannot_be_changed_by_test_agent(
+    db, client, org_scope, staging_gate,
+):
+    alpha, _ = await _setup(db, org_scope)
+    suspicious_customer = Customer(
+        organization_id=alpha.id,
+        external_id="PHASE1X-ALPHA-CX",
+        name="Not a synthetic customer",
+        email="not-synthetic@example.org",
+    )
+    db.add(suspicious_customer)
+    await db.commit()
+    await db.refresh(suspicious_customer)
+    ticket = await _make_ticket(
+        db, alpha.id, external_id="PHASE1X-ALPHA-CUSTOMER-CHECK",
+    )
+    ticket.customer_id = suspicious_customer.id
+    await db.commit()
+
+    response = await client.post(
+        "/staging/ticket-action",
+        json={"ticket_id": ticket.id, "action": "claim"},
+        headers=_headers(alpha.id),
+    )
+    assert response.status_code == 404
+    actual = await _get_ticket(db, ticket.id)
+    assert actual.assigned_subject is None
+    assert actual.status == "open"
