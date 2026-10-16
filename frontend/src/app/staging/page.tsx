@@ -5,6 +5,8 @@ import { neonStagingEnabled, stagingIdentity, stagingSubjects, STAGING_BACKEND_U
 import { stagingAuth } from "@/lib/staging/neon-server";
 import { stagingSignOut } from "./actions";
 import { stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer } from "@/lib/staging/agent-enrollment";
+import { stagingReadIssue, type StagingReadIssue } from "@/lib/staging/read-recovery";
+import { StagingReadRecovery } from "./read-recovery";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Isolated staging | CXOps AI", robots: { index: false, follow: false } };
@@ -19,17 +21,28 @@ export default async function StagingPage() {
   if (enabled && !identity && !unavailable) redirect("/staging/login");
   let organizations: { id: number; name: string }[] = [];
   let backendStatus = "Not checked";
+  let backendIssue: StagingReadIssue | null = null;
   if (identity) {
     try {
-      const response = await fetch(`${STAGING_BACKEND_URL}/me/organizations`, {
-        headers: { Authorization: `Bearer ${identity.token}` }, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(15000),
+      const response = await fetch(STAGING_BACKEND_URL + "/me/organizations", {
+        headers: { Authorization: "Bearer " + identity.token }, cache: "no-store",
+        redirect: "error", signal: AbortSignal.timeout(15000),
       });
-      if (!response.ok) throw new Error("Staging API unavailable");
-      const body: unknown = await response.json();
-      if (!Array.isArray(body) || body.length > 100 || !body.every(x => x && Number.isSafeInteger(x.id) && typeof x.name === "string")) throw new Error("Invalid staging response");
-      organizations = body.map(x => ({ id: x.id, name: x.name }));
-      backendStatus = "Identity verified by staging API";
-    } catch { backendStatus = "Staging API unavailable — no workspace data loaded"; }
+      if (!response.ok) {
+        backendIssue = stagingReadIssue(response.status);
+      } else {
+        const body: unknown = await response.json();
+        if (!Array.isArray(body) || body.length > 100 ||
+            !body.every(x => x && Number.isSafeInteger(x.id) && typeof x.name === "string")) {
+          throw new Error("Unexpected staging membership format");
+        }
+        organizations = body.map(x => ({ id: x.id, name: x.name }));
+        backendStatus = "Identity verified by staging API";
+      }
+    } catch (error) { backendIssue = stagingReadIssue(null, error); }
+    if (backendIssue === "warming") backendStatus = "Staging API starting — no data loaded yet";
+    if (backendIssue === "denied") backendStatus = "Staging access not authorized — no data loaded";
+    if (backendIssue === "unavailable") backendStatus = "Staging API unavailable — no data loaded";
   }
   return <main className="min-h-screen bg-slate-50 px-5 py-16 text-slate-950"><section className="mx-auto max-w-2xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
     <p className="text-xs font-bold uppercase tracking-widest text-violet-700">CXOps AI · Isolated staging</p>
@@ -38,7 +51,7 @@ export default async function StagingPage() {
     {!enabled ? <div className="mt-6 rounded-2xl bg-amber-50 p-5"><h2 className="font-semibold">Staging is being connected</h2><p className="mt-2 text-sm leading-6">Sign-in will open after the isolated backend, test accounts and tenant access checks pass.</p></div> : identity ? <>
       <div className="mt-6 rounded-2xl bg-violet-50 p-5"><h2 className="font-semibold">Welcome, {identity.user.name}</h2><p className="mt-2 text-sm">{backendStatus}</p></div>
       <h2 className="mt-6 font-semibold">Test workspaces</h2>
-      {organizations.length ? <ul className="mt-3 space-y-2">{organizations.map(org => <li key={org.id} className="rounded-xl border border-slate-200 p-4">{org.name}</li>)}</ul> : <p className="mt-3 text-sm text-slate-600">No verified workspace memberships loaded.</p>}
+      {organizations.length ? <ul className="mt-3 space-y-2">{organizations.map(org => <li key={org.id} className="rounded-xl border border-slate-200 p-4">{org.name}</li>)}</ul> : <p className="mt-3 text-sm text-slate-600">{backendIssue ? "Workspace membership check pending." : "No verified workspace memberships loaded."}</p>}
       {backendStatus === "Identity verified by staging API" && organizations.length === 1 &&
         <Link href="/staging/operations" className="mt-6 flex items-center justify-between rounded-2xl border border-violet-200 bg-violet-600 p-5 text-white shadow-sm transition hover:bg-violet-700">
           <span><strong className="block text-base">Open staging Control Center</strong>

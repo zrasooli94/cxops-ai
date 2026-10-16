@@ -39,3 +39,24 @@ This document is evidence preparation, not an independent security signoff.
 - Obtain a separate independent reviewer for authentication changes, subject allowlists, side-effect graph, ticket row locking and actual Render/Neon custody boundaries.
 - If approved: explicitly enable only Phase 1Y Vercel **and** Render ticket-action flags for one synthetic operator, execute claim → release → claim → resolve with stale-state/concurrency/replay tests, re-audit zero integration and AI records.
 - Re-disable any write capability if negative tests fail. Keep PR #38 draft and unmerged until a separately authorized merge decision.
+
+
+## Free-tier cold-start incident and safe read recovery (2026-10-16)
+
+- Owner signed in with the verified Phase 1Y Alpha AGENT identity, but the
+  initial workspace showed staging API unavailable without membership data.
+  This was not evidence of a missing database membership.
+- Render Free logs showed the API shutting down at 09:18:34 UTC, restarting
+  at 09:21:43 UTC and finishing startup at 09:22:35 UTC. Owner screenshot
+  occurred around 09:21 UTC (5:21 PM Malaysia), during that cold start.
+  The original frontend's 15-second read timeout was shorter than startup.
+- The patch retains the bounded fetch timeout and adds a client-only
+  read-only retry capped at three attempts in a four-minute browser-tab
+  window. There is no keep-alive worker, no paid resource change, no client
+  bearer token or tenant selector, and no write call.
+- HTTP 401/403 fail closed as authorization denials and are never
+  automatically retried. HTTP 502/503/504 and fetch timeouts can be retried;
+  unrecognized or invalid response contracts remain unavailable.
+- No staff permissions, production aliases, backend source, secrets or
+  ticket-action flags are altered by this change. CI and a fresh Preview
+  deployment must pass before considering the user-facing fix verified.
