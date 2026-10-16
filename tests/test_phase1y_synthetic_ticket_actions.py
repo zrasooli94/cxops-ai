@@ -10,21 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
 
+from app import main
 from app.api.deps import get_current_principal_dep
+from app.api.routes import staging_ticket_action as action_route
 from app.core.principal import AuthenticatedPrincipal
 from app.core.rbac import OrganizationRole
 from app.main import app
+from app.models.ai_request_log import AIRequestLog
 from app.models.integration_job import IntegrationJob
 from app.models.ticket import Ticket
-from app.models.ai_request_log import AIRequestLog
-from app.api.routes import staging_ticket_action as action_route
-from app import main
 from staging.http_gate import staging_request_allowed
 from tests import test_staff_public_chat_resolve as base
 
