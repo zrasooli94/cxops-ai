@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # This stacked draft PR targets Phase 1W rather than master. Keep an
+    # explicit push-triggered CI run so the security branch remains tested.
+    branches: [main, master, "feature/phase1y-synthetic-ticket-workflow"]
   pull_request:
     branches: [main, master]
 
