@@ -80,8 +80,11 @@ async def _make_ticket(db, org_id: int, *, external_id: str, source: str = "synt
 
 
 async def _get_ticket(db, id_: int):
-    db.expire_all()
-    return (await db.execute(select(Ticket).where(Ticket.id == id_))).scalar_one()
+    return (
+        await db.execute(
+            select(Ticket).where(Ticket.id == id_).execution_options(populate_existing=True)
+        )
+    ).scalar_one()
 
 
 async def _setup(db, org_scope):
