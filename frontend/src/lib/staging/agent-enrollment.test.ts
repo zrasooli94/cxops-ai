@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer, stagingVerificationOtp,
+  stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer,
+  stagingEnrollmentSetupCodeAccepted, stagingVerificationOtp,
 } from "./agent-enrollment.ts";
 
 const safePreview = {
@@ -46,6 +47,19 @@ describe("synthetic agent enrollment policy", () => {
       { id: "beta-subject", email: "phase1w-beta@example.test" },
       { id: "fake-subject", email: "phase1w-alpha@example.test" },
     ]) assert.equal(stagingAgentEnrollmentViewer(viewer, allowed), false);
+  });
+
+  it("requires an exact high-entropy temporary setup code for code issuance", () => {
+    const code = "TEST_ONLY_high_entropy_staging_secret_123456";
+    const env = { ...safePreview, CXOPS_STAGING_AGENT_ENROLL_CODE: code };
+    assert.equal(stagingEnrollmentSetupCodeAccepted(env, code), true);
+    for (const attempted of ["", "wrong", code + "x", 1234, null]) {
+      assert.equal(stagingEnrollmentSetupCodeAccepted(env, attempted), false);
+    }
+    assert.equal(stagingEnrollmentSetupCodeAccepted(safePreview, code), false);
+    assert.equal(stagingEnrollmentSetupCodeAccepted({
+      ...safePreview, CXOPS_STAGING_AGENT_ENROLL_CODE: "short",
+    }, "short"), false);
   });
 
   it("never accepts a client-controlled email or malformed OTP", () => {
