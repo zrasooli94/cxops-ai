@@ -243,3 +243,38 @@ async def test_staging_never_opens_general_ticket_mutation_endpoints(
     )
     assert denied.status_code == 503
     assert (await _get_ticket(db, ticket.id)).status == "open"
+
+
+@pytest.mark.asyncio
+async def test_production_blocks_anonymous_staging_route_before_auth_or_db(
+    client, monkeypatch,
+):
+    # Even with the opt-in string present accidentally, production must not
+    # expose route existence, require credentials or perform any DB lookup.
+    monkeypatch.setenv("CXOPS_STAGING_TICKET_ACTIONS_ENABLED", "true")
+    monkeypatch.setattr(main, "settings", SimpleNamespace(environment="production"))
+    for method, path in [
+        ("POST", "/staging/ticket-action"),
+        ("GET", "/staging/ticket-action"),
+        ("HEAD", "/staging/ticket-action"),
+    ]:
+        result = await client.request(
+            method, path,
+            headers={"X-CXOps-Organization-ID": "1"},
+        )
+        assert result.status_code == 404
+        assert result.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_disabled_staging_route_rejects_anonymous_before_auth_or_db(
+    client, monkeypatch,
+):
+    monkeypatch.delenv("CXOPS_STAGING_TICKET_ACTIONS_ENABLED", raising=False)
+    monkeypatch.setattr(main, "settings", SimpleNamespace(environment="staging"))
+    response = await client.post(
+        "/staging/ticket-action",
+        json={"ticket_id": 1, "action": "resolve"},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Staging operations are not enabled."}
