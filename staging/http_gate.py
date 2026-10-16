@@ -13,6 +13,9 @@ route's transitive side effects and synthetic tenant isolation.
 from __future__ import annotations
 
 _INITIAL_STAGING_READ_PATHS = frozenset({
+    # Render defaults to probing "/" unless a health path is configured.
+    # The existing root handler exposes only public static service metadata.
+    "/",
     "/health",
     "/ready",
     "/version",
