@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+
 /** Server-side policy for onboarding a separately verified staging agent.
  * All inputs are untrusted until matched against the pinned staging policy.
  * No email is taken from a form or client-side query string.
@@ -31,4 +33,19 @@ export function stagingVerificationOtp(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const otp = value.trim();
   return /^\d{6}$/.test(otp) ? otp : null;
+}
+
+/** A temporary, high-entropy branch-only gate around OTP *issuance*.
+ * It is not a user password and never appears in the generated page.
+ */
+export function stagingEnrollmentSetupCodeAccepted(
+  env: StagingEnrollmentEnvironment,
+  supplied: unknown,
+): boolean {
+  const expected = env.CXOPS_STAGING_AGENT_ENROLL_CODE;
+  if (typeof expected !== "string" || expected.length < 24 || expected.length > 128 ||
+      typeof supplied !== "string" || supplied.length > 128) return false;
+  const a = createHash("sha256").update(expected, "utf8").digest();
+  const b = createHash("sha256").update(supplied.trim(), "utf8").digest();
+  return timingSafeEqual(a, b);
 }
