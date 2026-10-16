@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { neonStagingEnabled, stagingIdentity, stagingSubjects, STAGING_BACKEND_URL } from "@/lib/staging/neon-policy";
 import { stagingAuth } from "@/lib/staging/neon-server";
 import { stagingSignOut } from "./actions";
+import { stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer } from "@/lib/staging/agent-enrollment";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Isolated staging | CXOps AI", robots: { index: false, follow: false } };
@@ -44,6 +45,11 @@ export default async function StagingPage() {
             <span className="mt-1 block text-xs text-violet-100">Explore synthetic tickets, customers and real queue metrics</span>
           </span>
           <span aria-hidden="true" className="text-2xl">→</span>
+        </Link>}
+      {stagingAgentEnrollmentTarget(process.env) &&
+        stagingAgentEnrollmentViewer(identity.user, stagingSubjects(process.env)) &&
+        <Link href="/staging/agent-enroll" className="mt-5 block rounded-xl border border-violet-200 bg-white px-5 py-4 text-sm font-semibold text-violet-700 hover:bg-violet-50">
+          Verify separate staging agent email →
         </Link>}
       <form action={stagingSignOut}><button className="mt-6 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold">Sign out</button></form>
     </> : <p role="alert" className="mt-6 text-sm text-red-700">Staging authentication is temporarily unavailable. Please try again.</p>}
