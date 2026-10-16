@@ -60,3 +60,15 @@ code/password is ever sent through ChatGPT or logged to application output.
 email verification API unsupported, unexpected recipient, insufficient
 rate limiting, mismatched Neon subject, or any evidence of production
 configuration reuse. Do not bypass or invent verification.
+
+### Anti-spam enrollment gate (additional)
+- A user can request a Neon verification email only after signing in as
+  the approved synthetic Alpha viewer and entering a private, high-entropy
+  temporary setup code. The server compares SHA-256 digests in constant
+  time; neither the code nor the personal email address is read from the
+  browser as a destination.
+- Temporary code stored in encrypted branch-scoped Vercel Preview config,
+  not committed. Disable this OTP issuance page after verifying the new
+  agent's real reachable mailbox.
+- Code entry occurs on /staging/agent-enroll, and the email OTP goes from
+  Neon Auth directly to that mailbox. No OTP should be pasted into chat.
