@@ -208,3 +208,38 @@ async def test_concurrent_claims_one_winner(db, client, org_scope, staging_gate)
     first, second = await asyncio.gather(attempt(), attempt())
     assert sorted((first.status_code, second.status_code)) == [200, 409]
     assert (await _get_ticket(db, ticket.id)).assigned_subject == ACTOR
+
+
+@pytest.mark.asyncio
+async def test_production_never_exposes_synthetic_staging_write_route(
+    db, client, org_scope, staging_gate, monkeypatch,
+):
+    alpha, _ = await _setup(db, org_scope)
+    ticket = await _make_ticket(db, alpha.id, external_id="PHASE1X-ALPHA-T7")
+    monkeypatch.setattr(main, "settings", SimpleNamespace(environment="production"))
+    monkeypatch.setattr(
+        action_route, "settings",
+        SimpleNamespace(environment="production", auth_mode="jwks"),
+    )
+    denied = await client.post(
+        "/staging/ticket-action",
+        json={"ticket_id": ticket.id, "action": "claim"},
+        headers=_headers(alpha.id),
+    )
+    assert denied.status_code == 404
+    assert (await _get_ticket(db, ticket.id)).assigned_subject is None
+
+
+@pytest.mark.asyncio
+async def test_staging_never_opens_general_ticket_mutation_endpoints(
+    db, client, org_scope, staging_gate,
+):
+    alpha, _ = await _setup(db, org_scope)
+    ticket = await _make_ticket(db, alpha.id, external_id="PHASE1X-ALPHA-T8")
+    denied = await client.patch(
+        f"/tickets/{ticket.id}",
+        json={"status": "solved"},
+        headers=_headers(alpha.id),
+    )
+    assert denied.status_code == 503
+    assert (await _get_ticket(db, ticket.id)).status == "open"
