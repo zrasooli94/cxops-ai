@@ -21,8 +21,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.rbac import AuthorizationContext, Capability, OrganizationRole
-from app.models.organization import Organization
 from app.models.customer import Customer
+from app.models.organization import Organization
 from app.models.ticket import Ticket
 
 router = APIRouter(prefix="/staging", tags=["Isolated Staging"], include_in_schema=False)
