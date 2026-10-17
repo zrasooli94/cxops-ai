@@ -6,13 +6,32 @@ on:
     # explicit push-triggered CI run so the security branch remains tested.
     branches: [main, master, "feature/phase1y-synthetic-ticket-workflow"]
   pull_request:
-    branches: [main, master]
+    # PR #38 is intentionally stacked on Phase 1W. GitHub checks out the
+    # generated merge commit for this event, so base drift is tested too.
+    branches: [main, master, "feature/phase1w-preview-isolation-gate"]
 
 env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "22"
 
 jobs:
+  merge-result-context:
+    name: PR Merge Result Context
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout GitHub-generated merge result
+        uses: actions/checkout@v4
+      - name: Fail closed unless the tested SHA is the PR merge result
+        env:
+          EXPECTED_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          test -n "$EXPECTED_MERGE_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" = "3"
+
   lint-and-typecheck:
     name: Lint & Typecheck
     runs-on: ubuntu-latest
@@ -231,7 +250,7 @@ jobs:
       DEBUG: "true"
       # Optional live evaluation. Runs only when BOTH dedicated evaluation
       # secrets exist; the production OPENAI_API_KEY is never available here.
-      EVALUATION_ENABLED: ${{ secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
+      EVALUATION_ENABLED: ${{ github.event_name == 'push' && secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
       ZENDESK_WEBHOOK_SECRET: test-secret
     services:
       postgres:
@@ -293,7 +312,7 @@ jobs:
       DEBUG: "true"
       # Optional live evaluation. Runs only when BOTH dedicated evaluation
       # secrets exist; the production OPENAI_API_KEY is never available here.
-      EVALUATION_ENABLED: ${{ secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
+      EVALUATION_ENABLED: ${{ github.event_name == 'push' && secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
       ZENDESK_WEBHOOK_SECRET: test-secret
     services:
       postgres:
@@ -445,3 +464,44 @@ jobs:
 
       - name: Verify JWT, visitor bearer and staff capability OpenAPI documentation
         run: python -m pytest -q --tb=short tests/test_phase1uf_openapi_security.py
+
+  required-checks:
+    name: CI Required Checks
+    if: always()
+    needs:
+      - merge-result-context
+      - lint-and-typecheck
+      - phase1y-independent-security
+      - backend-tests
+      - frontend-build
+      - secret-scan
+      - docker-build
+      - api-contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Fail closed on any incomplete mandatory check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_RESULT: ${{ needs.merge-result-context.result }}
+          LINT_RESULT: ${{ needs.lint-and-typecheck.result }}
+          PHASE1Y_RESULT: ${{ needs.phase1y-independent-security.result }}
+          BACKEND_RESULT: ${{ needs.backend-tests.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-build.result }}
+          SECRET_RESULT: ${{ needs.secret-scan.result }}
+          DOCKER_RESULT: ${{ needs.docker-build.result }}
+          CONTRACT_RESULT: ${{ needs.api-contract.result }}
+        run: |
+          test "$LINT_RESULT" = success
+          test "$PHASE1Y_RESULT" = success
+          test "$BACKEND_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$SECRET_RESULT" = success
+          test "$DOCKER_RESULT" = success
+          test "$CONTRACT_RESULT" = success
+          if [ "$EVENT_NAME" = pull_request ]; then
+            test "$MERGE_RESULT" = success
+          else
+            test "$MERGE_RESULT" = skipped
+          fi

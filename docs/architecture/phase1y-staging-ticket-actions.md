@@ -34,8 +34,11 @@ validation using actual staging PostgreSQL and tenant/RBAC dependencies.
 - Ticket row locked `SELECT ... FOR UPDATE` with exact tenant predicate.
   Only `source=synthetic_staging` and `PHASE1X-ALPHA-*` records whose
   subjects begin `Synthetic: ` are mutable.
-- Request model allows only `ticket_id` and `action` (claim, release,
-  resolve). Foreign/unsafe records return generic 404; incompatible states
+- Request model allows only `ticket_id`, `action` (claim, release, resolve),
+  and the last observed `expected_version`. The organization, current
+  membership and ticket are locked in that deterministic order; role,
+  lifecycle, capability and version are rechecked under those locks.
+  Foreign/unsafe records return generic 404; stale or incompatible states
   return 409. Concurrent claims serialize at the row.
 - The action changes only `assigned_subject`, `status` and
   `resolved_at` on that fictional ticket, then commits.
@@ -78,6 +81,31 @@ final authorization. Viewer UIs remain read-only.
    concurrent requests, stale-state and Beta isolation verified; viewer
    still sees no write controls; audit zero integration jobs/AI requests.
 8. Keep PR #38 DRAFT and don't merge to PR #36/master until signoff.
+
+The stable `CI Required Checks` aggregate must be configured as a protected
+required check for the stacked branch. It fails closed unless the generated PR
+merge result and every mandatory CI job succeed. CodeQL remains a separate
+required security check. Repository branch-protection configuration is an
+external release control and must be verified independently on GitHub.
+
+## Security remediation evidence (2026-10-17)
+
+- Neon Ed25519 JWKS verification now rejects malformed JWTs before I/O, caches
+  successful key sets with a bounded TTL, collapses concurrent refreshes,
+  rate-limits unknown-key rotation probes, and applies a short failure backoff.
+- Delayed ticket forms are fenced by the durable ticket version. Membership
+  removal, AGENT demotion and organization suspension are fenced inside the
+  mutation transaction before the ticket lock and write.
+- Staging Server Action policy tests cover fixed destinations, exact subject,
+  Alpha-only selection, malformed backend responses, stale forms and explicit
+  same-origin rejection. A failed post-OTP subject check clears the session.
+- CodeQL gating examines primary, related, dataflow and stack-frame SARIF
+  locations across staging and shared security dependencies. Missing or
+  malformed SARIF and unscored warnings in scope fail closed with a readable
+  job summary.
+
+These are automated engineering and AI-assisted review controls. They are not
+formal independent human approval and do not lift the write-release hold.
 
 **Current status (2026-10-16):** The real-mailbox staging agent is verified
 in the isolated Neon Auth directory (user-supplied Neon table evidence), and

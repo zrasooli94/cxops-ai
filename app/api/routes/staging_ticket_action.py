@@ -23,6 +23,7 @@ from app.core.logging import get_logger
 from app.core.rbac import AuthorizationContext, Capability, OrganizationRole
 from app.models.customer import Customer
 from app.models.organization import Organization
+from app.models.organization_membership import OrganizationMembership
 from app.models.ticket import Ticket
 
 router = APIRouter(prefix="/staging", tags=["Isolated Staging"], include_in_schema=False)
@@ -40,6 +41,9 @@ class StagingTicketAction(BaseModel):
 
     ticket_id: int = Field(ge=1, le=2_147_483_647)
     action: Literal["claim", "release", "resolve"]
+    # JSON has no native datetime type, so this one field must parse an ISO-8601
+    # string even though the rest of the command model remains strict.
+    expected_version: datetime = Field(strict=False)
 
 
 class StagingTicketActionResult(BaseModel):
@@ -48,6 +52,7 @@ class StagingTicketActionResult(BaseModel):
     status: str
     assigned_to_you: bool
     resolved_at: datetime | None
+    version: datetime
 
 
 def _staging_actions_enabled() -> bool:
@@ -95,13 +100,45 @@ async def synthetic_ticket_action(
     """
     _check_actor(principal, tenant, authz)
 
+    # Deterministic authorization-fence lock order: organization, membership,
+    # then ticket. Revocation/demotion/suspension cannot commit between this
+    # fence and the synthetic mutation.
     org = (
         await db.execute(
-            select(Organization.name).where(Organization.id == tenant.organization_id)
+            select(Organization)
+            .where(Organization.id == tenant.organization_id)
+            .with_for_update()
         )
     ).scalar_one_or_none()
-    if org != "Synthetic Alpha Workshop":
+    if org is None or org.name != "Synthetic Alpha Workshop":
         raise HTTPException(status_code=404, detail="Synthetic ticket not found")
+    membership = (
+        await db.execute(
+            select(OrganizationMembership)
+            .where(
+                OrganizationMembership.organization_id == tenant.organization_id,
+                OrganizationMembership.subject == principal.subject,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    try:
+        current_role = OrganizationRole(membership.role) if membership is not None else None
+    except (ValueError, AttributeError):
+        current_role = None
+    current_authz = AuthorizationContext(
+        organization_id=tenant.organization_id,
+        subject=principal.subject,
+        role=current_role or OrganizationRole.VIEWER,
+        organization_status=org.lifecycle_status,
+        knowledge_setup_enabled=settings.onboarding_knowledge_setup_enabled,
+    )
+    if (
+        membership is None
+        or current_role != OrganizationRole.AGENT
+        or not current_authz.has(Capability.TICKET_WRITE)
+    ):
+        raise HTTPException(status_code=403, detail="Staging agent access required")
 
     result = await db.execute(
         select(Ticket)
@@ -119,6 +156,11 @@ async def synthetic_ticket_action(
         or not ticket.subject.startswith("Synthetic: ")
     ):
         raise HTTPException(status_code=404, detail="Synthetic ticket not found")
+    if ticket.updated_at != request.expected_version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ticket action conflicts with its current version",
+        )
 
     # A valid synthetic ticket may still have been linked to a mistakenly
     # imported customer. Only explicitly fictional Alpha customers are safe
@@ -176,4 +218,5 @@ async def synthetic_ticket_action(
         status=ticket.status,
         assigned_to_you=ticket.assigned_subject == principal.subject,
         resolved_at=ticket.resolved_at,
+        version=ticket.updated_at,
     )

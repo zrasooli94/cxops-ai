@@ -48,7 +48,11 @@ def staging_gate(monkeypatch):
     )
     monkeypatch.setattr(
         action_route, "settings",
-        SimpleNamespace(environment="staging", auth_mode="neon_staging"),
+        SimpleNamespace(
+            environment="staging",
+            auth_mode="neon_staging",
+            onboarding_knowledge_setup_enabled=False,
+        ),
     )
     def provide(subject: str):
         app.dependency_overrides[get_current_principal_dep] = (
@@ -104,6 +108,14 @@ def _headers(org_id: int):
     return {"X-CXOps-Organization-ID": str(org_id)}
 
 
+def _action(ticket: Ticket, action: str, *, version=None):
+    return {
+        "ticket_id": ticket.id,
+        "action": action,
+        "expected_version": (version or ticket.updated_at).isoformat(),
+    }
+
+
 @pytest.mark.asyncio
 async def test_synthetic_staging_claim_release_resolve_updates_exactly_one_ticket(
     db, client, org_scope, staging_gate,
@@ -118,32 +130,34 @@ async def test_synthetic_staging_claim_release_resolve_updates_exactly_one_ticke
         (await db.execute(select(func.count()).select_from(AIRequestLog))).scalar_one(),
     )
     result = await client.post(
-        endpoint, json={"ticket_id": ticket.id, "action": "claim"},
+        endpoint, json=_action(ticket, "claim"),
         headers=_headers(alpha.id),
     )
     assert result.status_code == 200, result.text
     assert result.json()["assigned_to_you"] is True
     assert (await _get_ticket(db, ticket.id)).assigned_subject == ACTOR
 
-    repeat = await client.post(endpoint, json={"ticket_id": ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+    claimed_version = result.json()["version"]
+    repeat = await client.post(endpoint, json=_action(ticket, "claim", version=ticket.updated_at), headers=_headers(alpha.id))
     assert repeat.status_code == 409
 
-    release = await client.post(endpoint, json={"ticket_id": ticket.id, "action": "release"}, headers=_headers(alpha.id))
+    release = await client.post(endpoint, json={**_action(ticket, "release"), "expected_version": claimed_version}, headers=_headers(alpha.id))
     assert release.status_code == 200
     assert release.json()["assigned_to_you"] is False
 
-    premature = await client.post(endpoint, json={"ticket_id": ticket.id, "action": "resolve"}, headers=_headers(alpha.id))
+    released_version = release.json()["version"]
+    premature = await client.post(endpoint, json={**_action(ticket, "resolve"), "expected_version": released_version}, headers=_headers(alpha.id))
     assert premature.status_code == 409
 
-    reassign = await client.post(endpoint, json={"ticket_id": ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+    reassign = await client.post(endpoint, json={**_action(ticket, "claim"), "expected_version": released_version}, headers=_headers(alpha.id))
     assert reassign.status_code == 200
-    solved = await client.post(endpoint, json={"ticket_id": ticket.id, "action": "resolve"}, headers=_headers(alpha.id))
+    solved = await client.post(endpoint, json={**_action(ticket, "resolve"), "expected_version": reassign.json()["version"]}, headers=_headers(alpha.id))
     assert solved.status_code == 200
     assert solved.json()["status"] == "solved"
     assert solved.json()["resolved_at"]
     assert (await _get_ticket(db, ticket.id)).resolved_at is not None
 
-    stale = await client.post(endpoint, json={"ticket_id": ticket.id, "action": "resolve"}, headers=_headers(alpha.id))
+    stale = await client.post(endpoint, json={**_action(ticket, "resolve"), "expected_version": reassign.json()["version"]}, headers=_headers(alpha.id))
     assert stale.status_code == 409
     assert (await _get_ticket(db, other.id)).status == "open"
     after = (
@@ -164,24 +178,24 @@ async def test_fails_closed_for_viewer_foreign_org_and_non_synthetic_ticket(
     endpoint = "/staging/ticket-action"
 
     staging_gate(VIEWER)
-    viewer = await client.post(endpoint, json={"ticket_id": alpha_ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+    viewer = await client.post(endpoint, json=_action(alpha_ticket, "claim"), headers=_headers(alpha.id))
     assert viewer.status_code == 403
     staging_gate(ACTOR)
 
-    foreign = await client.post(endpoint, json={"ticket_id": beta_ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+    foreign = await client.post(endpoint, json=_action(beta_ticket, "claim"), headers=_headers(alpha.id))
     assert foreign.status_code == 404
 
     # A forged Beta tenant selector is a membership denial, not a way for an
     # Alpha agent to move the trust boundary across a tenant.
     forged_tenant = await client.post(
         endpoint,
-        json={"ticket_id": beta_ticket.id, "action": "claim"},
+        json=_action(beta_ticket, "claim"),
         headers=_headers(beta.id),
     )
     assert forged_tenant.status_code == 403
-    unsafe = await client.post(endpoint, json={"ticket_id": non_synthetic.id, "action": "claim"}, headers=_headers(alpha.id))
+    unsafe = await client.post(endpoint, json=_action(non_synthetic, "claim"), headers=_headers(alpha.id))
     assert unsafe.status_code == 404
-    invalid = await client.post(endpoint, json={"ticket_id": alpha_ticket.id, "action": "claim", "organization_id": beta.id}, headers=_headers(alpha.id))
+    invalid = await client.post(endpoint, json={**_action(alpha_ticket, "claim"), "organization_id": beta.id}, headers=_headers(alpha.id))
     assert invalid.status_code == 422
     assert (await _get_ticket(db, beta_ticket.id)).assigned_subject is None
     assert (await _get_ticket(db, non_synthetic.id)).assigned_subject is None
@@ -193,7 +207,7 @@ async def test_action_switch_fails_closed_by_default(db, client, org_scope, stag
     ticket = await _make_ticket(db, alpha.id, external_id="PHASE1X-ALPHA-T4")
     monkeypatch.delenv("CXOPS_STAGING_TICKET_ACTIONS_ENABLED")
     assert not staging_request_allowed("POST", "/staging/ticket-action")
-    response = await client.post("/staging/ticket-action", json={"ticket_id": ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+    response = await client.post("/staging/ticket-action", json=_action(ticket, "claim"), headers=_headers(alpha.id))
     assert response.status_code == 503
     assert (await _get_ticket(db, ticket.id)).assigned_subject is None
 
@@ -203,7 +217,7 @@ async def test_only_exact_staging_actor_can_write(db, client, org_scope, staging
     alpha, _ = await _setup(db, org_scope)
     ticket = await _make_ticket(db, alpha.id, external_id="PHASE1X-ALPHA-T5")
     monkeypatch.setenv("CXOPS_STAGING_TICKET_AGENT_SUBJECT", str(uuid.uuid4()))
-    response = await client.post("/staging/ticket-action", json={"ticket_id": ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+    response = await client.post("/staging/ticket-action", json=_action(ticket, "claim"), headers=_headers(alpha.id))
     assert response.status_code == 403
     assert (await _get_ticket(db, ticket.id)).assigned_subject is None
 
@@ -213,7 +227,7 @@ async def test_concurrent_claims_one_winner(db, client, org_scope, staging_gate)
     alpha, _ = await _setup(db, org_scope)
     ticket = await _make_ticket(db, alpha.id, external_id="PHASE1X-ALPHA-T6")
     async def attempt():
-        return await client.post("/staging/ticket-action", json={"ticket_id": ticket.id, "action": "claim"}, headers=_headers(alpha.id))
+        return await client.post("/staging/ticket-action", json=_action(ticket, "claim"), headers=_headers(alpha.id))
 
     first, second = await asyncio.gather(attempt(), attempt())
     assert sorted((first.status_code, second.status_code)) == [200, 409]
@@ -233,7 +247,7 @@ async def test_production_never_exposes_synthetic_staging_write_route(
     )
     denied = await client.post(
         "/staging/ticket-action",
-        json={"ticket_id": ticket.id, "action": "claim"},
+        json=_action(ticket, "claim"),
         headers=_headers(alpha.id),
     )
     assert denied.status_code == 404
@@ -284,7 +298,7 @@ async def test_disabled_staging_route_rejects_anonymous_before_auth_or_db(
     monkeypatch.setattr(main, "settings", SimpleNamespace(environment="staging"))
     response = await client.post(
         "/staging/ticket-action",
-        json={"ticket_id": 1, "action": "resolve"},
+        json={"ticket_id": 1, "action": "resolve", "expected_version": "2026-01-01T00:00:00Z"},
     )
     assert response.status_code == 503
     assert response.json() == {"detail": "Staging operations are not enabled."}
@@ -312,7 +326,7 @@ async def test_linked_non_synthetic_customer_cannot_be_changed_by_test_agent(
 
     response = await client.post(
         "/staging/ticket-action",
-        json={"ticket_id": ticket.id, "action": "claim"},
+        json=_action(ticket, "claim"),
         headers=_headers(alpha.id),
     )
     assert response.status_code == 404
@@ -349,7 +363,7 @@ async def test_verified_synthetic_customer_link_remains_claimable(
     await db.commit()
     response = await client.post(
         "/staging/ticket-action",
-        json={"ticket_id": ticket.id, "action": "claim"},
+        json=_action(ticket, "claim"),
         headers=_headers(alpha.id),
     )
     assert response.status_code == 200, response.text
