@@ -82,6 +82,64 @@ jobs:
         working-directory: frontend
         run: npm run test:staging
 
+  # Separate, hermetic security qualification. A general 3k-test runner hang
+  # must not mask the results of the Phase 1Y adversarial staging tests.
+  # No Neon, Render, Vercel, Zendesk, Nhost or real provider credentials.
+  phase1y-independent-security:
+    name: Phase 1Y Isolated Security (Disposable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops
+          POSTGRES_USER: cxops
+          POSTGRES_PASSWORD: cxops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops -d cxops"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
+      ENVIRONMENT: development
+      DEBUG: "true"
+      AUTH_DEV_MODE: "false"
+      OPENAI_API_KEY: test-key
+      ZENDESK_WEBHOOK_SECRET: test-secret
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install locked developer test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Migrate disposable Postgres only
+        run: alembic upgrade head
+
+      - name: Run staging JWT, RBAC, isolation, race and replay regressions
+        run: |
+          python -m pytest -q \
+            tests/test_phase1y_synthetic_ticket_actions.py \
+            tests/test_phase1y_independent_review.py \
+            tests/test_staging_neon_jwt.py \
+            tests/test_staging_neon_auth_integration.py \
+            tests/test_phase1w_staging_http_gate.py \
+            --tb=short -o faulthandler_timeout=120 --durations=20
+
   backend-tests:
     name: Backend Tests (Unit)
     runs-on: ubuntu-latest
