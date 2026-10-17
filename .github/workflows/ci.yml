@@ -24,6 +24,9 @@ jobs:
     steps:
       - name: Checkout GitHub-generated merge result
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
       - name: Fail closed unless the tested SHA is the PR merge result
         env:
           EXPECTED_MERGE_SHA: ${{ github.sha }}
