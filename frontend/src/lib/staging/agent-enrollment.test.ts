@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   stagingAgentEnrollmentTarget, stagingAgentEnrollmentViewer,
-  stagingEnrollmentSetupCodeAccepted, stagingVerificationOtp,
+  stagingEnrollmentSetupCodeAccepted, stagingVerificationOtp, stagingAgentSignInTarget,
 } from "./agent-enrollment.ts";
 
 const safePreview = {
@@ -60,6 +60,34 @@ describe("synthetic agent enrollment policy", () => {
     assert.equal(stagingEnrollmentSetupCodeAccepted({
       ...safePreview, CXOPS_STAGING_AGENT_ENROLL_CODE: "short",
     }, "short"), false);
+  });
+
+
+  it("agent OTP sign-in remains separate, off by default and exact-subject bound", () => {
+    const subject = "a8dd2946-2640-4122-b552-eca820d228de";
+    const env = {
+      ...safePreview,
+      CXOPS_STAGING_AGENT_ENROLL_ENABLED: "false",
+      CXOPS_STAGING_AGENT_SIGNIN_ENABLED: "true",
+      CXOPS_STAGING_AGENT_ENROLL_CODE: "PRIVATE_TEST_ONLY_SETUP_CODE_NOT_REAL",
+      CXOPS_STAGING_TICKET_AGENT_SUBJECT: subject,
+      CXOPS_STAGING_ALLOWED_SUBJECTS: "4c09d849-2ec6-4caa-aeb8-91d631084e67," + subject,
+    };
+    assert.deepEqual(stagingAgentSignInTarget(env), {
+      email: "enrolled.agent@gmail.com", subject,
+    });
+    for (const [key, value] of [
+      ["VERCEL_ENV", "production"],
+      ["CXOPS_STAGING_AGENT_SIGNIN_ENABLED", "false"],
+      ["CXOPS_STAGING_AGENT_ENROLL_CODE", "short"],
+      ["CXOPS_STAGING_AUTH_PROVIDER", "nhost"],
+      ["CXOPS_STAGING_TICKET_AGENT_SUBJECT", "different"],
+      ["CXOPS_STAGING_ALLOWED_SUBJECTS", "4c09d849-2ec6-4caa-aeb8-91d631084e67"],
+      ["CXOPS_STAGING_AGENT_ENROLL_EMAIL", "user@example.test"],
+    ] as const) {
+      assert.equal(stagingAgentSignInTarget({ ...env, [key]: value }), null, key);
+    }
+    assert.equal(stagingAgentSignInTarget(safePreview), null);
   });
 
   it("never accepts a client-controlled email or malformed OTP", () => {

@@ -259,7 +259,9 @@ async def get_current_principal(
     log.info(
         "auth_success",
         subject=principal.subject,
-        email=principal.email,
+        # A staging agent may use a real mailbox; it must never be emitted
+        # to Render/telemetry logs. Production audit semantics are unchanged.
+        email=None if auth_method == "neon_staging_ed25519" else principal.email,
         issuer=principal.issuer,
         auth_method=principal.auth_method,
     )

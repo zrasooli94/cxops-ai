@@ -292,7 +292,8 @@ def test_secret_references_are_limited_to_supported_shapes(ci_lines: list[str]) 
     """
     assignment = re.compile(r"^[A-Z0-9_]+: \$\{\{ secrets\.[A-Z0-9_]+ \}\}$")
     marker = (
-        r"^EVALUATION_ENABLED: \$\{\{ secrets\.EVALUATION_OPENAI_API_KEY != '' && "
+        r"^EVALUATION_ENABLED: \$\{\{ github\.event_name == 'push' && "
+        r"secrets\.EVALUATION_OPENAI_API_KEY != '' && "
         r"secrets\.EVALUATION_ORGANIZATION_ID != '' \}\}$"
     )
     for line in ci_lines:

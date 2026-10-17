@@ -42,18 +42,26 @@ _phase1p_namespace_isolated = base._phase1p_namespace_isolated
 
 class PoolProbe:
     def __init__(self, engine) -> None:
-        self.out = 0
+        self.pool = engine.sync_engine.pool
+        self._checked_out: set[object] = set()
         self.peak = 0
-        pool = engine.sync_engine.pool
-        event.listen(pool, "checkout", self._checkout)
-        event.listen(pool, "checkin", self._checkin)
+        event.listen(self.pool, "checkout", self._checkout)
+        event.listen(self.pool, "checkin", self._checkin)
 
-    def _checkout(self, *_a) -> None:
-        self.out += 1
+    @property
+    def out(self) -> int:
+        return len(self._checked_out)
+
+    def _checkout(self, _dbapi_connection, connection_record, _connection_proxy) -> None:
+        self._checked_out.add(connection_record)
         self.peak = max(self.peak, self.out)
 
-    def _checkin(self, *_a) -> None:
-        self.out -= 1
+    def _checkin(self, _dbapi_connection, connection_record) -> None:
+        # SQLAlchemy deliberately emits ``checkin`` after a failed/cancelled
+        # checkout too.  In that path no ``checkout`` event was emitted, so a
+        # raw increment/decrement counter becomes negative even though nothing
+        # is checked out.  Track records that completed checkout instead.
+        self._checked_out.discard(connection_record)
 
 
 @pytest_asyncio.fixture
@@ -196,6 +204,7 @@ async def test_cancelled_turn_returns_every_connection_and_lock(
         await task
     await asyncio.sleep(0.2)
     assert small_pool.out == 0
+    assert small_pool.pool.checkedout() == 0
     # No advisory lock leaked: a fresh turn on the same ticket proceeds.
     chat._stub(monkeypatch, delay=0.0)
     retry = await asyncio.wait_for(chat._send(client, token, "again", delivery="sync"), 20)

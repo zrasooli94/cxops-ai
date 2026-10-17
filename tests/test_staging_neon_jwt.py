@@ -1,4 +1,5 @@
 """Synthetic-only adversarial JWT verification for Neon staging; zero network."""
+
 import base64
 import json
 import time
@@ -14,23 +15,36 @@ from staging.neon_jwt import (
     STAGING_JWKS_URL,
     NeonStagingIdentityUnavailable,
     NeonStagingTokenError,
+    _reset_staging_jwks_cache_for_tests,
     verify_neon_staging_token,
     verify_signed_staging_jwt,
 )
 
 NOW = 1_800_000_000
 PRIVATE_KEY = Ed25519PrivateKey.generate()
-PUBLIC_X = base64.urlsafe_b64encode(
-    PRIVATE_KEY.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
+PUBLIC_X = (
+    base64.urlsafe_b64encode(
+        PRIVATE_KEY.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
     )
-).decode().rstrip("=")
+    .decode()
+    .rstrip("=")
+)
 KID = "synthetic-staging-key"
-JWKS = {"keys": [
-    {"kid": KID, "kty": "OKP", "crv": "Ed25519",
-     "alg": "EdDSA", "use": "sig", "x": PUBLIC_X},
-]}
+JWKS = {
+    "keys": [
+        {
+            "kid": KID,
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "alg": "EdDSA",
+            "use": "sig",
+            "x": PUBLIC_X,
+        },
+    ]
+}
 BASE_CLAIMS = {
     "iat": NOW - 60,
     "exp": NOW + 840,
@@ -46,10 +60,19 @@ BASE_CLAIMS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _isolated_jwks_cache():
+    _reset_staging_jwks_cache_for_tests()
+    yield
+    _reset_staging_jwks_cache_for_tests()
+
+
 def _encode_json(obj: dict) -> str:
-    return base64.urlsafe_b64encode(
-        json.dumps(obj, separators=(",", ":")).encode()
-    ).decode().rstrip("=")
+    return (
+        base64.urlsafe_b64encode(json.dumps(obj, separators=(",", ":")).encode())
+        .decode()
+        .rstrip("=")
+    )
 
 
 def _sign(
@@ -58,12 +81,16 @@ def _sign(
     header: dict | None = None,
     signer: Ed25519PrivateKey = PRIVATE_KEY,
 ) -> str:
-    header_data = header if header is not None else {
-        "alg": "EdDSA", "typ": "JWT", "kid": KID,
-    }
-    parts = ".".join([
-        _encode_json(header_data), _encode_json(claims or BASE_CLAIMS)
-    ])
+    header_data = (
+        header
+        if header is not None
+        else {
+            "alg": "EdDSA",
+            "typ": "JWT",
+            "kid": KID,
+        }
+    )
+    parts = ".".join([_encode_json(header_data), _encode_json(claims or BASE_CLAIMS)])
     signature = signer.sign(parts.encode("ascii"))
     return parts + "." + base64.urlsafe_b64encode(signature).decode().rstrip("=")
 
@@ -139,7 +166,13 @@ def test_foreign_signing_key_and_kid_collision_rejected():
         {"kid": KID, "kty": "OKP", "crv": "X25519", "x": PUBLIC_X},
         {"kid": KID, "kty": "OKP", "crv": "Ed25519", "alg": "RS256", "x": PUBLIC_X},
         {"kid": KID, "kty": "OKP", "crv": "Ed25519", "use": "enc", "x": PUBLIC_X},
-        {"kid": KID, "kty": "OKP", "crv": "Ed25519", "key_ops": ["sign"], "x": PUBLIC_X},
+        {
+            "kid": KID,
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "key_ops": ["sign"],
+            "x": PUBLIC_X,
+        },
         {"kid": KID, "kty": "OKP", "crv": "Ed25519", "x": "bad"},
     ],
 )
@@ -157,14 +190,20 @@ def test_malformed_jwks_fails_closed():
 def test_duplicate_header_fields_are_rejected():
     # Untrusted clients can submit a byte-level duplicate even when Python
     # dicts cannot hold duplicates. The signature itself is still valid.
-    header = base64.urlsafe_b64encode(
-        b'{"alg":"EdDSA","alg":"HS256","kid":"synthetic-staging-key"}'
-    ).decode().rstrip("=")
+    header = (
+        base64.urlsafe_b64encode(
+            b'{"alg":"EdDSA","alg":"HS256","kid":"synthetic-staging-key"}'
+        )
+        .decode()
+        .rstrip("=")
+    )
     payload = _encode_json(BASE_CLAIMS)
     raw = f"{header}.{payload}"
-    token = raw + "." + base64.urlsafe_b64encode(
-        PRIVATE_KEY.sign(raw.encode())
-    ).decode().rstrip("=")
+    token = (
+        raw
+        + "."
+        + base64.urlsafe_b64encode(PRIVATE_KEY.sign(raw.encode())).decode().rstrip("=")
+    )
     with pytest.raises(NeonStagingTokenError):
         _verify(token)
 
@@ -200,10 +239,15 @@ async def test_jwks_adapter_uses_exact_pinned_staging_endpoint_without_live_netw
         pinned = router.get(STAGING_JWKS_URL).mock(
             return_value=httpx.Response(200, json=JWKS)
         )
-        actual = await verify_neon_staging_token(_sign({
-            **BASE_CLAIMS, "iat": int(time.time()) - 30,
-            "exp": int(__import__("time").time()) + 870,
-        }))
+        actual = await verify_neon_staging_token(
+            _sign(
+                {
+                    **BASE_CLAIMS,
+                    "iat": int(time.time()) - 30,
+                    "exp": int(__import__("time").time()) + 870,
+                }
+            )
+        )
         assert pinned.called
         assert actual["sub"] == "synthetic-staging-user-id"
 
@@ -220,6 +264,93 @@ async def test_malformed_staging_token_never_triggers_external_auth_request():
 
 
 @pytest.mark.asyncio
+async def test_shaped_but_invalid_tokens_never_trigger_external_auth_request():
+    with respx.mock(assert_all_called=False) as router:
+        probe = router.get(STAGING_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=JWKS)
+        )
+        for token in (
+            "abc.def.ghi",
+            _sign(header={"alg": "HS256", "kid": KID, "typ": "JWT"}),
+            _sign(header={"alg": "EdDSA", "typ": "JWT"}),
+        ):
+            with pytest.raises(NeonStagingTokenError):
+                await verify_neon_staging_token(token)
+        assert not probe.called
+
+
+@pytest.mark.asyncio
+async def test_jwks_cache_and_single_flight_bound_outbound_requests():
+    claims = {
+        **BASE_CLAIMS,
+        "iat": int(time.time()) - 30,
+        "exp": int(time.time()) + 600,
+    }
+    token = _sign(claims)
+    with respx.mock(assert_all_called=True) as router:
+        probe = router.get(STAGING_JWKS_URL).mock(
+            return_value=httpx.Response(200, json=JWKS)
+        )
+        results = await __import__("asyncio").gather(
+            *[verify_neon_staging_token(token) for _ in range(20)]
+        )
+        assert all(result["sub"] == BASE_CLAIMS["sub"] for result in results)
+        assert probe.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_kid_refresh_is_rate_limited_and_supports_rotation():
+    now = int(time.time())
+    first_token = _sign({**BASE_CLAIMS, "iat": now - 30, "exp": now + 600})
+    rotated_key = Ed25519PrivateKey.generate()
+    rotated_x = (
+        base64.urlsafe_b64encode(
+            rotated_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+        )
+        .decode()
+        .rstrip("=")
+    )
+    rotated_kid = "rotated-staging-key"
+    rotated_jwks = {
+        "keys": [
+            {
+                "kid": rotated_kid,
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "alg": "EdDSA",
+                "use": "sig",
+                "x": rotated_x,
+            }
+        ]
+    }
+    rotated_token = _sign(
+        {**BASE_CLAIMS, "iat": now - 30, "exp": now + 600},
+        header={"alg": "EdDSA", "typ": "JWT", "kid": rotated_kid},
+        signer=rotated_key,
+    )
+    unknown = _sign(
+        {**BASE_CLAIMS, "iat": now - 30, "exp": now + 600},
+        header={"alg": "EdDSA", "typ": "JWT", "kid": "attacker-key"},
+    )
+    with respx.mock(assert_all_called=True) as router:
+        probe = router.get(STAGING_JWKS_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=JWKS),
+                httpx.Response(200, json=rotated_jwks),
+            ]
+        )
+        assert (await verify_neon_staging_token(first_token))["sub"]
+        assert (await verify_neon_staging_token(rotated_token))["sub"]
+        for _ in range(10):
+            with pytest.raises(NeonStagingTokenError):
+                await verify_neon_staging_token(unknown)
+        assert probe.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_jwks_network_errors_and_oversized_responses_fail_closed():
     with respx.mock(assert_all_called=True) as router:
         router.get(STAGING_JWKS_URL).mock(
@@ -227,3 +358,25 @@ async def test_jwks_network_errors_and_oversized_responses_fail_closed():
         )
         with pytest.raises(NeonStagingIdentityUnavailable):
             await verify_neon_staging_token(_sign())
+
+
+@pytest.mark.asyncio
+async def test_jwks_outage_backoff_bounds_concurrent_and_repeated_requests():
+    token = _sign(
+        {
+            **BASE_CLAIMS,
+            "iat": int(time.time()) - 30,
+            "exp": int(time.time()) + 600,
+        }
+    )
+    with respx.mock(assert_all_called=True) as router:
+        probe = router.get(STAGING_JWKS_URL).mock(return_value=httpx.Response(503))
+        results = await __import__("asyncio").gather(
+            *(verify_neon_staging_token(token) for _ in range(20)),
+            return_exceptions=True,
+        )
+        assert all(isinstance(item, NeonStagingIdentityUnavailable) for item in results)
+        for _ in range(10):
+            with pytest.raises(NeonStagingIdentityUnavailable):
+                await verify_neon_staging_token(token)
+        assert probe.call_count == 1

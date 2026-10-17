@@ -49,3 +49,33 @@ export function stagingEnrollmentSetupCodeAccepted(
   const b = createHash("sha256").update(supplied.trim(), "utf8").digest();
   return timingSafeEqual(a, b);
 }
+
+
+/** Separate opt-in sign-in policy; enrollment itself may now be switched off.
+ * This does not grant any membership or capability. The normal verified
+ * Neon session and backend tenant/RBAC checks still apply after sign-in.
+ */
+export function stagingAgentSignInTarget(
+  env: StagingEnrollmentEnvironment,
+): { email: string; subject: string } | null {
+  if (env.VERCEL_ENV !== "preview" ||
+      env.CXOPS_PREVIEW_AUTH_ENABLED !== "true" ||
+      env.CXOPS_STAGING_ISOLATION_VERIFIED !== "true" ||
+      env.CXOPS_STAGING_AUTH_PROVIDER !== "neon" ||
+      env.CXOPS_STAGING_AGENT_SIGNIN_ENABLED !== "true") return null;
+
+  const subject = (env.CXOPS_STAGING_TICKET_AGENT_SUBJECT ?? "").trim();
+  const allowed = (env.CXOPS_STAGING_ALLOWED_SUBJECTS ?? "").split(",").map(v => v.trim());
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuid.test(subject) || allowed.length > 10 ||
+      !allowed.every(value => uuid.test(value)) || !allowed.includes(subject)) return null;
+
+  const email = (env.CXOPS_STAGING_AGENT_ENROLL_EMAIL ?? "").trim().toLowerCase();
+  if (email.length > 254 || !/^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/.test(email) ||
+      email.endsWith("@example.test")) return null;
+  // The same private setup gate is required to request the OTP. Do not allow
+  // an empty or short setup secret even if all other flags are accidentally set.
+  const setup = env.CXOPS_STAGING_AGENT_ENROLL_CODE;
+  if (!setup || setup.length < 24 || setup.length > 128) return null;
+  return { email, subject };
+}

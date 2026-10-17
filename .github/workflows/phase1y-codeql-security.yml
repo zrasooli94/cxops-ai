@@ -1,0 +1,64 @@
+# Independent tool-based security analysis for the isolated Phase 1Y draft.
+# No customer data, database connection, vendor secrets, production deployment
+# or ticket-writing capability is needed by this workflow.
+name: Phase 1Y CodeQL Security Analysis
+
+on:
+  push:
+    branches:
+      - feature/phase1y-synthetic-ticket-workflow
+  pull_request:
+    branches:
+      - feature/phase1w-preview-isolation-gate
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1y-codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    if: github.repository == 'zrasooli94/cxops-ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+
+    steps:
+      - name: Checkout exact Phase 1Y branch commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL independent analysis
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze and publish findings
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+
+      - name: Report CodeQL security findings and gate serious staging alerts
+        shell: bash
+        env:
+          ANALYSIS_LANGUAGE: ${{ matrix.language }}
+        run: |
+          basename="${ANALYSIS_LANGUAGE/javascript-typescript/javascript}"
+          python scripts/check_phase1y_codeql_sarif.py \
+            "$RUNNER_WORKSPACE/results/$basename.sarif" \
+            "$ANALYSIS_LANGUAGE" \
+            --summary "$GITHUB_STEP_SUMMARY"

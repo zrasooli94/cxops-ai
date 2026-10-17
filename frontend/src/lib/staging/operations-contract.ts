@@ -6,7 +6,8 @@ export type StagingOrganization = { id: number; name: string };
 export type StagingTicket = {
   id: number; organization_id: number; customer_id: number | null;
   external_id: string; subject: string; status: string; priority: string;
-  source: "synthetic_staging"; created_at: string;
+  source: "synthetic_staging"; created_at: string; updated_at: string;
+  assigned_subject: string | null; resolved_at: string | null;
 };
 export type StagingCustomer = {
   id: number; organization_id: number; external_id: string;
@@ -67,7 +68,9 @@ export function parseStagingTickets(value: unknown, organizationId: number): Sta
       !["new", "open", "pending", "solved", "closed"].includes(String(ticket.status)) ||
       !["low", "normal", "high", "urgent"].includes(String(ticket.priority)) ||
       (ticket.customer_id !== null && !positiveId(ticket.customer_id)) ||
-      !text(ticket.created_at, 64)
+      !text(ticket.created_at, 64) || !text(ticket.updated_at, 64) ||
+      (ticket.assigned_subject !== null && !text(ticket.assigned_subject, 255)) ||
+      (ticket.resolved_at !== null && !text(ticket.resolved_at, 64))
     ) {
       throw new Error("A non-synthetic or foreign-tenant ticket was blocked");
     }
@@ -77,6 +80,9 @@ export function parseStagingTickets(value: unknown, organizationId: number): Sta
       external_id: ticket.external_id, subject: ticket.subject,
       status: ticket.status as string, priority: ticket.priority as string,
       source: "synthetic_staging", created_at: ticket.created_at,
+      updated_at: ticket.updated_at,
+      assigned_subject: ticket.assigned_subject as string | null,
+      resolved_at: ticket.resolved_at as string | null,
     };
   });
 }

@@ -40,3 +40,13 @@ test("verified SDK session supplies server-side API identity", async () => {
   assert.equal(result?.user.id, "synthetic");
   assert.equal(result?.token, "synthetic-internal-only");
 });
+
+test("Phase 1Y must never fall back to old Phase 1W API", () => {
+  const earlierReadOnlyApi = "https://cxops-ai-staging-api.onrender.com";
+  assert.notEqual(STAGING_BACKEND_URL, earlierReadOnlyApi);
+  assert.equal(neonStagingEnabled({
+    ...ready,
+    BACKEND_API_URL: earlierReadOnlyApi,
+    CXOPS_STAGING_BACKEND_URL: earlierReadOnlyApi,
+  }), false);
+});

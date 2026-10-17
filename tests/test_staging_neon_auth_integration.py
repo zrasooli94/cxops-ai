@@ -105,6 +105,29 @@ async def test_staging_api_accepts_only_verified_neon_identity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_staging_authentication_never_logs_a_real_agent_email(monkeypatch):
+    config = SimpleNamespace(
+        environment="staging", auth_mode="neon_staging", auth_dev_mode=False,
+    )
+    monkeypatch.setattr(auth, "get_settings", lambda: config)
+    seen = []
+
+    async def verified_staging_agent(_token):
+        return {
+            "sub": "staging-synthetic-user-id",
+            "email": "private.agent@gmail.com",
+        }
+
+    monkeypatch.setattr(auth, "verify_neon_staging_token", verified_staging_agent)
+    monkeypatch.setattr(auth.log, "info", lambda event, **values: seen.append((event, values)))
+    principal = await get_current_principal("Bearer synthetic")
+    assert principal.email == "private.agent@gmail.com"
+    assert seen and seen[-1][0] == "auth_success"
+    assert seen[-1][1]["email"] is None
+    assert "private.agent@gmail.com" not in repr(seen)
+
+
+@pytest.mark.asyncio
 async def test_staging_rejects_bad_tokens_and_unreachable_identity(monkeypatch):
 
     monkeypatch.setattr(
