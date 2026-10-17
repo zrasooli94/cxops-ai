@@ -85,6 +85,10 @@ jobs:
   backend-tests:
     name: Backend Tests (Unit)
     runs-on: ubuntu-latest
+    # Normal full suite completes in 7-9 minutes. A recent runner hung for 51
+    # minutes without a completed test step: fail clearly instead of burning
+    # unlimited CI minutes. Never skip or reduce the asserted test suite.
+    timeout-minutes: 20
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -128,7 +132,7 @@ jobs:
 
       - name: Run pytest (unit)
         run: |
-          pytest -q --tb=short -m "not integration"
+          pytest -q --tb=short -m "not integration" -o faulthandler_timeout=120 --durations=20
 
   frontend-build:
     name: Frontend Build
