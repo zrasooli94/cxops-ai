@@ -63,17 +63,37 @@ class PrivateSastGateTests(unittest.TestCase):
 
     def test_invalid_report_shape_fails(self):
         for item in ({}, {"results": [], "errors": []}, {"results": "oops", "errors": []}):
-            with self.subTest(item=item):
-                with self.assertRaises(ValueError):
-                    evaluate(item)
+            with self.subTest(item=item), self.assertRaises(TypeError):
+                evaluate(item)
 
     def test_malformed_finding_fails(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             evaluate(report(results=[{"check_id": "x", "path": "app/main.py"}]))
 
     def test_unknown_severity_fails(self):
         with self.assertRaises(ValueError):
             evaluate(report(results=[finding("app/main.py", "CRITICAL_X")]))
+
+    def test_approved_non_staging_partial_parser_error_is_reported(self):
+        path = "frontend/src/app/(control-center)/dashboard/page.tsx"
+        error = {"type": ["PartialParsing", [{"path": path}]],
+                 "spans": [{"file": path}]}
+        summary, failed = evaluate(report(errors=[error]))
+        self.assertFalse(failed)
+        self.assertIn("Approved non-staging TSX parser warnings: **1**", summary)
+
+    def test_staging_partial_parser_error_blocks(self):
+        path = "frontend/src/app/staging/page.tsx"
+        error = {"type": ["PartialParsing", [{"path": path}]],
+                 "spans": [{"file": path}]}
+        _, failed = evaluate(report(errors=[error]))
+        self.assertTrue(failed)
+
+    def test_new_unrecognized_tsx_parse_warning_blocks(self):
+        path = "frontend/src/app/(control-center)/new-feature/page.tsx"
+        error = {"type": "PartialParsing", "spans": [{"file": path}]}
+        _, failed = evaluate(report(errors=[error]))
+        self.assertTrue(failed)
 
     def test_summary_never_includes_source_snippet(self):
         summary, _ = evaluate(report(results=[finding("app/core/auth.py")]))

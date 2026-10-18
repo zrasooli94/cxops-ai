@@ -154,9 +154,14 @@ jobs:
           python scripts/check_private_sast.py \
             "$RUNNER_TEMP/cxops-private-sast.json" \
             --summary "$GITHUB_STEP_SUMMARY"
-          if [ "$scan_status" -ne 0 ]; then
-            echo "::error::Semgrep CE returned status $scan_status; CI remains blocked."
+          # Strict exit 3 is permissible only after the parser independently
+          # verifies the four precisely allowlisted non-security TSX warnings.
+          if [ "$scan_status" -ne 0 ] && [ "$scan_status" -ne 3 ]; then
+            echo "::error::Unexpected Semgrep CE exit status $scan_status."
             exit "$scan_status"
+          fi
+          if [ "$scan_status" -eq 3 ]; then
+            echo "::warning::Semgrep TSX grammar limitations verified against narrow allowlist."
           fi
 
   # Separate, hermetic security qualification. A general 3k-test runner hang

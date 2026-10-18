@@ -33,6 +33,16 @@ SECURITY_FILES = {
 }
 
 
+# Four known TSX parser limitations outside staging/shared-auth paths.
+# Re-review after Semgrep grammar changes; no security-code exceptions.
+APPROVED_PARTIAL_PARSE_PATHS = frozenset({
+    "frontend/src/app/(control-center)/dashboard/page.tsx",
+    "frontend/src/app/(control-center)/knowledge/page.tsx",
+    "frontend/src/app/(control-center)/observability/page.tsx",
+    "frontend/src/app/(control-center)/transformation/page.tsx",
+})
+
+
 def _path(value: Any) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("Semgrep result must identify a source path")
@@ -43,16 +53,37 @@ def _security_scope(path: str) -> bool:
     return path in SECURITY_FILES or any(path.startswith(p) for p in SECURITY_DIRS)
 
 
+def _error_kind(error: dict[str, Any]) -> str:
+    kind = error.get("type")
+    if isinstance(kind, list) and kind and isinstance(kind[0], str):
+        return kind[0]
+    return kind if isinstance(kind, str) else "unknown"
+
+
+def _approved_partial_parse(error: Any) -> bool:
+    if not isinstance(error, dict) or _error_kind(error) != "PartialParsing":
+        return False
+    spans = error.get("spans")
+    if not isinstance(spans, list) or not spans:
+        return False
+    paths = {
+        _path(span["file"])
+        for span in spans
+        if isinstance(span, dict) and isinstance(span.get("file"), str)
+    }
+    return bool(paths) and paths.issubset(APPROVED_PARTIAL_PARSE_PATHS)
+
+
 def evaluate(report: dict[str, Any]) -> tuple[str, bool]:
     """Fail closed on scan errors, errors anywhere, and scoped warnings."""
     if not isinstance(report, dict):
-        raise ValueError("Semgrep report must be a JSON object")
+        raise TypeError("Semgrep report must be a JSON object")
     results, errors = report.get("results"), report.get("errors")
     if not isinstance(results, list) or not isinstance(errors, list):
-        raise ValueError("Semgrep report has no validated results/errors lists")
+        raise TypeError("Semgrep report has no validated results/errors lists")
     paths = report.get("paths")
     if not isinstance(paths, dict) or not isinstance(paths.get("scanned"), list):
-        raise ValueError("Semgrep report has no scanned-file inventory")
+        raise TypeError("Semgrep report has no scanned-file inventory")
     scanned = [_path(p) for p in paths["scanned"]]
     for target in ("app/", "staging/", "frontend/src/"):
         if not any(p.startswith(target) for p in scanned):
@@ -61,7 +92,7 @@ def evaluate(report: dict[str, Any]) -> tuple[str, bool]:
     findings: list[tuple[str, str, str, bool]] = []
     for item in results:
         if not isinstance(item, dict) or not isinstance(item.get("extra"), dict):
-            raise ValueError("Malformed Semgrep result")
+            raise TypeError("Malformed Semgrep result")
         path = _path(item.get("path"))
         severity = item["extra"].get("severity")
         if severity not in ("ERROR", "WARNING", "INFO", "INVENTORY", "EXPERIMENT"):
@@ -75,9 +106,12 @@ def evaluate(report: dict[str, Any]) -> tuple[str, bool]:
         findings.append((rule[:140], path[:240], severity, blocked))
 
     blocked_findings = [f for f in findings if f[3]]
+    approved_partial = [e for e in errors if _approved_partial_parse(e)]
+    unexpected_errors = [e for e in errors if not _approved_partial_parse(e)]
+    if len(approved_partial) > len(APPROVED_PARTIAL_PARSE_PATHS):
+        raise ValueError("Unexpected quantity of approved partial parse warnings")
     error_categories = sorted({
-        str(e.get("type", "unknown"))[:65]
-        for e in errors if isinstance(e, dict)
+        _error_kind(e) for e in errors if isinstance(e, dict)
     })
     error_files = sorted({
         str(span.get("file"))[:180]
@@ -91,14 +125,16 @@ def evaluate(report: dict[str, Any]) -> tuple[str, bool]:
         f"- Findings: **{len(findings)}**",
         f"- Blocking findings: **{len(blocked_findings)}**",
         f"- Scanner/config errors: **{len(errors)}**",
+        f"- Approved non-staging TSX parser warnings: **{len(approved_partial)}**",
+        f"- Unexpected scanner/config errors: **{len(unexpected_errors)}**",
         "- Scanner error categories: " + (", ".join(error_categories) or "none"),
         "- Scanner diagnostic paths: " + (", ".join(error_files[:8]) or "none"),
         "- No source code, snippets, credentials, or raw Semgrep JSON are uploaded.",
         "- Community Edition is not equivalent to CodeQL or a human review.",
     ]
     for rule, path, severity, _ in (blocked_findings or findings)[:30]:
-        lines.append(f"- {severity} {rule}: \`{path}\`")
-    return "\n".join(lines) + "\n", bool(blocked_findings or errors)
+        lines.append(f"- {severity} {rule}: `{path}`")
+    return "\n".join(lines) + "\n", bool(blocked_findings or unexpected_errors)
 
 
 def main() -> int:

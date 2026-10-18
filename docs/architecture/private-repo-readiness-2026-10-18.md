@@ -103,3 +103,13 @@ but are not a substitute for access controls.
 This task authorizes no production workers, credentials, databases, prices,
 accounts, aliases, cron schedules, PR merges or visibility changes. It does
 not constitute formal independent human Phase 1Y security signoff.
+
+## Initial Semgrep CE grammar limitation
+
+The first scan covered 457 tracked runtime files and found no rule hits.
+Semgrep's strict parser flagged four partial TSX parses outside all security
+paths (dashboard, knowledge, observability, transformation). The parser gate
+permits only these exact known diagnostic file paths; any new parse error,
+security finding, or missing required scan coverage still blocks CI. Existing
+TypeScript/ESLint/Next tests cover those files. Semgrep cannot prove safety
+of unparsed sections; retain independent human review and recheck on upgrade.
