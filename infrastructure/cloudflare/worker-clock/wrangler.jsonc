@@ -1,0 +1,12 @@
+{
+  // INTENTIONALLY NOT DEPLOYED. Review the separate deployment gate first.
+  // An explicit change is required before cron starts running.
+  "name": "cxops-clock-prototype-disabled",
+  "main": "index.mjs",
+  "compatibility_date": "2026-10-18",
+  "triggers": { "crons": [] },
+  "vars": {
+    "CXOPS_CLOCK_DISPATCH_ENABLED": "false",
+    "CXOPS_CLOCK_DISPATCH_KEY_ID": "current"
+  }
+}

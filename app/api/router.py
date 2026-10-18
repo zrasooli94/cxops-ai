@@ -25,6 +25,7 @@ from app.api.routes.tenant import router as tenant_router
 from app.api.routes.tenant_config import router as tenant_config_router
 from app.api.routes.tickets import router as tickets_router
 from app.api.routes.webhooks import router as webhooks_router
+from app.api.routes.worker_clock import router as worker_clock_router
 from app.api.routes.zendesk import router as zendesk_router
 from app.api.routes.zendesk_auth import router as zendesk_auth_router
 from app.api.routes.zendesk_webhooks import router as zendesk_webhooks_router
@@ -54,5 +55,6 @@ api_router.include_router(evaluations_router)
 api_router.include_router(public_chat_router)
 api_router.include_router(staff_public_chat_router)
 api_router.include_router(tenant_config_router)
+api_router.include_router(worker_clock_router)
 for commercial_router in commercial_routers:
     api_router.include_router(commercial_router)

@@ -1,0 +1,95 @@
+# Source-only tests for a disabled Cron transport. No deploy, no credentials.
+name: Worker Clock Prototype (Offline)
+
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - '.github/workflows/worker-clock-prototype.yml'
+      - 'infrastructure/cloudflare/worker-clock/**'
+      - 'scripts/worker_clock_protocol.py'
+      - 'scripts/worker_clock_executor.py'
+      - 'app/api/routes/worker_clock.py'
+      - 'app/api/router.py'
+      - 'app/core/config.py'
+      - 'app/models/worker_clock_tick.py'
+      - 'app/models/__init__.py'
+      - 'app/repositories/worker_clock_repository.py'
+      - 'alembic/versions/1z0a0001_add_worker_clock_tick_ledger.py'
+      - 'tests/test_worker_clock_*.py'
+      - 'docs/architecture/worker-clock.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-clock-contract:
+    name: Cross-language worker clock protocol
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify no cron trigger is enabled in prototype
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          data = Path('infrastructure/cloudflare/worker-clock/wrangler.jsonc').read_text()
+          assert '"crons": []' in data
+          assert '"CXOPS_CLOCK_DISPATCH_ENABLED": "false"' in data
+          PY
+      - name: Offline Cloudflare Worker signed-request tests
+        run: node --test infrastructure/cloudflare/worker-clock/index.test.mjs
+      - name: Offline receiver authentication tests
+        run: python -m unittest discover -s tests -p 'test_worker_clock_protocol.py' -v
+      - name: Ruff for worker-clock source
+        run: |
+          python -m pip install ruff==0.16.10
+          python -m ruff check app/api/routes/worker_clock.py app/models/worker_clock_tick.py app/repositories/worker_clock_repository.py scripts/worker_clock_protocol.py scripts/worker_clock_executor.py tests/test_worker_clock_protocol.py tests/test_worker_clock_receiver.py tests/test_worker_clock_executor.py
+
+  durable-clock-receiver:
+    name: Durable receiver and executor (Disposable PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops
+          POSTGRES_USER: cxops
+          POSTGRES_PASSWORD: cxops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops -d cxops"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
+      ENVIRONMENT: development
+      DEBUG: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install locked test dependencies
+        run: pip install -r requirements-lock.txt
+      - name: Verify one migration head and upgrade disposable database
+        run: |
+          test "$(alembic heads | wc -l | tr -d ' ')" = "1"
+          alembic upgrade head
+          alembic current | grep '1z0a0001 (head)'
+      - name: PostgreSQL replay, concurrency, catch-up and executor tests
+        run: pytest --asyncio-mode=auto -q tests/test_worker_clock_receiver.py tests/test_worker_clock_executor.py

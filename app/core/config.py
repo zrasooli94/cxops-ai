@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -8,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.encryption import validate_encryption_keys
 
 _BOOL_ADAPTER = TypeAdapter(bool)
+_WORKER_CLOCK_KEY_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 
 
 def parse_handoff_flag(value: object) -> bool | None:
@@ -215,6 +217,52 @@ class Settings(BaseSettings):
     handoff_notification_channels: str = "email,telegram"
     # Derived, not meant to be set: why an enabled flag was downgraded to OFF.
     handoff_notification_config_error: str = ""
+
+    # Source-only worker-clock receiver/executor prototype. Both controls are
+    # independently OFF by default; adding the route and ledger never activates
+    # scheduling or execution.
+    worker_clock_receiver_enabled: bool = False
+    worker_clock_executor_enabled: bool = False
+    worker_clock_id: str = "cloudflare-primary"
+    worker_clock_current_key_id: str = "current"
+    worker_clock_current_secret: str = ""
+    worker_clock_previous_key_id: str = ""
+    worker_clock_previous_secret: str = ""
+    worker_clock_previous_key_expires_at: datetime | None = None
+    worker_clock_max_catchup_slots: int = 12
+
+    @model_validator(mode="after")
+    def _validate_worker_clock_configuration(self) -> "Settings":
+        if (
+            self.worker_clock_executor_enabled
+            and not self.worker_clock_receiver_enabled
+        ):
+            raise ValueError("worker clock executor requires the receiver gate")
+        if not self.worker_clock_receiver_enabled:
+            return self
+        if not self.worker_clock_id or len(self.worker_clock_id) > 80:
+            raise ValueError("WORKER_CLOCK_ID must contain 1..80 characters")
+        if not 0 <= self.worker_clock_max_catchup_slots <= 288:
+            raise ValueError("WORKER_CLOCK_MAX_CATCHUP_SLOTS must be between 0 and 288")
+        if not 32 <= len(self.worker_clock_current_secret) <= 256:
+            raise ValueError("WORKER_CLOCK_CURRENT_SECRET is required when enabled")
+        if not _WORKER_CLOCK_KEY_ID.fullmatch(self.worker_clock_current_key_id):
+            raise ValueError(
+                "WORKER_CLOCK_CURRENT_KEY_ID has invalid wire format"
+            )
+        previous = bool(
+            self.worker_clock_previous_key_id or self.worker_clock_previous_secret
+        )
+        if previous and (
+            not self.worker_clock_previous_key_id
+            or not _WORKER_CLOCK_KEY_ID.fullmatch(self.worker_clock_previous_key_id)
+            or not 32 <= len(self.worker_clock_previous_secret) <= 256
+            or self.worker_clock_previous_key_id == self.worker_clock_current_key_id
+            or self.worker_clock_previous_key_expires_at is None
+            or self.worker_clock_previous_key_expires_at.tzinfo is None
+        ):
+            raise ValueError("worker clock previous key rotation pair is invalid")
+        return self
 
     @model_validator(mode="before")
     @classmethod
