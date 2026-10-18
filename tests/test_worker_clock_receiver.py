@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -53,7 +54,7 @@ def _signed_request(
     ]
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _clock_state(db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
     await db.execute(delete(WorkerClockTick))
     await db.commit()
@@ -73,7 +74,7 @@ async def _clock_state(db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(clock_route.time, "time", lambda: NOW_MS / 1000)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client(db: AsyncSession) -> AsyncIterator[httpx.AsyncClient]:
     async def _override_db():
         yield db
@@ -88,6 +89,7 @@ async def client(db: AsyncSession) -> AsyncIterator[httpx.AsyncClient]:
         app.dependency_overrides.clear()
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_disabled_receiver_is_404_before_auth_or_database(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -102,6 +104,7 @@ async def test_disabled_receiver_is_404_before_auth_or_database(
     assert response.status_code == 404
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_valid_and_duplicate_delivery_are_indistinguishable_and_durable(
     client: httpx.AsyncClient, db: AsyncSession
 ) -> None:
@@ -114,6 +117,7 @@ async def test_valid_and_duplicate_delivery_are_indistinguishable_and_durable(
     assert count == 1
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_previous_rotation_key_is_bounded_and_unknown_key_is_rejected(
     client: httpx.AsyncClient, db: AsyncSession
 ) -> None:
@@ -149,6 +153,7 @@ def test_settings_reject_key_ids_outside_wire_format(key_id: str) -> None:
         ("constraint-clock", 100, 4, 3),
     ],
 )
+@pytest.mark.asyncio(loop_scope="session")
 async def test_database_rejects_invalid_ledger_state(
     db: AsyncSession,
     clock_id: str,
@@ -170,6 +175,7 @@ async def test_database_rejects_invalid_ledger_state(
     await db.rollback()
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_expired_previous_rotation_key_is_rejected(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -185,6 +191,7 @@ async def test_expired_previous_rotation_key_is_rejected(
     ).status_code == 401
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_raw_duplicate_header_query_and_oversize_body_fail_closed(
     client: httpx.AsyncClient, db: AsyncSession
 ) -> None:
@@ -206,6 +213,7 @@ async def test_raw_duplicate_header_query_and_oversize_body_fail_closed(
     assert count == 0
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_concurrent_duplicate_claims_insert_exactly_one_slot() -> None:
     async def record():
         async with database.AsyncSessionLocal() as session:
@@ -224,6 +232,7 @@ async def test_concurrent_duplicate_claims_insert_exactly_one_slot() -> None:
     assert count == 1
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_missed_slots_are_bounded_then_coalesced_to_one_execution(
     db: AsyncSession,
 ) -> None:
@@ -254,6 +263,7 @@ async def test_missed_slots_are_bounded_then_coalesced_to_one_execution(
     }
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_large_gap_records_only_bounded_tail_and_truncation(
     db: AsyncSession,
 ) -> None:

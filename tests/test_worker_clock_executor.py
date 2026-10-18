@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +14,7 @@ from app.repositories.worker_clock_repository import WorkerClockRepository
 from scripts import worker_clock_executor
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _clean_ticks(db: AsyncSession, monkeypatch: pytest.MonkeyPatch):
     await db.execute(delete(WorkerClockTick))
     await db.commit()
@@ -26,6 +27,7 @@ async def _record(db: AsyncSession, slot: int = 6000000) -> None:
     )
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_global_lease_allows_exactly_one_concurrent_worker_pass(
     db: AsyncSession,
 ) -> None:
@@ -50,6 +52,7 @@ async def test_global_lease_allows_exactly_one_concurrent_worker_pass(
     assert calls == 1
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_missed_ticks_produce_one_bounded_pass(db: AsyncSession) -> None:
     await _record(db, 100)
     await _record(db, 103)
@@ -72,6 +75,7 @@ async def test_missed_ticks_produce_one_bounded_pass(db: AsyncSession) -> None:
     assert calls == 1
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_stale_claim_token_cannot_finalize_recovered_claim(
     db: AsyncSession,
 ) -> None:
@@ -105,6 +109,7 @@ async def test_stale_claim_token_cannot_finalize_recovered_claim(
     ) == "completed"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_failed_worker_is_retryable_without_raw_error(db: AsyncSession) -> None:
     await _record(db)
 
@@ -120,6 +125,7 @@ async def test_failed_worker_is_retryable_without_raw_error(db: AsyncSession) ->
     assert row.last_error == "SecretBearingFailure"
 
 
+@pytest.mark.asyncio(loop_scope="session")
 async def test_failed_worker_stops_exactly_at_max_attempts(db: AsyncSession) -> None:
     await _record(db)
     calls = 0
