@@ -34,6 +34,7 @@ from app.models.service_transformation_scenario import ServiceTransformationScen
 from app.models.sla_policy import SLAPolicy
 from app.models.ticket import Ticket
 from app.models.ticket_event import TicketEvent
+from app.models.worker_clock_tick import WorkerClockTick
 from app.models.zendesk_oauth_state import ZendeskOAuthState
 from app.models.zendesk_oauth_token import ZendeskOAuthToken
 
@@ -72,6 +73,7 @@ __all__ = [
     "ServiceTransformationScenario",
     "Ticket",
     "TicketEvent",
+    "WorkerClockTick",
     "ZendeskOAuthState",
     "ZendeskOAuthToken",
 ]
