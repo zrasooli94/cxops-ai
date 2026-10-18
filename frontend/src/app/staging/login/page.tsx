@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { neonStagingEnabled } from "@/lib/staging/neon-policy";
+import { stagingAgentSignInTarget } from "@/lib/staging/agent-enrollment";
 import { StagingDemoForm, StagingSignInForm } from "../SignInForm";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +11,7 @@ export default function StagingLogin() {
     <p className="mt-3 text-sm leading-7 text-slate-600">Use an enrolled synthetic test account.</p>
     {neonStagingEnabled(process.env) ? <>
       {process.env.CXOPS_STAGING_DEMO_EMAIL === "phase1w-alpha@example.test" && process.env.CXOPS_STAGING_DEMO_PASSWORD ? <StagingDemoForm /> : null}
+      {stagingAgentSignInTarget(process.env) && <Link href="/staging/agent-signin" className="mt-5 block text-sm font-semibold text-violet-700 hover:underline">Sign in as verified synthetic agent →</Link>}
       <details className="mt-6"><summary className="cursor-pointer text-sm text-slate-600">Sign in with another enrolled test account</summary><StagingSignInForm /></details>
     </> : <p className="mt-6 rounded-xl bg-amber-50 p-4 text-sm">Staging is being connected. Sign-in is not enabled yet.</p>}
     <Link href="/staging" className="mt-6 inline-block text-sm text-violet-700">Back to staging →</Link>

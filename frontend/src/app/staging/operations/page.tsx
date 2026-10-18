@@ -16,6 +16,9 @@ import {
   parseStagingTickets, stagingTicketMetrics,
 } from "@/lib/staging/operations-contract";
 import { stagingSignOut } from "../actions";
+import StagingTicketActions from "./ticket-actions";
+import { StagingReadRecovery } from "../read-recovery";
+import { stagingReadIssue, type StagingReadIssue } from "@/lib/staging/read-recovery";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
@@ -55,28 +58,38 @@ function badgeForPriority(priority: string) {
   return "bg-slate-50 text-slate-600 border-slate-200";
 }
 
-/** Explicitly trusted staging HTTPS origin. Never accept a client-supplied URL. */
-async function readStagingEndpoint(path: string, token: string, tenant: number) {
-  const response = await fetch(STAGING_BACKEND_URL + path, {
-    headers: {
-      Authorization: "Bearer " + token,
-      ...(tenant > 0 ? { "X-CXOps-Organization-ID": String(tenant) } : {}),
-      Accept: "application/json",
-    },
-    cache: "no-store",
-    redirect: "error",
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!response.ok) throw new Error("Staging API refused read");
-  return (await response.json()) as unknown;
+class StagingReadFailure extends Error {
+  constructor(readonly issue: StagingReadIssue) { super("Isolated staging read unavailable"); }
 }
 
-function UnavailableWorkspace({ message }: { message: string }) {
+/** Trusted staging HTTPS origin. Client cannot submit a URL, bearer, or tenant.
+ * A 401/403 denial is distinct from an idle Free-tier service starting up.
+ */
+async function readStagingEndpoint(path: string, token: string, tenant: number) {
+  let response: Response;
+  try {
+    response = await fetch(STAGING_BACKEND_URL + path, {
+      headers: {
+        Authorization: "Bearer " + token,
+        ...(tenant > 0 ? { "X-CXOps-Organization-ID": String(tenant) } : {}),
+        Accept: "application/json",
+      },
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) { throw new StagingReadFailure(stagingReadIssue(null, error)); }
+  if (!response.ok) throw new StagingReadFailure(stagingReadIssue(response.status));
+  try { return (await response.json()) as unknown; }
+  catch { throw new StagingReadFailure("unavailable"); }
+}
+
+function UnavailableWorkspace({ message, issue }: { message: string; issue?: StagingReadIssue }) {
   return <main className="min-h-screen bg-slate-50 px-5 py-20">
     <section className="mx-auto max-w-xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
       <ShieldCheck className="h-8 w-8 text-violet-600" />
       <h1 className="mt-5 text-2xl font-semibold text-slate-950">Staging Control Center</h1>
-      <div className="mt-5"><Notification>{message}</Notification></div>
+      <div className="mt-5"><Notification>{message}</Notification>{issue && <StagingReadRecovery issue={issue} />}</div>
       <Link href="/staging" className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-violet-700">
         <ArrowLeft className="h-4 w-4" /> Back to staging
       </Link>
@@ -84,7 +97,7 @@ function UnavailableWorkspace({ message }: { message: string }) {
   </main>;
 }
 
-export default async function StagingOperationsPage() {
+export default async function StagingOperationsPage({ searchParams }: { searchParams?: Promise<{ workflow?: string }> }) {
   if (!neonStagingEnabled(process.env)) {
     return <UnavailableWorkspace message="Staging is not enabled. No production account or data is accessible here." />;
   }
@@ -102,8 +115,13 @@ export default async function StagingOperationsPage() {
   try {
     const memberships = await readStagingEndpoint("/me/organizations", token, 0);
     organization = parseStagingOrganization(memberships);
-  } catch {
-    return <UnavailableWorkspace message="Unable to independently verify the synthetic organization. Read-only access remains blocked." />;
+  } catch (error) {
+    const issue = error instanceof StagingReadFailure ? error.issue : "unavailable";
+    return <UnavailableWorkspace
+      message={issue === "warming"
+        ? "The isolated Free staging API is starting. No workspace records were loaded."
+        : "Unable to independently verify the synthetic organization. Read-only access remains blocked."}
+      issue={issue} />;
   }
 
   const [ticketsResult, customersResult, queueResult] = await Promise.allSettled([
@@ -118,9 +136,32 @@ export default async function StagingOperationsPage() {
   const tickets = ticketsResult.status === "fulfilled" ? ticketsResult.value : null;
   const customers = customersResult.status === "fulfilled" ? customersResult.value : null;
   const queue = queueResult.status === "fulfilled" ? queueResult.value : null;
+  let canPerformTicketActions = false;
+  if (
+    process.env.CXOPS_STAGING_TICKET_ACTIONS_ENABLED === "true" &&
+    process.env.CXOPS_STAGING_TICKET_AGENT_SUBJECT === identity.user.id &&
+    organization.name === "Synthetic Alpha Workshop"
+  ) {
+    try {
+      const value = await readStagingEndpoint("/me/authorization", token, organization.id);
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const authz = value as Record<string, unknown>;
+        canPerformTicketActions =
+          authz.organization_id === organization.id &&
+          authz.role === "agent" &&
+          Array.isArray(authz.capabilities) &&
+          authz.capabilities.includes("ticket.write");
+      }
+    } catch { canPerformTicketActions = false; }
+  }
+  const workflow = (await searchParams)?.workflow;
   const metrics = tickets ? stagingTicketMetrics(tickets) : null;
   const customerNames = new Map((customers ?? []).map(c => [c.id, c.name]));
   const dataUnavailable = tickets === null || customers === null || queue === null;
+  const waitingForBackend = [ticketsResult, customersResult, queueResult].some(
+    result => result.status === "rejected" &&
+      result.reason instanceof StagingReadFailure && result.reason.issue === "warming",
+  );
 
   return <main className="min-h-screen bg-[#F7F8FC] text-slate-950">
     <header className="border-b border-slate-200 bg-white">
@@ -148,16 +189,22 @@ export default async function StagingOperationsPage() {
           <p className="mt-2 text-sm text-slate-500">{organization.name} · signed in as {identity.user.name}</p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-4 py-2 text-xs font-semibold text-emerald-700">
-          <LockKeyhole className="h-4 w-4" /> Read-only staging
+          <LockKeyhole className="h-4 w-4" /> {canPerformTicketActions ? "Synthetic agent mode" : "Read-only staging"}
         </div>
       </div>
 
       <div className="mt-7 flex gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-4 text-sm leading-6 text-violet-900">
         <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" />
-        <p><strong>Real authenticated API, fictional records.</strong> Everything below is fetched through your tenant-authorized staging service. No live customers, production tokens, payments, integrations, AI calls or staff write actions are involved.</p>
+        <p><strong>Real authenticated API, fictional records.</strong> Everything below is fetched through your tenant-authorized staging service. No live customers, production tokens, payments, integrations or AI calls are involved. Ticket writes remain locked unless an enrolled staging-only test agent is explicitly enabled.</p>
       </div>
 
-      {dataUnavailable && <div className="mt-5"><Notification>Some staging information could not be verified. Unavailable values are shown as dashes, not as zero. Please refresh later.</Notification></div>}
+      {(workflow === "blocked" || workflow === "conflict" || workflow === "unavailable") && (
+        <div className="mt-5"><Notification>
+          {workflow === "conflict" ? "Ticket state changed. Refresh the page and try again." :
+            "This staging action is unavailable or not authorized. No ticket was changed."}
+        </Notification></div>
+      )}
+      {dataUnavailable && <div className="mt-5"><Notification>Some staging information could not be verified. Unavailable values are shown as dashes, not as zero.</Notification>{waitingForBackend && <StagingReadRecovery issue="warming" />}</div>}
 
       <section className="mt-8">
         <h2 className="mb-4 text-lg font-semibold">Operations at a glance</h2>
@@ -231,12 +278,17 @@ export default async function StagingOperationsPage() {
         </div>
       </div>
 
+      {tickets && <StagingTicketActions
+        tickets={tickets}
+        currentSubject={identity.user.id}
+        enabled={canPerformTicketActions}
+      />}
       <section className="mt-7 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-5">
         <div>
-          <p className="text-sm font-semibold text-slate-900">Next: staff assignment and resolution</p>
-          <p className="mt-1 text-xs text-slate-500">These operations remain disabled until separately tested and reviewed.</p>
+          <p className="text-sm font-semibold text-slate-900">{canPerformTicketActions ? "Synthetic agent workflow" : "Next: staff assignment and resolution"}</p>
+          <p className="mt-1 text-xs text-slate-500">{canPerformTicketActions ? "Only fictional Alpha tickets may be updated; external integrations remain disabled." : "Agent enrollment and independent review are required before enabling writes."}</p>
         </div>
-        <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400">Write actions unavailable <ArrowUpRight className="h-4 w-4" /></span>
+        <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400">{canPerformTicketActions ? "Synthetic actions enabled" : "Write actions unavailable"} <ArrowUpRight className="h-4 w-4" /></span>
       </section>
     </div>
   </main>;

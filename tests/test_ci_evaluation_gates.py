@@ -193,26 +193,42 @@ def test_missing_secrets_prints_a_clear_skip(ci_indented: list[str]) -> None:
         assert "not both configured" in block_text
 
 
-def test_evaluation_jobs_are_not_silently_skipped(ci_indented: list[str]) -> None:
-    """The job itself runs (no job-level ``if``), so it can print its message.
+def test_evaluation_jobs_are_not_silently_skipped(
+    ci_indented: list[str],
+) -> None:
+    """Private/PR skip is explicit without provisioning a separate DB runner.
 
-    A job-level gate would make the missing-secret path a console entry that
-    says ``skipped`` and nothing else. Completing "successfully" here means an
-    echo, which requires the job to actually start.
+    Source-only PRs and private repositories do not consume paid provider
+    credentials. The mandatory CI Required Checks job prints the skip notice
+    even when a different security/test job fails.
     """
+    required = _job_block(ci_indented, "required-checks")
+    assert (
+        "if: github.event_name == 'pull_request' || "
+        "github.event.repository.private == true"
+    ) in required
+    for label in ("RAG", "Agent"):
+        assert any(
+            f"{label} evaluation skipped" in line for line in required
+        ), f"CI Required Checks must explain the skipped {label} job"
+
+    expected_gate = (
+        "if: github.event_name == 'push' && "
+        "github.event.repository.private != true"
+    )
     for job in EVAL_JOBS:
         block = _job_block(ci_indented, job)
         first_step = next(
             (i for i, line in enumerate(block) if line.startswith("- name:")),
             len(block),
         )
-        header = block[:first_step]
-        assert not any(line.startswith("if:") for line in header), (
-            f"{job} must not gate the whole job -- it must run to print its skip message"
+        assert expected_gate in block[:first_step], (
+            f"{job} must skip PRs and private repositories before secrets"
         )
         assert any(
-            line.startswith("if: ${{ env.EVALUATION_ENABLED ==") for line in block
-        ), f"{job} must react to the disabled state inside the job"
+            line.startswith("if: ${{ env.EVALUATION_ENABLED ==")
+            for line in block
+        ), f"{job} must still gate optional commands on both secrets"
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +308,8 @@ def test_secret_references_are_limited_to_supported_shapes(ci_lines: list[str]) 
     """
     assignment = re.compile(r"^[A-Z0-9_]+: \$\{\{ secrets\.[A-Z0-9_]+ \}\}$")
     marker = (
-        r"^EVALUATION_ENABLED: \$\{\{ secrets\.EVALUATION_OPENAI_API_KEY != '' && "
+        r"^EVALUATION_ENABLED: \$\{\{ github\.event_name == 'push' && "
+        r"secrets\.EVALUATION_OPENAI_API_KEY != '' && "
         r"secrets\.EVALUATION_ORGANIZATION_ID != '' \}\}$"
     )
     for line in ci_lines:
