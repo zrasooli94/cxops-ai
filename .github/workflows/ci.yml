@@ -138,6 +138,9 @@ jobs:
 
       - name: Scan backend and frontend runtime sources without uploading code
         run: |
+          # Semgrep may emit JSON diagnostics despite a nonzero strict exit.
+          # Always validate the report before propagating scanner failure.
+          set +e
           semgrep scan \
             --config p/security-audit \
             --metrics=off \
@@ -146,9 +149,15 @@ jobs:
             --json \
             --output "$RUNNER_TEMP/cxops-private-sast.json" \
             app staging frontend/src
+          scan_status=$?
+          set -e
           python scripts/check_private_sast.py \
             "$RUNNER_TEMP/cxops-private-sast.json" \
             --summary "$GITHUB_STEP_SUMMARY"
+          if [ "$scan_status" -ne 0 ]; then
+            echo "::error::Semgrep CE returned status $scan_status; CI remains blocked."
+            exit "$scan_status"
+          fi
 
   # Separate, hermetic security qualification. A general 3k-test runner hang
   # must not mask the results of the Phase 1Y adversarial staging tests.

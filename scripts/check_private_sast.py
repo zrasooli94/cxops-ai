@@ -75,12 +75,24 @@ def evaluate(report: dict[str, Any]) -> tuple[str, bool]:
         findings.append((rule[:140], path[:240], severity, blocked))
 
     blocked_findings = [f for f in findings if f[3]]
+    error_categories = sorted({
+        str(e.get("type", "unknown"))[:65]
+        for e in errors if isinstance(e, dict)
+    })
+    error_files = sorted({
+        str(span.get("file"))[:180]
+        for e in errors if isinstance(e, dict)
+        for span in (e.get("spans") or [])
+        if isinstance(span, dict) and span.get("file")
+    })
     lines = [
         "### Free private-repo SAST: Semgrep Community Edition",
         f"- Files scanned: **{len(scanned)}**",
         f"- Findings: **{len(findings)}**",
         f"- Blocking findings: **{len(blocked_findings)}**",
         f"- Scanner/config errors: **{len(errors)}**",
+        "- Scanner error categories: " + (", ".join(error_categories) or "none"),
+        "- Scanner diagnostic paths: " + (", ".join(error_files[:8]) or "none"),
         "- No source code, snippets, credentials, or raw Semgrep JSON are uploaded.",
         "- Community Edition is not equivalent to CodeQL or a human review.",
     ]
