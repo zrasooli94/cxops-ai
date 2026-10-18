@@ -124,3 +124,13 @@ provider evaluation jobs are skipped entirely on PRs and private repositories
 (no empty database service minutes and no private provider usage). All
 mandatory security/contract/backend/frontend, Docker, SAST and secret checks
 still run on PR merge refs. Check required aggregates before any merger.
+
+## Optional evaluation cost policy
+
+On pull requests and private repositories, the optional provider-evaluation
+jobs never start and never receive provider secrets. The existing mandatory
+`CI Required Checks` job prints explicit RAG and Agent skip explanations,
+so the previous no-silent-skip safety requirement remains enforced without
+initializing two separate PostgreSQL runners. On permitted public push
+checks, evaluations still require their exact two dedicated secrets and a
+pinned organization ID. The regression tests validate both behaviors.
