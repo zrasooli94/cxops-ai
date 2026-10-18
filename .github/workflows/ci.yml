@@ -107,6 +107,49 @@ jobs:
         working-directory: frontend
         run: npm run test:staging
 
+  # Community-edition security scan: works on personal private repos without
+  # GitHub Code Security licensing or an external Semgrep platform account.
+  # Rules are downloaded, but source/credentials are never uploaded.
+  private-sast:
+    name: Private-Compatible SAST (Semgrep CE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      SEMGREP_SEND_METRICS: "off"
+      SEMGREP_ENABLE_VERSION_CHECK: "false"
+    steps:
+      - name: Checkout exact source (no persistent credentials)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Python for isolated scanner
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned Semgrep Community Edition
+        run: python -m pip install --disable-pip-version-check "semgrep==1.181.0"
+
+      - name: Validate fail-closed security result gate
+        run: python -m unittest discover -s tests -p "test_private_sast_gate.py" -v
+
+      - name: Scan backend and frontend runtime sources without uploading code
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --metrics=off \
+            --disable-version-check \
+            --strict \
+            --json \
+            --output "$RUNNER_TEMP/cxops-private-sast.json" \
+            app staging frontend/src
+          python scripts/check_private_sast.py \
+            "$RUNNER_TEMP/cxops-private-sast.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
   # Separate, hermetic security qualification. A general 3k-test runner hang
   # must not mask the results of the Phase 1Y adversarial staging tests.
   # No Neon, Render, Vercel, Zendesk, Nhost or real provider credentials.
@@ -256,7 +299,7 @@ jobs:
       DEBUG: "true"
       # Optional live evaluation. Runs only when BOTH dedicated evaluation
       # secrets exist; the production OPENAI_API_KEY is never available here.
-      EVALUATION_ENABLED: ${{ github.event_name == 'push' && secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
+      EVALUATION_ENABLED: ${{ github.event_name == 'push' && github.event.repository.private != true && secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
       ZENDESK_WEBHOOK_SECRET: test-secret
     services:
       postgres:
@@ -318,7 +361,7 @@ jobs:
       DEBUG: "true"
       # Optional live evaluation. Runs only when BOTH dedicated evaluation
       # secrets exist; the production OPENAI_API_KEY is never available here.
-      EVALUATION_ENABLED: ${{ github.event_name == 'push' && secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
+      EVALUATION_ENABLED: ${{ github.event_name == 'push' && github.event.repository.private != true && secrets.EVALUATION_OPENAI_API_KEY != '' && secrets.EVALUATION_ORGANIZATION_ID != '' }}
       ZENDESK_WEBHOOK_SECRET: test-secret
     services:
       postgres:
@@ -381,7 +424,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -481,6 +524,7 @@ jobs:
       - backend-tests
       - frontend-build
       - secret-scan
+      - private-sast
       - docker-build
       - api-contract
     runs-on: ubuntu-latest
@@ -496,6 +540,7 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend-tests.result }}
           FRONTEND_RESULT: ${{ needs.frontend-build.result }}
           SECRET_RESULT: ${{ needs.secret-scan.result }}
+          PRIVATE_SAST_RESULT: ${{ needs.private-sast.result }}
           DOCKER_RESULT: ${{ needs.docker-build.result }}
           CONTRACT_RESULT: ${{ needs.api-contract.result }}
         run: |
@@ -504,6 +549,7 @@ jobs:
           test "$BACKEND_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$SECRET_RESULT" = success
+          test "$PRIVATE_SAST_RESULT" = success
           test "$DOCKER_RESULT" = success
           test "$CONTRACT_RESULT" = success
           if [ "$EVENT_NAME" = pull_request ]; then

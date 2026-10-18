@@ -22,7 +22,7 @@ concurrency:
 jobs:
   codeql:
     name: CodeQL (${{ matrix.language }})
-    if: github.repository == 'zrasooli94/cxops-ai'
+    if: github.repository == 'zrasooli94/cxops-ai' && github.event.repository.private != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -62,3 +62,17 @@ jobs:
             "$RUNNER_WORKSPACE/results/$basename.sarif" \
             "$ANALYSIS_LANGUAGE" \
             --summary "$GITHUB_STEP_SUMMARY"
+
+
+  private-codeql-notice:
+    name: Private CodeQL License Notice
+    if: github.event.repository.private == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Do not run unlicensed CodeQL on private source
+        run: |
+          echo 'GitHub Free private repositories cannot use CodeQL without Code Security licensing.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Private-Compatible SAST (Semgrep CE) in the main CI is the mandatory free fallback.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This scanner does not replace independent human security signoff.' >> "$GITHUB_STEP_SUMMARY"
