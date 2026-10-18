@@ -3,10 +3,9 @@
 # or ticket-writing capability is needed by this workflow.
 name: Phase 1Y CodeQL Security Analysis
 
+# PR merge-ref is the authoritative review surface. No duplicate push-run
+# (and no CodeQL scanning of private proprietary source without its license).
 on:
-  push:
-    branches:
-      - feature/phase1y-synthetic-ticket-workflow
   pull_request:
     branches:
       - feature/phase1w-preview-isolation-gate

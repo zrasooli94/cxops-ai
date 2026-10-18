@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    # This stacked draft PR targets Phase 1W rather than master. Keep an
-    # explicit push-triggered CI run so the security branch remains tested.
-    branches: [main, master, "feature/phase1y-synthetic-ticket-workflow"]
+    # Ordinary default-branch CI remains enabled. Feature-branch PRs use
+    # GitHub's generated merge ref instead: no redundant private-minutes run.
+    branches: [main, master]
   pull_request:
     # PR #38 is intentionally stacked on Phase 1W. GitHub checks out the
     # generated merge commit for this event, so base drift is tested too.
@@ -306,6 +306,8 @@ jobs:
 
   rag-evaluation:
     name: RAG Evaluation (Live - Optional)
+    # Do not provision optional live-eval infrastructure for private or PR jobs.
+    if: github.event_name == 'push' && github.event.repository.private != true
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops
@@ -368,6 +370,7 @@ jobs:
 
   agent-evaluation:
     name: Agent Evaluation (Live - Optional)
+    if: github.event_name == 'push' && github.event.repository.private != true
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql+asyncpg://cxops:cxops@localhost:5432/cxops

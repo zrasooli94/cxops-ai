@@ -113,3 +113,14 @@ permits only these exact known diagnostic file paths; any new parse error,
 security finding, or missing required scan coverage still blocks CI. Existing
 TypeScript/ESLint/Next tests cover those files. Semgrep cannot prove safety
 of unparsed sections; retain independent human review and recheck on upgrade.
+
+## Private-minute optimization (Phase 1Y draft only)
+
+The prior Phase 1Y feature branch ran full CI and CodeQL twice per commit:
+one `push` plus one `pull_request` generated-merge test. The draft branch
+now relies on the **PR merge-result** workflow, which re-runs when its stacked
+base or head changes. Master/main push CI is unchanged. Optional agent/RAG
+provider evaluation jobs are skipped entirely on PRs and private repositories
+(no empty database service minutes and no private provider usage). All
+mandatory security/contract/backend/frontend, Docker, SAST and secret checks
+still run on PR merge refs. Check required aggregates before any merger.
