@@ -1,0 +1,54 @@
+# Source-only tests: never provisions or deploys Render, never reads secrets.
+name: Render Cron Canary (Offline)
+
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - '.github/workflows/render-cron-canary-offline.yml'
+      - 'scripts/run_render_cron_worker.sh'
+      - 'tests/test_render_cron_readiness.py'
+      - 'docs/architecture/worker-runtime-decision.md'
+      - 'scripts/render_cron_synthetic_canary.py'
+      - 'scripts/analyze_render_cron_canary.py'
+      - 'tests/test_render_cron_synthetic_canary.py'
+      - 'docs/architecture/render-cron-canary-approval-gate.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inert-canary:
+    name: Inert Cron Canary Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Offline canary and safety-report tests
+        run: python -m unittest discover -s tests -p 'test_render_cron_synthetic_canary.py' -v
+      - name: Verify real launcher remains source-only and bounded
+        run: |
+          python -m pip install --disable-pip-version-check pytest==9.1.1
+          python -m pytest -q tests/test_render_cron_readiness.py
+      - name: Strict Ruff
+        run: |
+          python -m pip install --disable-pip-version-check ruff==0.16.10
+          python -m ruff check scripts/render_cron_synthetic_canary.py scripts/analyze_render_cron_canary.py tests/test_render_cron_synthetic_canary.py tests/test_render_cron_readiness.py
+      - name: Fail closed with default environment
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          result = subprocess.run(
+              [sys.executable, '-m', 'scripts.render_cron_synthetic_canary'],
+              capture_output=True, text=True, check=False,
+          )
+          assert result.returncode == 78
+          assert not result.stdout
+          PY
