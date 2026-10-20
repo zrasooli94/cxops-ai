@@ -1,0 +1,117 @@
+# Chatbot product milestone C2: synthetic FAQ quality and public reply gates.
+# DOES NOT publish, deploy, call providers, or use production credentials/DB.
+name: Chatbot C2 — Offline Grounded FAQ
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-guided-first-contact
+    paths:
+      - '.github/workflows/chatbot-c2-offline.yml'
+      - 'app/services/rag_reliability.py'
+      - 'app/services/rag_service.py'
+      - 'scripts/chatbot_c2_disposable_guard.py'
+      - 'tests/test_chatbot_c2_offline.py'
+      - 'tests/test_public_chat.py'
+      - 'tests/test_chatbot_c2_guard.py'
+      - 'tests/fixtures/chatbot_c2_synthetic_faq.json'
+      - 'docs/product/chatbot-c2-quality-matrix.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-chatbot-c2-offline
+  cancel-in-progress: true
+
+jobs:
+  c2-synthetic-public-chat:
+    name: Real RAG Gate + Public Chat API / Disposable PG / No Providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      CXOPS_CHATBOT_C2_OFFLINE: 'true'
+      DATABASE_URL: 'postgresql+asyncpg://c2_probe:c2_probe@127.0.0.1:5432/cxops_chatbot_c2_disposable_test'
+      ENVIRONMENT: development
+      DEBUG: 'false'
+      AUTH_MODE: hs256
+      AUTH_DEV_MODE: 'false'
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      ZENDESK_CLIENT_SECRET: ''
+      ZENDESK_CLIENT_ID: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      NEXT_TELEMETRY_DISABLED: '1'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops_chatbot_c2_disposable_test
+          POSTGRES_USER: c2_probe
+          POSTGRES_PASSWORD: c2_probe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U c2_probe -d cxops_chatbot_c2_disposable_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout GitHub-generated PR merge, credentials disabled
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reject non-disposable targets before importing application
+        run: python scripts/chatbot_c2_disposable_guard.py
+
+      - name: Install locked application dependencies, no provider secrets
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-lock.txt
+          python -m pip install --disable-pip-version-check ruff==0.16.10
+
+      - name: Migrate only disposable loopback PostgreSQL
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          test "$(alembic heads | wc -l | tr -d ' ')" = "1"
+          alembic upgrade head
+
+      - name: Synthetic FAQs and citation-policy regressions
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          python -m pytest -q --tb=short \
+            tests/test_chatbot_c2_guard.py \
+            tests/test_chatbot_c2_offline.py \
+            tests/test_rag_reliability.py \
+            tests/test_rag_citation_repair.py
+
+      - name: Real public chat API/handoff and tenant regression with fake model
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          python -m pytest -q --tb=short \
+            tests/test_public_chat.py \
+            -o faulthandler_timeout=120
+
+      - name: Ruff on changed application and security harness files
+        run: |
+          python -m ruff check \
+            app/services/rag_reliability.py \
+            app/services/rag_service.py \
+            scripts/chatbot_c2_disposable_guard.py \
+            tests/test_chatbot_c2_guard.py \
+            tests/test_chatbot_c2_offline.py \
+            tests/test_public_chat.py
