@@ -556,7 +556,8 @@ async def test_handoff_provider_acceptance_gap_replays_after_stale_recovery(
     """
     from types import SimpleNamespace
 
-    from app.services import apprise_sender, handoff_notification_service as handoff
+    from app.services import apprise_sender
+    from app.services import handoff_notification_service as handoff
 
     maker, _engine, seed = isolated_worker
     _orgs, job_ids = await seed(1)
