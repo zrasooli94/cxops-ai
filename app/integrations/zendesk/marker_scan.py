@@ -156,6 +156,14 @@ async def find_marker(
             )
             if (
                 matches
+                and (public_only or private_only)
+                and not isinstance(comment.get("public"), bool)
+            ):
+                # A matching marker with unknown visibility is NOT proof
+                # of absence of the required public/private provider effect.
+                raise MarkerScanInconclusive("malformed_comment", pages=page)
+            if (
+                matches
                 and (not public_only or comment.get("public") is True)
                 and (not private_only or comment.get("public") is False)
             ):
