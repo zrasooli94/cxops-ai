@@ -11,7 +11,6 @@ import asyncio
 import json
 import os
 import signal
-import subprocess
 import sys
 import tempfile
 import time
@@ -65,7 +64,7 @@ async def _parent() -> dict[str, object]:
 
     org_id: int | None = None
     job_id: int | None = None
-    child: subprocess.Popen[bytes] | None = None
+    child: asyncio.subprocess.Process | None = None
     completed_by_recovery: list[int] = []
     try:
         unique = uuid.uuid4().hex
@@ -101,17 +100,19 @@ async def _parent() -> dict[str, object]:
             marker_path = Path(temp) / "fake-provider-entered"
             child_env = isolated_child_env(require_disposable_environment(os.environ))
             child_env["CXOPS_DISPOSABLE_BLOCK_MARKER"] = str(marker_path)
-            child = subprocess.Popen(
-                [sys.executable, "-m", "scripts.worker_disposable_termination_probe", "--hold-child"],
+            child = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "scripts.worker_disposable_termination_probe",
+                "--hold-child",
                 env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             until = time.monotonic() + WAIT_SECONDS
             while not marker_path.exists():
-                check(child.poll() is None, "child exited before fake provider block")
+                check(child.returncode is None, "child exited before fake provider block")
                 check(time.monotonic() < until, "child did not enter fake provider")
                 await asyncio.sleep(0.05)
             check(
@@ -127,10 +128,10 @@ async def _parent() -> dict[str, object]:
 
             child.terminate()
             try:
-                child_code = await asyncio.to_thread(child.wait, timeout=6)
-            except subprocess.TimeoutExpired as exc:
+                child_code = await asyncio.wait_for(child.wait(), timeout=6)
+            except TimeoutError as exc:
                 child.kill()
-                await asyncio.to_thread(child.wait, timeout=6)
+                await asyncio.wait_for(child.wait(), timeout=6)
                 raise RuntimeError("child resisted SIGTERM") from exc
             check(child_code == -signal.SIGTERM, "unexpected child termination status")
 
@@ -186,9 +187,9 @@ async def _parent() -> dict[str, object]:
             "production_state_changed": False,
         }
     finally:
-        if child is not None and child.poll() is None:
+        if child is not None and child.returncode is None:
             child.kill()
-            await asyncio.to_thread(child.wait, timeout=6)
+            await asyncio.wait_for(child.wait(), timeout=6)
         if org_id is not None:
             async with AsyncSessionLocal() as db:
                 await db.execute(
