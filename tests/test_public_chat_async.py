@@ -83,7 +83,9 @@ def _stub(monkeypatch, *, delay: float = 0.0, decision: AgentDecision = NO_ACTIO
 
     monkeypatch.setattr(KnowledgeSearchService, "search", _no_search)
     fake = SlowDecisionLLM(decision, delay=delay)
-    monkeypatch.setattr(agent_workflow_service, "decision_llm", fake)
+    # Do not evaluate LazyAttribute.__get__ just to install a deterministic
+    # test double: that would construct a real OpenAI client without secrets.
+    monkeypatch.setitem(agent_workflow_service.__dict__, "decision_llm", fake)
     return fake
 
 
@@ -570,3 +572,40 @@ async def test_usage_report_is_tenant_scoped(db, client, org_scope, monkeypatch)
     assert cross.status_code in (403, 404)
     anonymous = await client.get("/observability/usage")
     assert anonymous.status_code in (401, 403)
+
+
+
+@pytest.mark.asyncio
+async def test_async_grounded_followup_preserves_previous_answered_topic(
+    db, client, org_scope, monkeypatch
+):
+    """Two durable turns share scoped prior context, but never add model calls."""
+    fake = _stub(monkeypatch, decision=base._ai_decision())
+    calls = base._stub_rag(
+        monkeypatch,
+        base._rag_result(answer="Synthetic workshop hours: Monday to Saturday [S1]."),
+    )
+    org_id, token = await _setup(
+        db, client, org_scope, grounded_auto_reply_enabled=True
+    )
+    first = await _send(client, token, "When are you open?", client_message_id="c3-async-1")
+    assert first.status_code == 200, first.text
+    assert first.json()["processing_state"] == "accepted"
+    await turn_dispatcher.drain()
+
+    followup = await _send(
+        client, token, "What about weekends?", client_message_id="c3-async-2"
+    )
+    assert followup.status_code == 200, followup.text
+    assert followup.json()["processing_state"] == "accepted"
+    await turn_dispatcher.drain()
+
+    state = await _updates(client, token)
+    assert state["status"] == "ai_active"
+    assert len([m for m in state["messages"] if m["direction"] == "outbound"]) == 2
+    assert fake.invocation_count == 2
+    assert len(calls) == 2
+    assert calls[0]["previous_customer_question"] is None
+    assert calls[1]["previous_customer_question"] == "When are you open?"
+    assert all(c["organization_id"] == org_id for c in calls)
+    assert state["turns"] == []
