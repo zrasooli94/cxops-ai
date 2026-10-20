@@ -29,8 +29,8 @@ from sqlalchemy.pool import NullPool
 from app.models.integration_job import IntegrationJob
 from app.models.organization import Organization
 from app.repositories.integration_job_repository import (
-    IntegrationJobRepository,
     STALE_EXHAUSTED_ERROR,
+    IntegrationJobRepository,
 )
 from app.services.public_chat_expiry_service import ExpiryBatchResult
 from scripts import worker
@@ -140,7 +140,7 @@ async def test_two_real_worker_drains_claim_each_synthetic_job_once(
         assert job.organization_id in organizations
         seen.append(job.id)
         await asyncio.sleep(0.005)
-        return None
+
 
     async def _synthetic_expiry(
         _session_factory: Any, *, limit: int, **_kwargs: Any
@@ -197,7 +197,7 @@ async def test_transient_provider_free_failure_retries_then_completes(
         attempts.append(job.attempts)
         if len(attempts) == 1:
             raise RuntimeError("synthetic transient error")
-        return None
+
 
     monkeypatch.setattr(
         worker.IntegrationJobService, "execute", staticmethod(_synthetic_flaky)
@@ -272,7 +272,7 @@ async def test_real_repository_recovers_stale_and_exhausts_poison_pill(
     async def _safe_job(*, db: Any, job: IntegrationJob) -> None:
         assert job.job_type == JOB_TYPE
         seen.append(job.id)
-        return None
+
 
     monkeypatch.setattr(
         worker.IntegrationJobService, "execute", staticmethod(_safe_job)
