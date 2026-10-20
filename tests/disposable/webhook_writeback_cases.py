@@ -14,6 +14,7 @@ from scripts.worker_disposable_guard import require_disposable_environment
 
 require_disposable_environment(os.environ)
 
+import asyncio
 import math
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -25,10 +26,10 @@ from app.integrations.zendesk.client import ZendeskAPIError
 from app.models.ticket_event import TicketEvent
 from app.repositories.ticket_event_repository import TicketEventRepository
 from app.repositories.ticket_repository import TicketRepository
+from app.services import zendesk_webhook_service as webhook
 from app.services.automation_service import AutomationService
 from app.services.conversation_ingestion_service import ConversationIngestionService
 from app.services.zendesk_sync_service import ZendeskSyncService
-from app.services import zendesk_webhook_service as webhook
 
 TENANT_ID = 17
 TICKET_ID = 4242
@@ -405,3 +406,35 @@ async def test_page_budget_exhaustion_is_explicitly_unverified(
         await _process()
     assert len(fake_writeback.page_calls) == 20
     assert fake_writeback.writes == fake_writeback.completions == 0
+
+
+@pytest.mark.asyncio
+async def test_aggregate_scan_deadline_fails_closed(
+    fake_writeback: FakeWritebackProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_writeback.old_history(300)
+    fake_writeback.newer_comments(250)
+
+    async def _unresponsive_page(
+        db: object,
+        ticket_id: int,
+        *,
+        organization_id: int,
+        cursor: str | None = None,
+        page_size: int = 100,
+    ) -> dict:
+        assert ticket_id == TICKET_ID and organization_id == TENANT_ID
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable after cancellation")
+
+    monkeypatch.setattr(
+        webhook.zendesk_client, "get_ticket_comments_page", _unresponsive_page
+    )
+    monkeypatch.setattr(webhook, "WEBHOOK_MARKER_SCAN_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(webhook.WebhookWritebackUnverified, match="timed out"):
+        await asyncio.wait_for(_process(), timeout=2)
+    assert fake_writeback.writes == 0
+    assert fake_writeback.completions == 0
+    assert fake_writeback.event is not None
+    assert fake_writeback.event.writeback_completed is False
