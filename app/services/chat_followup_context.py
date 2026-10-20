@@ -9,7 +9,7 @@ public-message repository with trusted conversation and tenant IDs.
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from app.services.intent_classification import classify_intent
@@ -33,8 +33,12 @@ _UNTRUSTED_PRIOR = re.compile(
     r"\b(?:password|passcode|otp|secret|api\s+key|access\s+token"
     r"|credit\s+card|account\s+number|ignore\s+(?:all|your|previous)"
     r"|system\s+prompt|developer\s+mode|jailbreak)\b"
-    r"|@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+    r"|@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"|رمز\s*عبور|شماره\s*حساب|دستورالعمل\s*سیستم",
     re.IGNORECASE,
+)
+_PERSIAN_QUESTION = re.compile(
+    r"^(?:آیا|چه|چطور|چگونه|کجا|کی|چه\s+زمانی)\b"
 )
 
 
@@ -47,7 +51,7 @@ class PublicMessage(Protocol):
     visibility: str
     body: str
     dedupe_key: str | None
-    sent_at: object
+    sent_at: datetime | None
     delivery_status: str | None
 
 
@@ -83,9 +87,12 @@ def _safe_previous_question(question: str) -> bool:
         or _UNTRUSTED_PRIOR.search(question)
     ):
         return False
-    return classify_intent(
-        text=question.strip(), fast_path_action=None, has_policy_signal=False
-    ) == "information"
+    return (
+        classify_intent(
+            text=question.strip(), fast_path_action=None, has_policy_signal=False
+        ) == "information"
+        or (_PERSIAN_QUESTION.match(question.strip()) is not None and "؟" in question)
+    )
 
 
 def previous_answered_customer_question(
@@ -139,15 +146,12 @@ def previous_answered_customer_question(
     ):
         return None
 
-    from datetime import datetime
-
-    timestamps = (previous.sent_at, answer.sent_at, current.sent_at)
+    first, second, third = previous.sent_at, answer.sent_at, current.sent_at
     if not all(
         isinstance(value, datetime) and value.tzinfo is not None
-        for value in timestamps
+        for value in (first, second, third)
     ):
         return None
-    first, second, third = timestamps
     if not (first <= second <= third and third - first <= MAX_CONTEXT_AGE):
         return None
     return previous.body.strip() if _safe_previous_question(previous.body) else None
