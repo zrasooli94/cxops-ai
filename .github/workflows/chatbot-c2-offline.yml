@@ -12,6 +12,7 @@ on:
       - 'app/services/rag_service.py'
       - 'scripts/chatbot_c2_disposable_guard.py'
       - 'tests/test_chatbot_c2_offline.py'
+      - 'tests/test_public_chat.py'
       - 'tests/test_chatbot_c2_guard.py'
       - 'tests/fixtures/chatbot_c2_synthetic_faq.json'
       - 'docs/product/chatbot-c2-quality-matrix.md'
@@ -112,4 +113,5 @@ jobs:
             app/services/rag_service.py \
             scripts/chatbot_c2_disposable_guard.py \
             tests/test_chatbot_c2_guard.py \
-            tests/test_chatbot_c2_offline.py
+            tests/test_chatbot_c2_offline.py \
+            tests/test_public_chat.py
