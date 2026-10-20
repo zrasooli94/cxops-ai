@@ -84,7 +84,7 @@ def is_referential_information_followup(question: str) -> bool:
     )
 
 
-def _safe_previous_question(question: str) -> bool:
+def is_safe_previous_customer_question(question: str) -> bool:
     if (
         not question
         or len(question) > MAX_PRIOR_QUESTION_CHARS
@@ -160,4 +160,4 @@ def previous_answered_customer_question(
         return None
     if not (first <= second <= third and third - first <= MAX_CONTEXT_AGE):
         return None
-    return previous.body.strip() if _safe_previous_question(previous.body) else None
+    return previous.body.strip() if is_safe_previous_customer_question(previous.body) else None
