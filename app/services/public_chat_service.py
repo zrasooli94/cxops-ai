@@ -70,6 +70,11 @@ from app.repositories.savepoint import insert_in_savepoint
 from app.repositories.ticket_repository import TicketRepository
 from app.services.agent_workflow_service import agent_workflow_service
 from app.services.business_integration_service import BusinessIntegrationService
+from app.services.chat_followup_context import (
+    CONTEXT_MESSAGE_LIMIT,
+    is_referential_information_followup,
+    previous_answered_customer_question,
+)
 from app.services.conversation_ingestion_service import ConversationIngestionService
 from app.services.delivery_lease import chat_turn_lease_connection
 from app.services.integration_job_service import JobDeferredError, PermanentJobError
@@ -655,6 +660,42 @@ class PublicChatService:
             is None
         )
 
+    @staticmethod
+    async def _previous_grounded_question_for_followup(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        conversation_id: int,
+        inbound: ConversationMessage,
+        question: str,
+    ) -> str | None:
+        """Use only the immediately preceding answered public customer turn.
+
+        The last message must be this inbound row. Reads are tenant-bound and
+        include no internal/staff content. The helper refuses a stale, unsafe,
+        mixed-intent or unacknowledged context and never authorizes a tool.
+        """
+        if not is_referential_information_followup(question):
+            return None
+        messages = (
+            await ConversationMessageRepository.list_recent_public_for_conversation_for_tenant(
+                db,
+                conversation_id=conversation_id,
+                organization_id=organization_id,
+                limit=CONTEXT_MESSAGE_LIMIT,
+            )
+        )
+        return previous_answered_customer_question(
+            messages,
+            organization_id=organization_id,
+            conversation_id=conversation_id,
+            current_message_id=inbound.id,
+            current_question=question,
+            blocked_answers=frozenset(
+                {FALLBACK_REPLY, HANDOFF_REPLY, LOCAL_DEMO_HANDOFF_REPLY}
+            ),
+        )
+
     @classmethod
     async def _grounded_auto_reply_or_none(
         cls,
@@ -662,6 +703,7 @@ class PublicChatService:
         *,
         organization_id: int,
         question: str,
+        previous_customer_question: str | None = None,
     ) -> _GroundedAutoReply | None:
         """Produce a bounded public answer, or ``None`` when not eligible.
 
@@ -671,11 +713,16 @@ class PublicChatService:
         an ineligible answer simply returns ``None``. The citation markers are
         validated on the raw answer, then removed for the customer.
         """
+        extra_context = (
+            {"previous_customer_question": previous_customer_question}
+            if previous_customer_question is not None else {}
+        )
         rag_result = await rag_service.answer(
             db,
             organization_id=organization_id,
             question=question,
             feature="public_chat",
+            **extra_context,
         )
 
         eligible, reason = public_answer_eligible(rag_result)
@@ -1130,10 +1177,18 @@ class PublicChatService:
             record_public_chat_answer_decision(outcome=skip_reason)
         else:
             try:
+                previous_question = await cls._previous_grounded_question_for_followup(
+                    db,
+                    organization_id=organization_id,
+                    conversation_id=conversation.id,
+                    inbound=inbound,
+                    question=text,
+                )
                 grounded_reply = await cls._grounded_auto_reply_or_none(
                     db,
                     organization_id=organization_id,
                     question=text,
+                    previous_customer_question=previous_question,
                 )
             except Exception:
                 # A retrieval/RAG failure must never surface as a 500: roll
