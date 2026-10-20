@@ -1,6 +1,13 @@
+from datetime import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.zendesk.client import zendesk_client
+from app.integrations.zendesk.marker_scan import (
+    MarkerScanInconclusive,
+    find_marker,
+    marker_boundary,
+)
 from app.models.ticket_event import TicketEvent
 from app.repositories.ticket_event_repository import (
     TicketEventRepository,
@@ -16,7 +23,51 @@ from app.services.conversation_ingestion_service import (
 from app.services.zendesk_sync_service import ZendeskSyncService
 
 
+class WebhookWritebackUnverified(RuntimeError):
+    """Marker cannot be proved present/absent: never send a duplicate note."""
+
+
 class ZendeskWebhookService:
+    @staticmethod
+    async def _writeback_already_present(
+        db: AsyncSession,
+        *,
+        zendesk_ticket_id: int,
+        organization_id: int,
+        marker: str,
+        event_created_at: datetime,
+    ) -> bool:
+        """Require a private, full-line marker in a bounded newest-first scan.
+
+        The webhook's ingestion snapshot is oldest-first and may omit an
+        existing writeback on long tickets. The event timestamp was stored
+        before its first provider write, so a skew-adjusted boundary is safe.
+        Uncertain scans MUST prevent an external write; transport errors
+        propagate to the existing worker retry policy.
+        """
+
+        async def fetch_page(cursor: str | None) -> dict:
+            return await zendesk_client.get_ticket_comments_page(
+                db,
+                zendesk_ticket_id,
+                organization_id=organization_id,
+                cursor=cursor,
+            )
+
+        try:
+            result = await find_marker(
+                fetch_page,
+                marker=marker,
+                not_before=marker_boundary(event_created_at),
+                private_only=True,
+                whole_line=True,
+            )
+        except MarkerScanInconclusive as exc:
+            raise WebhookWritebackUnverified(
+                "Zendesk webhook marker scan inconclusive; writeback withheld"
+            ) from exc
+        return result.found
+
     @staticmethod
     async def process(
         db: AsyncSession,
@@ -99,23 +150,20 @@ class ZendeskWebhookService:
 
         marker = f"CXOps Event: {invocation_id}"
 
-        # Classified conversation/comment sync. The returned comments payload
-        # doubles as the marker source of truth, so the two API calls the
-        # previous flow made are replaced by the single bounded ingestion pass.
-        _conversation, comments_response = (
-            await ConversationIngestionService.ingest_zendesk_ticket(
-                db,
-                zendesk_ticket_id=zendesk_ticket_id,
-                organization_id=organization_id,
-            )
+        # Keep classified conversation ingestion, but do NOT treat its
+        # one-page oldest-first snapshot as proof of marker absence.
+        await ConversationIngestionService.ingest_zendesk_ticket(
+            db,
+            zendesk_ticket_id=zendesk_ticket_id,
+            organization_id=organization_id,
         )
 
-        already_written = any(
-            marker in (comment.get("body") or "")
-            for comment in comments_response.get(
-                "comments",
-                [],
-            )
+        already_written = await ZendeskWebhookService._writeback_already_present(
+            db,
+            zendesk_ticket_id=zendesk_ticket_id,
+            organization_id=organization_id,
+            marker=marker,
+            event_created_at=event.created_at,
         )
 
         if not already_written:
