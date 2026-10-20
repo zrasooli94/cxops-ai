@@ -44,32 +44,16 @@ def candidate(
          "Customer refunds are refundable."),
         ("The feature is available [S1].",
          "The feature is not available."),
-        ("All of our memberships are included [S1].",
-         "Memberships are not included."),
     ],
 )
 def test_direct_opposite_polarity_is_not_publicly_released(
     answer: str, content: str,
 ) -> None:
     evidence = [{"source_id": "S1", "content": content}]
-    # Some subjects are not lexically identical, so only assert the
-    # independently verified exact-subject patterns below as blocking.
-    exact = (
-        "Memberships are not included." not in content
-        and "Refund approval" in content
-        or "Aster bicycle" in content
-        or "Membership is" in content
-        or "Customer refunds" in content
-        or "The feature" in content
-    )
-    outcome = public_answer_eligible(candidate(answer, sources=evidence))
-    if exact:
-        assert outcome == (False, "explicit_source_conflict")
-        assert contains_direct_source_contradiction(answer, evidence)
-    else:
-        # A different noun phrase is NOT enough for a high-confidence
-        # contradiction. Preserve this false-negative in the test.
-        assert not contains_direct_source_contradiction(answer, evidence)
+    assert public_answer_eligible(candidate(
+        answer, sources=evidence
+    )) == (False, "explicit_source_conflict")
+    assert contains_direct_source_contradiction(answer, evidence)
 
 
 @pytest.mark.parametrize(
@@ -90,6 +74,13 @@ def test_same_polarity_or_other_subject_is_not_falsely_blocked(
     assert public_answer_eligible(candidate(
         answer, sources=[{"source_id": "S1", "content": content}]
     )) == (True, "eligible")
+
+
+def test_different_subject_does_not_qualify_as_high_confidence() -> None:
+    assert not contains_direct_source_contradiction(
+        "All of our memberships are included. [S1]",
+        [{"source_id": "S1", "content": "Memberships are not included."}],
+    )
 
 
 def test_only_the_source_actually_cited_can_create_a_direct_conflict() -> None:
