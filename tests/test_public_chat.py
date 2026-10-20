@@ -437,12 +437,16 @@ def _stub_rag(
     """
     calls: list[dict] = []
 
-    async def _fake_answer(_db, *, organization_id, question, top_k=None, feature="rag_answer"):
+    async def _fake_answer(
+        _db, *, organization_id, question, top_k=None, feature="rag_answer",
+        previous_customer_question=None,
+    ):
         calls.append(
             {
                 "organization_id": organization_id,
                 "question": question,
                 "feature": feature,
+                "previous_customer_question": previous_customer_question,
             }
         )
         if error is not None:
@@ -2502,3 +2506,119 @@ async def test_handed_off_followup_preserves_tenant_isolation(
         )
     ).scalars().all()
     assert second_runs == []
+
+
+# ---------------------------------------------------------------------------
+# Chatbot C3 — previously answered customer topic, not full public history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_c3_short_followup_reuses_only_preceding_answered_question(
+    db, client, org_scope, monkeypatch
+):
+    """Two real HTTP chat turns, both eligible and source-gated; no real LLM."""
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Private agent draft must not ship."))
+    calls = _stub_rag(
+        monkeypatch,
+        _rag_result(answer="The fictional workshop is open Monday to Saturday [S1]."),
+    )
+    token = (await _create_session(client, key))["session"]["token"]
+    headers = _origin_headers(token=token)
+
+    first = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "c3-topic-1", "text": "When are you open?"},
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "ai_active"
+    assert first.json()["handoff"] is False
+
+    followup = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "c3-topic-2", "text": "What about weekends?"},
+        headers=headers,
+    )
+    assert followup.status_code == 200, followup.text
+    assert followup.json()["status"] == "ai_active"
+    assert followup.json()["handoff"] is False
+    assert followup.json()["reply"] == "The fictional workshop is open Monday to Saturday."
+    assert len(calls) == 2, "one grounded RAG call per customer question"
+    assert calls[0]["previous_customer_question"] is None
+    assert calls[1]["previous_customer_question"] == "When are you open?"
+    assert calls[1]["organization_id"] == org.id
+
+    # The original question is still the stored visitor message, never a
+    # rewritten or concatenated customer message.
+    conversation = (
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
+    )
+    assert [m.body for m in messages if m.direction == "inbound"] == [
+        "When are you open?", "What about weekends?",
+    ]
+    assert sum(m.direction == "outbound" for m in messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
+    db, client, org_scope, monkeypatch
+):
+    """Two separate chats in different organizations use independent RAG calls."""
+    first_org = await org_scope()
+    second_org = await org_scope()
+    _, first_key = await _make_widget_config(
+        db, first_org, grounded_auto_reply_enabled=True
+    )
+    _, second_key = await _make_widget_config(
+        db, second_org, grounded_auto_reply_enabled=True
+    )
+    _stub_agent(monkeypatch, _ai_decision())
+    calls = _stub_rag(monkeypatch, _rag_result(
+        answer="Synthetic support is open on Saturdays [S1]."
+    ))
+    first_token = (await _create_session(client, first_key))["session"]["token"]
+    second_token = (await _create_session(client, second_key))["session"]["token"]
+
+    previous = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "c3-iso-a1", "text": "When is support open?"},
+        headers=_origin_headers(token=first_token),
+    )
+    assert previous.status_code == 200, previous.text
+
+    # Org B has no previous answered question. Nothing from org A is eligible
+    # as a previous question, even though both sessions are active.
+    other = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "c3-iso-b1", "text": "What about weekends?"},
+        headers=_origin_headers(token=second_token),
+    )
+    assert other.status_code == 200, other.text
+
+    # A complete standalone follow-up in org A should NOT inherit context.
+    standalone = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "c3-iso-a2",
+            "text": "When is support open on weekends?",
+        },
+        headers=_origin_headers(token=first_token),
+    )
+    assert standalone.status_code == 200, standalone.text
+    assert [c["organization_id"] for c in calls] == [
+        first_org.id, second_org.id, first_org.id
+    ]
+    assert all(c["previous_customer_question"] is None for c in calls)
