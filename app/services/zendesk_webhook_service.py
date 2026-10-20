@@ -23,7 +23,6 @@ from app.services.conversation_ingestion_service import (
 )
 from app.services.zendesk_sync_service import ZendeskSyncService
 
-
 WEBHOOK_MARKER_SCAN_TIMEOUT_SECONDS = 40.0
 
 
