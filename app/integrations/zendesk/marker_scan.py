@@ -112,31 +112,52 @@ async def find_marker(
     not_before: datetime,
     max_pages: int = MARKER_SCAN_MAX_PAGES,
     public_only: bool = False,
+    private_only: bool = False,
+    whole_line: bool = False,
 ) -> MarkerScanResult:
     """Search newest-first pages for ``marker``. See the module docstring.
 
-    ``public_only``: only a PUBLIC comment counts as the marker. A customer
-    reply is always written public, so a private note that merely quotes the
-    marker (e.g. an agent pasting it) must not be mistaken for delivery.
+    ``public_only`` and ``private_only`` require the correct Zendesk
+    visibility. Webhook writebacks require a private note and ``whole_line``,
+    so a public quotation or an event-key prefix cannot impersonate an
+    acknowledged writeback. Existing reply/agent callers retain defaults.
+    A scan must also remain newest-first ACROSS page boundaries.
     """
+    if public_only and private_only:
+        raise ValueError("marker scan visibility filters are mutually exclusive")
     cursor: str | None = None
     seen_cursors: set[str] = set()
+    previous: datetime | None = None
     for page in range(1, max_pages + 1):
         response = await fetch_page(cursor)
         comments = response.get("comments") if isinstance(response, dict) else None
         if not isinstance(comments, list):
             raise MarkerScanInconclusive("malformed_page", pages=page)
 
-        previous: datetime | None = None
         oldest: datetime | None = None
         for comment in comments:
             if not isinstance(comment, dict):
                 raise MarkerScanInconclusive("malformed_comment", pages=page)
+            created = _parse_time(comment.get("created_at"))
+            if created is None:
+                raise MarkerScanInconclusive("malformed_comment", pages=page)
+            if previous is not None and created > previous:
+                raise MarkerScanInconclusive("unordered_comments", pages=page)
+            previous = oldest = created
+
             body = comment.get("body")
-            if (
+            matches = (
                 isinstance(body, str)
-                and marker in body
+                and (
+                    any(line.strip() == marker for line in body.splitlines())
+                    if whole_line
+                    else marker in body
+                )
+            )
+            if (
+                matches
                 and (not public_only or comment.get("public") is True)
+                and (not private_only or comment.get("public") is False)
             ):
                 comment_id = comment.get("id")
                 return MarkerScanResult(
@@ -145,12 +166,6 @@ async def find_marker(
                     pages=page,
                     conclusion="found",
                 )
-            created = _parse_time(comment.get("created_at"))
-            if created is None:
-                raise MarkerScanInconclusive("malformed_comment", pages=page)
-            if previous is not None and created > previous:
-                raise MarkerScanInconclusive("unordered_comments", pages=page)
-            previous = oldest = created
 
         if oldest is not None and oldest < not_before:
             return MarkerScanResult(False, None, page, "reached_boundary")
