@@ -251,14 +251,14 @@ def test_bad_evidence_is_not_publicly_eligible(
     assert public_answer_eligible(candidate) == (False, reason)
 
 
-def test_citation_marker_cannot_prove_semantic_truth() -> None:
-    """Known gap: citation syntax is NOT entailment; do not call this quality certification."""
+def test_known_direct_negation_counterexample_now_fails_closed() -> None:
+    """C5 closes the C2 *exact-polarity* counterexample, not entailment generally."""
     result = _valid_result()
     result["sources"][0]["content"] = "Aster bicycle repairs are not free."
     result["answer"] = "All Aster bicycle repairs are free. [S1]"
-    assert public_answer_eligible(result) == (True, "eligible")
-    # This deliberate counterexample is a release-review finding, not a
-    # guarantee of AI factuality. See docs/product/chatbot-c2-quality-matrix.md.
+    assert public_answer_eligible(result) == (False, "explicit_source_conflict")
+    # Other paraphrased, implicit, multilingual and multi-source contradictions
+    # still require independent review; see C5 product quality runbook.
 
 
 def test_synthetic_dataset_is_complete_and_has_no_real_tenants() -> None:

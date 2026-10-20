@@ -11,6 +11,11 @@ import re
 
 from app.core.config import settings
 from app.services.citation_service import CitationService
+from app.services.public_answer_evidence import (
+    MAX_CITED_EVIDENCE_CHARS,
+    MAX_PUBLIC_ANSWER_CHARS,
+    contains_direct_source_contradiction,
+)
 
 FALLBACK_STRINGS = (
     "I don't have enough information in the knowledge base to answer that question.",
@@ -84,6 +89,9 @@ def public_answer_eligible(rag_result: dict) -> tuple[bool, str]:
         return False, "low_similarity"
 
     answer_text = answer.strip()
+    if len(answer_text) > MAX_PUBLIC_ANSWER_CHARS:
+        return False, "overlong_answer"
+
     if any(
         answer_text.casefold().startswith(fallback.casefold())
         for fallback in FALLBACK_STRINGS
@@ -95,6 +103,23 @@ def public_answer_eligible(rag_result: dict) -> tuple[bool, str]:
     )
     if not citations_valid:
         return False, "invalid_citations"
+
+    cited_source_ids = CitationService.extract(answer_text)
+    if any(
+        isinstance(source.get("content"), str)
+        and len(source["content"]) > MAX_CITED_EVIDENCE_CHARS
+        for source in sources
+        if source["source_id"] in cited_source_ids
+    ):
+        # A source chunk too large for bounded inspection cannot be treated
+        # as though the explicit contradiction check examined all of it.
+        return False, "oversized_evidence"
+
+    if contains_direct_source_contradiction(answer_text, sources):
+        # The answer explicitly flips the polarity of the cited, same-subject
+        # assertion. The existing handoff path handles this ineligible result.
+        # This does NOT certify semantic support in all remaining answers.
+        return False, "explicit_source_conflict"
 
     return True, "eligible"
 

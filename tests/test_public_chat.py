@@ -2622,3 +2622,57 @@ async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
         first_org.id, second_org.id, first_org.id
     ]
     assert all(c["previous_customer_question"] is None for c in calls)
+
+
+
+@pytest.mark.asyncio
+async def test_customer_citation_with_directly_opposing_source_hands_off(
+    db, client, org_scope, monkeypatch
+):
+    """A fake *grounded* model can no longer publish the known false-free claim."""
+    org = await org_scope()
+    _, key = await _make_widget_config(
+        db, org, grounded_auto_reply_enabled=True
+    )
+    _stub_agent(monkeypatch, _ai_decision(
+        draft="Agent draft must remain staff-only."
+    ))
+    rag_calls = _stub_rag(
+        monkeypatch,
+        _rag_result(
+            answer="All Aster bicycle repairs are free. [S1]",
+            sources=[{
+                "source_id": "S1",
+                "document_id": 1,
+                "chunk_id": 1,
+                "title": "Fictional workshop pricing",
+                "content": "Aster bicycle repairs are not free.",
+                "similarity": 0.89,
+            }],
+        ),
+    )
+    token = (await _create_session(client, key))["session"]["token"]
+    response = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "c5-polarity-conflict-1",
+            "text": "Are bicycle repairs free?",
+        },
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "human_requested"
+    assert result["handoff"] is True
+    assert result["reply"] == HANDOFF_REPLY
+    assert "free" not in result["reply"].casefold()
+    assert "Agent draft" not in result["reply"]
+    assert len(rag_calls) == 1
+    assert rag_calls[0]["organization_id"] == org.id
+
+    jobs = (
+        await db.execute(
+            select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+        )
+    ).scalars().all()
+    assert jobs == [], "a citation contradiction must not schedule a business action"
