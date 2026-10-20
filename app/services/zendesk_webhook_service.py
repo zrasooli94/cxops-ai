@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,9 @@ from app.services.conversation_ingestion_service import (
     ConversationIngestionService,
 )
 from app.services.zendesk_sync_service import ZendeskSyncService
+
+
+WEBHOOK_MARKER_SCAN_TIMEOUT_SECONDS = 40.0
 
 
 class WebhookWritebackUnverified(RuntimeError):
@@ -55,13 +59,20 @@ class ZendeskWebhookService:
             )
 
         try:
-            result = await find_marker(
-                fetch_page,
-                marker=marker,
-                not_before=marker_boundary(event_created_at),
-                private_only=True,
-                whole_line=True,
-            )
+            # The 20-page ceiling bounds requests; this deadline also bounds
+            # their CUMULATIVE latency below the worker's 240-second budget.
+            async with asyncio.timeout(WEBHOOK_MARKER_SCAN_TIMEOUT_SECONDS):
+                result = await find_marker(
+                    fetch_page,
+                    marker=marker,
+                    not_before=marker_boundary(event_created_at),
+                    private_only=True,
+                    whole_line=True,
+                )
+        except TimeoutError as exc:
+            raise WebhookWritebackUnverified(
+                "Zendesk webhook marker lookup timed out; writeback withheld"
+            ) from exc
         except MarkerScanInconclusive as exc:
             raise WebhookWritebackUnverified(
                 "Zendesk webhook marker scan inconclusive; writeback withheld"
