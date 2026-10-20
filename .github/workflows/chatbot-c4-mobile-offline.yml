@@ -12,6 +12,7 @@ on:
       - 'frontend/src/lib/public-chat/conversation-view.ts'
       - 'frontend/src/lib/public-chat/conversation-view.test.ts'
       - 'frontend/src/lib/public-chat/embed-sizing.test.ts'
+      - 'frontend/src/lib/public-chat/embed-connect.test.ts'
       - 'frontend/src/lib/public-chat/chat-accessibility.test.ts'
       - 'docs/product/chatbot-c4-mobile-accessibility.md'
 
@@ -88,7 +89,8 @@ jobs:
             src/lib/public-chat/conversation-view.ts \
             src/lib/public-chat/conversation-view.test.ts \
             src/lib/public-chat/chat-accessibility.test.ts \
-            src/lib/public-chat/embed-sizing.test.ts
+            src/lib/public-chat/embed-sizing.test.ts \
+            src/lib/public-chat/embed-connect.test.ts
 
       - name: Generate Next.js route types
         working-directory: frontend
