@@ -1,0 +1,104 @@
+# Source-only, explicitly synthetic readiness lane for the real Python worker.
+# NO Render deployment, provider credentials, production services or Cron.
+name: Render Real Worker Readiness (Disposable)
+
+on:
+  pull_request:
+    branches:
+      - codex/render-native-cron-standalone
+      - main
+      - master
+    paths:
+      - '.github/workflows/render-real-worker-disposable.yml'
+      - 'scripts/worker_disposable_guard.py'
+      - 'scripts/worker_disposable_smoke.py'
+      - 'tests/disposable/worker_probe_cases.py'
+      - 'tests/test_worker_disposable_guard.py'
+      - 'docs/architecture/render-real-worker-readiness.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-real-worker-disposable
+  cancel-in-progress: true
+
+jobs:
+  real-worker-disposable:
+    name: Real Worker / Synthetic PG / No Providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    env:
+      CXOPS_WORKER_DISPOSABLE_PROBE: 'true'
+      DATABASE_URL: postgresql+asyncpg://cxops_probe:cxops_probe@127.0.0.1:5432/cxops_worker_probe_disposable
+      ENVIRONMENT: development
+      DEBUG: 'false'
+      AUTH_MODE: hs256
+      AUTH_DEV_MODE: 'false'
+      OPENAI_API_KEY: ''
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops_worker_probe_disposable
+          POSTGRES_USER: cxops_probe
+          POSTGRES_PASSWORD: cxops_probe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U cxops_probe -d cxops_worker_probe_disposable"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout GitHub-generated PR merge result
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refuse unsafe environment before installing or importing application
+        run: python scripts/worker_disposable_guard.py
+
+      - name: Install exact lock without provider secrets
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-lock.txt
+          python -m pip install --disable-pip-version-check ruff==0.16.10
+
+      - name: Validate strict local database and one migration head
+        run: |
+          python scripts/worker_disposable_guard.py
+          test "$(alembic heads | wc -l | tr -d ' ')" = "1"
+          alembic upgrade head
+
+      - name: Real one-shot startup, empty queue, real SLA and expiry with measured RSS
+        run: |
+          python scripts/worker_disposable_guard.py
+          python -m scripts.worker_disposable_smoke
+
+      - name: Concurrent claims, fenced completion, retry, stale recovery, expiry regression
+        run: |
+          python scripts/worker_disposable_guard.py
+          python -m pytest -q --tb=short \
+            tests/disposable/worker_probe_cases.py \
+            tests/test_worker_one_shot.py \
+            tests/test_public_chat_expiry_batch.py \
+            tests/test_production_worker_workflow.py \
+            tests/test_worker_disposable_guard.py \
+            -o faulthandler_timeout=120 --durations=15
+
+      - name: Ruff check on probe and security guards
+        run: |
+          python -m ruff check \
+            scripts/worker_disposable_guard.py \
+            scripts/worker_disposable_smoke.py \
+            tests/disposable/worker_probe_cases.py \
+            tests/test_worker_disposable_guard.py
