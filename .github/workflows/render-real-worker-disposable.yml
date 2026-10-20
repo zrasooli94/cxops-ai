@@ -7,6 +7,7 @@ on:
     branches:
       - codex/render-native-cron-standalone
       - codex/render-real-worker-disposable-readiness
+      - codex/render-real-worker-simulated-load
       - main
       - master
     paths:
@@ -14,6 +15,7 @@ on:
       - 'scripts/worker_disposable_guard.py'
       - 'scripts/worker_disposable_smoke.py'
       - 'scripts/worker_disposable_memory_probe.py'
+      - 'scripts/worker_disposable_termination_probe.py'
       - 'docs/architecture/render-real-worker-simulated-load.md'
       - 'tests/disposable/worker_probe_cases.py'
       - 'tests/test_worker_disposable_guard.py'
@@ -92,6 +94,11 @@ jobs:
           python scripts/worker_disposable_guard.py
           python -m scripts.worker_disposable_memory_probe
 
+      - name: Abrupt OS process-SIGTERM and real PostgreSQL stale recovery
+        run: |
+          python scripts/worker_disposable_guard.py
+          python -m scripts.worker_disposable_termination_probe
+
       - name: Concurrent claims, fenced completion, retry, stale recovery, expiry regression
         run: |
           python scripts/worker_disposable_guard.py
@@ -109,5 +116,6 @@ jobs:
             scripts/worker_disposable_guard.py \
             scripts/worker_disposable_smoke.py \
             scripts/worker_disposable_memory_probe.py \
+            scripts/worker_disposable_termination_probe.py \
             tests/disposable/worker_probe_cases.py \
             tests/test_worker_disposable_guard.py
