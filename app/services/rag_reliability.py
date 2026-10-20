@@ -36,7 +36,8 @@ def public_answer_eligible(rag_result: dict) -> tuple[bool, str]:
 
     retrieval_count = rag_result.get("retrieval_count")
     if (
-        type(retrieval_count) is not int
+        isinstance(retrieval_count, bool)
+        or not isinstance(retrieval_count, int)
         or retrieval_count < 1
     ):
         return False, "no_sources"
