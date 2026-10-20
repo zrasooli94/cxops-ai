@@ -8,6 +8,7 @@ on:
       - codex/render-native-cron-standalone
       - codex/render-real-worker-disposable-readiness
       - codex/render-real-worker-simulated-load
+      - codex/render-real-worker-sigterm-disposable
       - main
       - master
     paths:
@@ -17,6 +18,7 @@ on:
       - 'scripts/worker_disposable_memory_probe.py'
       - 'scripts/worker_disposable_termination_probe.py'
       - 'docs/architecture/render-real-worker-simulated-load.md'
+      - 'docs/architecture/render-worker-provider-replay-safety.md'
       - 'tests/disposable/worker_probe_cases.py'
       - 'tests/test_worker_disposable_guard.py'
       - 'docs/architecture/render-real-worker-readiness.md'
