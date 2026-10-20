@@ -25,6 +25,11 @@ _FOLLOWUP_EN = re.compile(
     r"|^(?:(?:and|also)\s+)?(?:weekends?|weekdays?|saturdays?|sundays?)\??$",
     re.IGNORECASE,
 )
+_SIMPLE_DAY_FOLLOWUP_EN = re.compile(
+    r"^(?:(?:and|also)\s+)?(?:on\s+|for\s+)?"
+    r"(?:weekends?|weekdays?|saturdays?|sundays?)\s*\?$",
+    re.IGNORECASE,
+)
 _FOLLOWUP_FA = re.compile(
     r"^(?:و\s+)?(?:آخر\s*هفته|روزهای?\s+تعطیل|شنبه|یکشنبه)"
     r"(?:\s+(?:چطور|چگونه|چی|چیه|چه\s+طور))?\s*[؟?]?$"
@@ -74,6 +79,7 @@ def is_referential_information_followup(question: str) -> bool:
             has_policy_signal=False,
         )
         == "information"
+        or _SIMPLE_DAY_FOLLOWUP_EN.fullmatch(normalized) is not None
         or _FOLLOWUP_FA.fullmatch(normalized) is not None
     )
 
