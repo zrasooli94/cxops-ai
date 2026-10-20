@@ -35,6 +35,12 @@ branches based on master** while the Render production cutover remains HOLD.
   with prior visitor messages do not look like a fresh AI session.
 - The tenant's existing maximum-message-length bound filters suggestions.
   No prompt is offered if it would exceed the configured cap.
+- If sending fails or human-handoff API is unavailable, preserve the
+  visitor's current AI/human session instead of incorrectly disabling the
+  composer. Restore the unconfirmed message as an editable draft so an
+  identical retry uses the existing pending client-message ID and server
+  deduplication. Clear stale errors on retry. The connection-creation error
+  state remains unchanged.
 - Existing widget themes, human-support button, origin allowlist, bearer
   session token, role separation, history polling and conversation status
   remain unchanged. No new public endpoint, environment variable, API secret,
