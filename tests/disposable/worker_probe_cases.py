@@ -539,3 +539,112 @@ async def test_simulated_cancellation_reclaimed_only_after_stale_fence(
     assert summary["health"] == worker.RUN_HEALTHY
     assert current.status == "completed" and current.attempts == 2
     assert finished == ids
+
+
+
+@pytest.mark.asyncio
+async def test_handoff_provider_acceptance_gap_replays_after_stale_recovery(
+    isolated_worker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REPRODUCE A KNOWN RELEASE RISK; passing is NOT an exactly-once proof.
+
+    A fake handoff transport accepts an email, then an injected failure stops
+    the persisted `accepted_channels` update. After claim recovery, the real
+    handoff send loop transmits that same email a second time. This is an
+    intentionally adversarial, provider-free demonstration of the gap between
+    remote acceptance and local acknowledgment, NOT the desired product policy.
+    """
+    from types import SimpleNamespace
+
+    from app.services import apprise_sender, handoff_notification_service as handoff
+
+    maker, _engine, seed = isolated_worker
+    _orgs, job_ids = await seed(1)
+    assert len(job_ids) == 1
+    job_id = job_ids[0]
+    provider_acceptances: list[str] = []
+
+    # No actual transport endpoint or secret is ever configured or accessed.
+    monkeypatch.setattr(handoff, "settings", SimpleNamespace(
+        frontend_base_url="https://synthetic.invalid"
+    ))
+    monkeypatch.setattr(handoff, "required_channels", lambda: ("email",))
+    monkeypatch.setattr(handoff, "_destination", lambda channel: "synthetic://offline")
+
+    def _no_network_restriction(channel: str, configured: str) -> str:
+        assert channel == "email" and configured == "synthetic://offline"
+        return configured
+
+    async def _record_fake_acceptance(
+        *, channel: str, configured: str, title: str, body: str
+    ) -> None:
+        assert channel == "email" and configured == "synthetic://offline"
+        assert title.startswith("CXOps AI") and body.startswith("CXOps AI")
+        provider_acceptances.append(channel)
+
+    monkeypatch.setattr(apprise_sender, "restricted_url", _no_network_restriction)
+    monkeypatch.setattr(apprise_sender, "send_staff_handoff", _record_fake_acceptance)
+
+    real_update_outcome = handoff._update_outcome
+    fail_once = True
+
+    async def _simulate_post_acceptance_crash(
+        db: Any, job: IntegrationJob, **fields: Any
+    ) -> None:
+        nonlocal fail_once
+        if fail_once and "accepted_channels" in fields:
+            fail_once = False
+            raise RuntimeError("synthetic crash after external acceptance")
+        await real_update_outcome(db, job, **fields)
+
+    monkeypatch.setattr(handoff, "_update_outcome", _simulate_post_acceptance_crash)
+    async with maker() as db:
+        first_claim = await IntegrationJobRepository.claim_next_unscoped(db)
+        assert first_claim is not None and first_claim.id == job_id
+        with pytest.raises(RuntimeError, match="synthetic crash"):
+            await handoff._send_channels(db, first_claim)
+
+    assert provider_acceptances == ["email"]
+    (after_crash,) = await _job_rows(maker, job_ids)
+    assert after_crash.status == "processing" and after_crash.attempts == 1
+    assert after_crash.locked_at is not None
+    assert "accepted_channels" not in after_crash.payload
+
+    # A second worker correctly avoids non-stale claims, but the external
+    # service's accepted side effect is not represented by the durable row.
+    early = await worker.run_worker_once(max_jobs=1, max_seconds=10)
+    assert early["jobs_processed"] == 0
+    assert provider_acceptances == ["email"]
+
+    # Age only this one synthetic claim; no production retry rule is changed.
+    async with maker() as db:
+        result = await db.execute(
+            update(IntegrationJob)
+            .where(
+                IntegrationJob.id == job_id,
+                IntegrationJob.status == "processing",
+            )
+            .values(locked_at=datetime.now(UTC) - timedelta(minutes=15))
+            .returning(IntegrationJob.id)
+        )
+        assert result.scalar_one() == job_id
+        await db.commit()
+
+    monkeypatch.setattr(handoff, "_update_outcome", real_update_outcome)
+    async with maker() as db:
+        second_claim = await IntegrationJobRepository.claim_next_unscoped(db)
+        assert second_claim is not None and second_claim.id == job_id
+        assert second_claim.attempts == 2
+        await handoff._send_channels(db, second_claim)
+        completed = await IntegrationJobRepository.mark_completed(
+            db, job_id=job_id, claimed_at=second_claim.locked_at
+        )
+        assert completed is not None and completed.status == "completed"
+
+    (final,) = await _job_rows(maker, job_ids)
+    assert final.status == "completed" and final.attempts == 2
+    assert final.payload["accepted_channels"] == ["email"]
+    # The synthetic provider received TWO acceptances despite exactly one
+    # durable channel acknowledgment. This is a RELEASE BLOCKER for any
+    # claim of exactly-once external notification delivery.
+    assert provider_acceptances == ["email", "email"]
