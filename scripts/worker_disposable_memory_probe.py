@@ -171,7 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args == ["--child"]:
         try:
             result = asyncio.run(synthetic_run())
-        except Exception as exc:
+        except (AssertionError, OSError, RuntimeError, ValueError) as exc:
             print("Synthetic worker error: " + type(exc).__name__, file=sys.stderr)
             return 1
         print(json.dumps(result, sort_keys=True))
