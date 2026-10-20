@@ -602,6 +602,7 @@ export function PublicChatWidget({
         return;
       }
       const trimmed = text.trim();
+      setErrorMessage(null);
       setInput("");
       setSending(true);
 
@@ -673,12 +674,16 @@ export function PublicChatWidget({
             ? error.message
             : "Your message could not be sent. Please try again.",
         );
+        // The server might already have accepted the ambiguous send.
+        // Restore the draft and keep its pending client_message_id so an
+        // identical retry is deduplicated rather than sent twice.
+        setInput(trimmed);
         setMessages((previous) =>
           previous.filter(
             (message) => message !== optimistic,
           ),
         );
-        setState("error");
+        // Transport failure must not disable a valid AI/human composer.
       } finally {
         setSending(false);
       }
@@ -691,6 +696,7 @@ export function PublicChatWidget({
     if (!token) {
       return;
     }
+    setErrorMessage(null);
     setSending(true);
     try {
       const result =
@@ -713,7 +719,8 @@ export function PublicChatWidget({
           ? error.message
           : "Unable to request human support.",
       );
-      setState("error");
+      // Failed handoff API requests do not invalidate the conversation.
+      // The visitor can retry with the existing session and draft.
     } finally {
       setSending(false);
     }
