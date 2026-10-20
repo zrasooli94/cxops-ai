@@ -7,6 +7,7 @@ credentials, customer tenancy, live OpenAI, Render/Neon or remote database.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 DISPOSABLE_DB = "cxops_chatbot_c2_disposable_test"
@@ -17,7 +18,7 @@ DISPOSABLE_URL = (
 
 
 def require_c2_disposable_environment(
-    env: dict[str, str] | os._Environ[str],
+    env: Mapping[str, str],
 ) -> str:
     if any(
         env.get(key) != expected
