@@ -14,12 +14,13 @@ from app.core.lazy import LazyAttribute
 from app.services.ai_observability_service import (
     AIObservabilityService,
 )
-from app.services.citation_service import (
-    CitationService,
-)
 from app.services.chat_followup_context import (
     MAX_PRIOR_QUESTION_CHARS,
     is_referential_information_followup,
+    is_safe_previous_customer_question,
+)
+from app.services.citation_service import (
+    CitationService,
 )
 from app.services.knowledge_search_service import (
     KnowledgeSearchService,
@@ -105,6 +106,7 @@ class RAGService:
             and "\n" not in prior
             and "\r" not in prior
             and is_referential_information_followup(question)
+            and is_safe_previous_customer_question(prior)
         )
         retrieval_question = (
             f"{prior}\n{question}" if use_prior else question
