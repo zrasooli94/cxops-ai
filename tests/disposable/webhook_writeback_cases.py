@@ -438,3 +438,19 @@ async def test_aggregate_scan_deadline_fails_closed(
     assert fake_writeback.completions == 0
     assert fake_writeback.event is not None
     assert fake_writeback.event.writeback_completed is False
+
+
+@pytest.mark.parametrize("visibility", [None, "false"], ids=["missing", "not-a-boolean"])
+@pytest.mark.asyncio
+async def test_matched_marker_with_unknown_visibility_stops_writeback(
+    fake_writeback: FakeWritebackProvider, visibility: object
+) -> None:
+    fake_writeback.old_history(300)
+    fake_writeback.existing_writeback()
+    fake_writeback.comments[-1]["public"] = visibility
+    with pytest.raises(webhook.WebhookWritebackUnverified):
+        await _process()
+    assert fake_writeback.writes == 0
+    assert fake_writeback.completions == 0
+    assert fake_writeback.event is not None
+    assert fake_writeback.event.writeback_completed is False
