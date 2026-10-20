@@ -9,6 +9,7 @@ on:
       - codex/render-real-worker-disposable-readiness
       - codex/render-real-worker-simulated-load
       - codex/render-real-worker-sigterm-disposable
+      - codex/render-real-worker-provider-replay-audit
       - main
       - master
     paths:
@@ -19,6 +20,10 @@ on:
       - 'scripts/worker_disposable_termination_probe.py'
       - 'docs/architecture/render-real-worker-simulated-load.md'
       - 'docs/architecture/render-worker-provider-replay-safety.md'
+      - 'docs/architecture/render-worker-zendesk-writeback-replay-fix.md'
+      - 'app/integrations/zendesk/marker_scan.py'
+      - 'app/services/zendesk_webhook_service.py'
+      - 'tests/disposable/webhook_writeback_cases.py'
       - 'tests/disposable/worker_probe_cases.py'
       - 'tests/test_worker_disposable_guard.py'
       - 'docs/architecture/render-real-worker-readiness.md'
@@ -106,6 +111,8 @@ jobs:
           python scripts/worker_disposable_guard.py
           python -m pytest -q --tb=short \
             tests/disposable/worker_probe_cases.py \
+            tests/disposable/webhook_writeback_cases.py \
+            tests/test_zendesk_marker_scan.py \
             tests/test_worker_one_shot.py \
             tests/test_public_chat_expiry_batch.py \
             tests/test_production_worker_workflow.py \
@@ -115,6 +122,9 @@ jobs:
       - name: Ruff check on probe and security guards
         run: |
           python -m ruff check \
+            app/integrations/zendesk/marker_scan.py \
+            app/services/zendesk_webhook_service.py \
+            tests/disposable/webhook_writeback_cases.py \
             scripts/worker_disposable_guard.py \
             scripts/worker_disposable_smoke.py \
             scripts/worker_disposable_memory_probe.py \
