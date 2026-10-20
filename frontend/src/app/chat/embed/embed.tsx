@@ -3,9 +3,11 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
+  type RefObject,
 } from "react";
 
 import {
@@ -24,6 +26,10 @@ import {
   handoffCopy,
   isHandoffState,
 } from "@/lib/public-chat/handoff-copy";
+import {
+  isNearChatBottom,
+  messagePresentation,
+} from "@/lib/public-chat/conversation-view";
 import {
   clientMessageIdForSend,
   sendWithRetry,
@@ -184,10 +190,12 @@ function LauncherButton({
   theme,
   onClick,
   ariaLabel,
+  buttonRef,
 }: {
   theme: PublicChatTheme;
   onClick: () => void;
   ariaLabel: string;
+  buttonRef: RefObject<HTMLButtonElement | null>;
 }) {
   const reducedMotion = usePrefersReducedMotion();
   const [hovered, setHovered] = useState(false);
@@ -203,6 +211,7 @@ function LauncherButton({
 
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       aria-label={ariaLabel}
@@ -317,6 +326,12 @@ export function PublicChatWidget({
   const pendingSendRef =
     useRef<PendingSend | null>(null);
   const composerRef = useRef<HTMLInputElement>(null);
+  const messageLogRef = useRef<HTMLUListElement>(null);
+  const launcherButtonRef = useRef<HTMLButtonElement>(null);
+  const minimizeButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreLauncherFocusRef = useRef(false);
+  const followLatestRef = useRef(true);
+  const [readingOlderMessages, setReadingOlderMessages] = useState(false);
   // An accepted message whose AI reply has not arrived yet.
   const [awaitingReply, setAwaitingReply] =
     useState(false);
@@ -499,11 +514,15 @@ export function PublicChatWidget({
     // human_assigned) is already correct and the active polling reconciles
     // server truth.
     if (sessionTokenRef.current) {
+      followLatestRef.current = true;
+      setReadingOlderMessages(false);
       setPanelOpen(true);
       return;
     }
 
     connectInflightRef.current = true;
+    followLatestRef.current = true;
+    setReadingOlderMessages(false);
     setPanelOpen(true);
     setState("connecting");
 
@@ -602,6 +621,9 @@ export function PublicChatWidget({
         return;
       }
       const trimmed = text.trim();
+      // An explicit customer send always reveals their own new message.
+      followLatestRef.current = true;
+      setReadingOlderMessages(false);
       setErrorMessage(null);
       setInput("");
       setSending(true);
@@ -730,6 +752,8 @@ export function PublicChatWidget({
     // UI-only collapse: hide the panel but keep the conversation, the in-memory
     // session token, and the persisted token. No backend call, no storage
     // removal, no status change — reopening shows the same conversation.
+    // Restore the launcher as the keyboard/screenreader focus target.
+    restoreLauncherFocusRef.current = true;
     setPanelOpen(false);
   }, []);
 
@@ -803,6 +827,34 @@ export function PublicChatWidget({
   useEffect(() => {
     embeddingOriginRef.current =
       createEmbeddingOrigin(document.referrer);
+  }, []);
+
+  // The launcher disappears when the panel opens; focus a named control
+  // inside the dialog without automatically opening the mobile keyboard.
+  // Minimize (including Escape) returns focus to the re-mounted launcher.
+  useLayoutEffect(() => {
+    if (panelOpen) {
+      minimizeButtonRef.current?.focus();
+    } else if (restoreLauncherFocusRef.current) {
+      restoreLauncherFocusRef.current = false;
+      launcherButtonRef.current?.focus();
+    }
+  }, [panelOpen]);
+
+  useLayoutEffect(() => {
+    if (panelOpen && followLatestRef.current && messageLogRef.current) {
+      messageLogRef.current.scrollTop =
+        messageLogRef.current.scrollHeight;
+    }
+  }, [messages, panelOpen]);
+
+  const jumpToLatest = useCallback(() => {
+    followLatestRef.current = true;
+    setReadingOlderMessages(false);
+    if (messageLogRef.current) {
+      messageLogRef.current.scrollTop =
+        messageLogRef.current.scrollHeight;
+    }
   }, []);
 
   useEffect(() => {
@@ -951,6 +1003,7 @@ export function PublicChatWidget({
           theme={theme}
           onClick={() => void open()}
           ariaLabel="Open support chat"
+          buttonRef={launcherButtonRef}
         />
       </div>
     );
@@ -966,8 +1019,19 @@ export function PublicChatWidget({
   return (
     <section
       role="dialog"
-      aria-modal="true"
+      aria-modal="false"
       aria-labelledby="cxops-chat-title"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        if (newConversationConfirm) {
+          setNewConversationConfirm(false);
+        } else if (endConfirm) {
+          setEndConfirm(false);
+        } else {
+          minimize();
+        }
+      }}
       className="cxops-chat-panel"
       style={
         {
@@ -1034,6 +1098,7 @@ export function PublicChatWidget({
           )}
         </div>
         <button
+          ref={minimizeButtonRef}
           type="button"
           onClick={minimize}
           aria-label="Minimize chat"
@@ -1166,9 +1231,19 @@ export function PublicChatWidget({
       )}
 
       <ul
+        ref={messageLogRef}
         role="log"
+        aria-label="Support conversation"
         aria-live="polite"
         aria-atomic="false"
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          const nearBottom = isNearChatBottom(
+            node.scrollHeight, node.scrollTop, node.clientHeight,
+          );
+          followLatestRef.current = nearBottom;
+          setReadingOlderMessages(!nearBottom);
+        }}
         style={{
           flex: 1,
           overflowY: "auto",
@@ -1205,13 +1280,14 @@ export function PublicChatWidget({
         {messages.map((message, index) => {
           const isInbound =
             message.direction === "inbound";
+          const presentation = messagePresentation(message.direction);
           return (
             <li
               key={`${message.id}-${index}`}
+              aria-label={presentation.sender + " message"}
+              dir="auto"
               style={{
-                alignSelf: isInbound
-                  ? "flex-start"
-                  : "flex-end",
+                alignSelf: presentation.alignSelf,
                 maxWidth: "85%",
                 padding: "8px 12px",
                 borderRadius: `${theme.bubble.radius}px`,
@@ -1247,6 +1323,27 @@ export function PublicChatWidget({
           </li>
         )}
       </ul>
+
+      {readingOlderMessages && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          style={{
+            alignSelf: "center",
+            margin: "6px 0",
+            padding: "8px 14px",
+            borderRadius: "999px",
+            border: `1px solid ${theme.statusChip.border}`,
+            background: theme.statusChip.background,
+            color: theme.statusChip.foreground,
+            fontSize: "12px",
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Jump to latest messages
+        </button>
+      )}
 
       {showStarterPrompts && (
         <div
@@ -1376,6 +1473,7 @@ export function PublicChatWidget({
             ref={composerRef}
             className="cxops-chat-input"
             type="text"
+            dir="auto"
             value={input}
             onChange={(event) =>
               setInput(event.target.value)

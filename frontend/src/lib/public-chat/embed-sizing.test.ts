@@ -44,19 +44,53 @@ interface LoaderStub {
   iframe: {
     style: Record<string, string>;
     attributes: Record<string, string>;
+    contentWindow: object;
   };
-  handler: ((event: { origin: string; data: unknown }) => void) | null;
+  handler: ((
+    event: { origin: string; data: unknown; source: unknown }
+  ) => void) | null;
   appended: boolean;
+  changeHostViewport: (width: number, height: number) => void;
+  changeVisualViewport: (
+    width: number, height: number, offsetTop: number,
+  ) => void;
 }
 
 function bootLoader(viewport: {
   innerWidth: number;
   innerHeight: number;
+  visual?: { width: number; height: number; offsetTop: number };
 }): LoaderStub {
+  const childWindow = {};
+  let hostResize: (() => void) | null = null;
+  let visualResize: (() => void) | null = null;
+  const visualStub = viewport.visual ? {
+    ...viewport.visual,
+    addEventListener: (
+      type: string, handler: () => void,
+    ) => {
+      if (type === "resize") visualResize = handler;
+    },
+  } : undefined;
+
+  // These hooks simulate parent rotation and the mobile virtual keyboard.
+  // The loader itself still runs as literal JS in a sandbox, not as a mock.
   const stub: LoaderStub = {
-    iframe: { style: {}, attributes: {} },
+    iframe: { style: {}, attributes: {}, contentWindow: childWindow },
     handler: null,
     appended: false,
+    changeHostViewport: (width, height) => {
+      windowStub.innerWidth = width;
+      windowStub.innerHeight = height;
+      hostResize?.();
+    },
+    changeVisualViewport: (width, height, offsetTop) => {
+      assert.ok(visualStub, "visual viewport stub is required");
+      visualStub.width = width;
+      visualStub.height = height;
+      visualStub.offsetTop = offsetTop;
+      visualResize?.();
+    },
   };
 
   const documentStub = {
@@ -70,6 +104,7 @@ function bootLoader(viewport: {
         stub.iframe.attributes[name] = value;
       },
       style: stub.iframe.style,
+      contentWindow: childWindow,
     }),
     body: {
       appendChild: () => {
@@ -82,9 +117,20 @@ function bootLoader(viewport: {
     location: { href: "https://rispu.com/contact" },
     innerWidth: viewport.innerWidth,
     innerHeight: viewport.innerHeight,
-    addEventListener: (type: string, handler: (event: { origin: string; data: unknown }) => void) => {
+    visualViewport: visualStub,
+    addEventListener: (
+      type: string,
+      handler: ((event: {
+        origin: string;
+        data: unknown;
+        source: unknown;
+      }) => void) | (() => void),
+    ) => {
       if (type === "message") {
-        stub.handler = handler;
+        stub.handler = handler as LoaderStub["handler"];
+      }
+      if (type === "resize") {
+        hostResize = handler as () => void;
       }
     },
   };
@@ -108,8 +154,9 @@ function resize(
   stub: LoaderStub,
   origin: string,
   data: unknown,
+  source: unknown = stub.iframe.contentWindow,
 ): void {
-  stub.handler?.({ origin, data });
+  stub.handler?.({ origin, data, source });
 }
 
 describe("embed size requests (embed.tsx)", () => {
@@ -444,5 +491,70 @@ describe("loader.js iframe sizing", () => {
     assert.equal(stub.iframe.style.right, "0");
     assert.equal(stub.iframe.style.bottom, "0");
     assert.equal(stub.iframe.style.zIndex, "9999");
+  });
+});
+
+describe("mobile browser resizing and iframe source isolation", () => {
+  it("re-clamps the expanded chat on rotation without sending a second message", () => {
+    const stub = bootLoader({ innerWidth: 1200, innerHeight: 900 });
+    resize(stub, LOADER_ORIGIN, {
+      type: "cxops-embed:resize", width: 400, height: 540,
+    });
+    assert.equal(stub.iframe.style.width, "440px");
+    assert.equal(stub.iframe.style.height, "580px");
+
+    stub.changeHostViewport(320, 430);
+    assert.equal(stub.iframe.style.width, "320px");
+    assert.equal(stub.iframe.style.height, "430px");
+
+    stub.changeHostViewport(1200, 900);
+    assert.equal(stub.iframe.style.width, "440px");
+    assert.equal(stub.iframe.style.height, "580px");
+  });
+
+  it("reacts to a visual viewport resized by a mobile keyboard", () => {
+    const stub = bootLoader({
+      innerWidth: 420, innerHeight: 800,
+      visual: { width: 420, height: 800, offsetTop: 0 },
+    });
+    resize(stub, LOADER_ORIGIN, {
+      type: "cxops-embed:resize", width: 400, height: 540,
+    });
+    assert.equal(stub.iframe.style.height, "580px");
+    assert.equal(stub.iframe.style.bottom, "0px");
+
+    stub.changeVisualViewport(420, 300, 0);
+    assert.equal(stub.iframe.style.height, "300px");
+    assert.equal(stub.iframe.style.bottom, "500px");
+
+    stub.changeVisualViewport(420, 800, 0);
+    assert.equal(stub.iframe.style.height, "580px");
+    assert.equal(stub.iframe.style.bottom, "0px");
+  });
+
+  it("rejects forged resize requests even from another frame on the same origin", () => {
+    const stub = bootLoader({ innerWidth: 1200, innerHeight: 900 });
+    resize(
+      stub, LOADER_ORIGIN,
+      { type: "cxops-embed:resize", width: 400, height: 540 },
+      {},
+    );
+    assert.equal(stub.iframe.style.width, "96px");
+    assert.equal(stub.iframe.style.height, "96px");
+
+    resize(stub, LOADER_ORIGIN, {
+      type: "cxops-embed:resize", width: 400, height: 540,
+    });
+    assert.equal(stub.iframe.style.width, "440px");
+    assert.equal(stub.iframe.style.height, "580px");
+  });
+
+  it("provides an accessible title without weakening the iframe sandbox", () => {
+    const stub = bootLoader({ innerWidth: 1200, innerHeight: 900 });
+    assert.equal(stub.iframe.attributes.title, "Customer support chat");
+    assert.equal(
+      stub.iframe.attributes.sandbox,
+      "allow-scripts allow-forms allow-same-origin",
+    );
   });
 });
