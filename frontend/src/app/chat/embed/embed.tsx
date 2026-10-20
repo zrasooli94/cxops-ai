@@ -30,6 +30,10 @@ import {
   type PendingSend,
 } from "@/lib/public-chat/send-retry";
 import {
+  availableChatStarterPrompts,
+  shouldShowChatStarters,
+} from "@/lib/public-chat/starter-prompts";
+import {
   cursorOf,
   LEGACY_POLL_INTERVAL_MS,
   mergeMessages,
@@ -312,6 +316,7 @@ export function PublicChatWidget({
   // never stored twice.
   const pendingSendRef =
     useRef<PendingSend | null>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
   // An accepted message whose AI reply has not arrived yet.
   const [awaitingReply, setAwaitingReply] =
     useState(false);
@@ -324,6 +329,22 @@ export function PublicChatWidget({
     state === "ai_active" ||
     state === "human_requested" ||
     state === "human_assigned";
+
+  // These are authored suggestions, not tenant facts or automatic messages.
+  // A click only fills the editable composer; Send is always a separate act.
+  const starterPrompts = availableChatStarterPrompts(
+    config?.max_message_length ?? 4000,
+  );
+  const showStarterPrompts =
+    starterPrompts.length > 0 &&
+    shouldShowChatStarters({
+      status: state,
+      hasVisitorMessage: messages.some(
+        (message) => message.direction === "inbound",
+      ),
+      hasDraft: input.trim().length > 0,
+      busy: sending || awaitingReply,
+    });
 
   const clearPoll = useCallback(() => {
     if (pollRef.current !== null) {
@@ -581,6 +602,7 @@ export function PublicChatWidget({
         return;
       }
       const trimmed = text.trim();
+      setErrorMessage(null);
       setInput("");
       setSending(true);
 
@@ -652,12 +674,16 @@ export function PublicChatWidget({
             ? error.message
             : "Your message could not be sent. Please try again.",
         );
+        // The server might already have accepted the ambiguous send.
+        // Restore the draft and keep its pending client_message_id so an
+        // identical retry is deduplicated rather than sent twice.
+        setInput(trimmed);
         setMessages((previous) =>
           previous.filter(
             (message) => message !== optimistic,
           ),
         );
-        setState("error");
+        // Transport failure must not disable a valid AI/human composer.
       } finally {
         setSending(false);
       }
@@ -670,6 +696,7 @@ export function PublicChatWidget({
     if (!token) {
       return;
     }
+    setErrorMessage(null);
     setSending(true);
     try {
       const result =
@@ -692,7 +719,8 @@ export function PublicChatWidget({
           ? error.message
           : "Unable to request human support.",
       );
-      setState("error");
+      // Failed handoff API requests do not invalidate the conversation.
+      // The visitor can retry with the existing session and draft.
     } finally {
       setSending(false);
     }
@@ -1220,6 +1248,67 @@ export function PublicChatWidget({
         )}
       </ul>
 
+      {showStarterPrompts && (
+        <div
+          aria-label="Start your support conversation"
+          style={{
+            padding: "10px 16px 12px",
+            borderTop: `1px solid ${theme.panel.border}`,
+            background: theme.panel.background,
+          }}
+        >
+          <p
+            style={{
+              margin: 0,
+              color: theme.text.primary,
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            Not sure where to begin?
+          </p>
+          <p
+            style={{
+              margin: "3px 0 9px",
+              color: theme.text.secondary,
+              fontSize: "12px",
+              lineHeight: 1.4,
+            }}
+          >
+            Choose a suggestion to fill your message. Nothing is sent until you press Send.
+          </p>
+          <div
+            role="group"
+            aria-label="Suggested messages"
+            style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}
+          >
+            {starterPrompts.map((starter) => (
+              <button
+                key={starter.id}
+                type="button"
+                onClick={() => {
+                  setInput(starter.draft);
+                  composerRef.current?.focus();
+                }}
+                aria-label={`Draft a message: ${starter.label}`}
+                style={{
+                  padding: "7px 10px",
+                  borderRadius: "999px",
+                  border: `1px solid ${theme.composer.focusBorder}`,
+                  background: theme.composer.background,
+                  color: theme.text.primary,
+                  fontSize: "12px",
+                  fontWeight: 500,
+                  cursor: "pointer",
+                }}
+              >
+                {starter.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {errorMessage && (
         <div
           style={{
@@ -1284,6 +1373,7 @@ export function PublicChatWidget({
           </label>
           <input
             id="cxops-chat-input"
+            ref={composerRef}
             className="cxops-chat-input"
             type="text"
             value={input}
