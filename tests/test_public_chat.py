@@ -387,7 +387,11 @@ def _stub_agent(monkeypatch, decision: AgentDecision) -> _CapturingDecisionLLM:
 
     monkeypatch.setattr(KnowledgeSearchService, "search", _fake_search)
     fake_llm = _CapturingDecisionLLM(decision)
-    monkeypatch.setattr(agent_workflow_service, "decision_llm", fake_llm)
+    # LazyAttribute is a non-data descriptor. monkeypatch.setattr first READS
+    # the previous value, which instantiates the real OpenAI client before our
+    # fake can replace it. Patch the instance cache directly instead: no SDK
+    # client is constructed and no even-synthetic API key is required.
+    monkeypatch.setitem(agent_workflow_service.__dict__, "decision_llm", fake_llm)
     return fake_llm
 
 
