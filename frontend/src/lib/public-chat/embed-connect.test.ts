@@ -377,10 +377,18 @@ describe("minimize vs end conversation (Phase 1P.6.1)", () => {
     const openBlock = embedSource.slice(openStart, openEnd);
     const reopenAt = openBlock.indexOf("if (sessionTokenRef.current) {");
     assert.notEqual(reopenAt, -1, "open must check for an in-memory session");
-    const reopenSlice = openBlock.slice(reopenAt, reopenAt + 120);
-    assert.ok(
-      reopenSlice.includes("setPanelOpen(true);"),
-      "the reopen branch must show the panel and return",
+    // Inspect the complete reopen branch. Focus/scroll restoration adds
+    // harmless statements before setPanelOpen; a fixed 120-char slice can
+    // incorrectly report failure while the same session is safely reused.
+    const freshStart = openBlock.indexOf(
+      "connectInflightRef.current = true;", reopenAt,
+    );
+    assert.ok(freshStart > reopenAt, "the fresh-session path must follow reopen");
+    const reopenSlice = openBlock.slice(reopenAt, freshStart);
+    assert.match(
+      reopenSlice,
+      /setPanelOpen\(true\);\s*return;/,
+      "reopening must show the panel and return before creating a new session",
     );
     assert.ok(
       !reopenSlice.includes("createPublicChatSession"),
