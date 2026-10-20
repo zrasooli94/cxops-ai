@@ -1,0 +1,103 @@
+# Chatbot C4: client-side/mobile UX only, no database or provider calls.
+name: Chatbot C4 — Mobile Accessibility Offline
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c3-followup-context
+    paths:
+      - '.github/workflows/chatbot-c4-mobile-offline.yml'
+      - 'frontend/src/app/chat/embed/embed.tsx'
+      - 'frontend/public/embed/loader.js'
+      - 'frontend/src/lib/public-chat/conversation-view.ts'
+      - 'frontend/src/lib/public-chat/conversation-view.test.ts'
+      - 'frontend/src/lib/public-chat/embed-sizing.test.ts'
+      - 'frontend/src/lib/public-chat/chat-accessibility.test.ts'
+      - 'docs/product/chatbot-c4-mobile-accessibility.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-chatbot-c4-mobile-offline
+  cancel-in-progress: true
+
+jobs:
+  widget-mobile-offline:
+    name: Widget Unit + Loader + Lint + Types + Build (No Providers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENVIRONMENT: development
+      DATABASE_URL: ''
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+
+    steps:
+      - name: Checkout PR merge source with credentials disabled
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Refuse provider keys, live database or production flags
+        run: |
+          test "$ENVIRONMENT" = development
+          test -z "$DATABASE_URL"
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_WEBHOOK_SECRET"
+          test "$HANDOFF_NOTIFICATIONS_ENABLED" = false
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$PUBLIC_CHAT_ASYNC_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+
+      - name: Install exact frontend dependencies only
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Check embeddable loader JavaScript syntax
+        working-directory: frontend
+        run: node --check public/embed/loader.js
+
+      - name: Run complete frontend unit and contract suite
+        working-directory: frontend
+        run: npm test
+
+      - name: ESLint chatbot UI and new accessibility tests
+        working-directory: frontend
+        run: |
+          npx eslint \
+            src/app/chat/embed/embed.tsx \
+            src/lib/public-chat/conversation-view.ts \
+            src/lib/public-chat/conversation-view.test.ts \
+            src/lib/public-chat/chat-accessibility.test.ts \
+            src/lib/public-chat/embed-sizing.test.ts
+
+      - name: Generate Next.js route types
+        working-directory: frontend
+        run: npx next typegen
+
+      - name: Check TypeScript
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Build frontend in isolated GitHub runner
+        working-directory: frontend
+        run: npm run build
