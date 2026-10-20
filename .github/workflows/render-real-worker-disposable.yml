@@ -6,12 +6,15 @@ on:
   pull_request:
     branches:
       - codex/render-native-cron-standalone
+      - codex/render-real-worker-disposable-readiness
       - main
       - master
     paths:
       - '.github/workflows/render-real-worker-disposable.yml'
       - 'scripts/worker_disposable_guard.py'
       - 'scripts/worker_disposable_smoke.py'
+      - 'scripts/worker_disposable_memory_probe.py'
+      - 'docs/architecture/render-real-worker-simulated-load.md'
       - 'tests/disposable/worker_probe_cases.py'
       - 'tests/test_worker_disposable_guard.py'
       - 'docs/architecture/render-real-worker-readiness.md'
@@ -84,6 +87,11 @@ jobs:
           python scripts/worker_disposable_guard.py
           python -m scripts.worker_disposable_smoke
 
+      - name: Run actual worker with simulated 160 MiB provider response (isolated process)
+        run: |
+          python scripts/worker_disposable_guard.py
+          python -m scripts.worker_disposable_memory_probe
+
       - name: Concurrent claims, fenced completion, retry, stale recovery, expiry regression
         run: |
           python scripts/worker_disposable_guard.py
@@ -100,5 +108,6 @@ jobs:
           python -m ruff check \
             scripts/worker_disposable_guard.py \
             scripts/worker_disposable_smoke.py \
+            scripts/worker_disposable_memory_probe.py \
             tests/disposable/worker_probe_cases.py \
             tests/test_worker_disposable_guard.py
