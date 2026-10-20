@@ -341,3 +341,201 @@ async def test_real_postgres_advisory_scanner_lock_rejects_overlap(
         finish.set()
         first_result = await asyncio.wait_for(first, 5)
     assert first_result == worker.SLA_SCAN_COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Representative synthetic load; the real PostgreSQL claimant and one-shot
+# worker run unchanged. Only remote provider operations are intentionally faked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_simulated_backlog_two_workers_with_real_claims(
+    isolated_worker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """65 multi-tenant jobs, two overlapping workers, then bounded catch-up."""
+    maker, _engine, seed = isolated_worker
+    organizations, ids = await seed(65)
+    processed: list[int] = []
+
+    async def _slow_fake_provider(*, db: Any, job: IntegrationJob) -> None:
+        assert job.job_type == JOB_TYPE
+        assert job.organization_id in organizations
+        assert job.payload.get("synthetic") is True
+        processed.append(job.id)
+        await asyncio.sleep(0.012)
+
+    monkeypatch.setattr(
+        worker.IntegrationJobService,
+        "execute",
+        staticmethod(_slow_fake_provider),
+    )
+    first_two = await asyncio.wait_for(
+        asyncio.gather(
+            worker.run_worker_once(max_jobs=25, max_seconds=30),
+            worker.run_worker_once(max_jobs=25, max_seconds=30),
+        ),
+        timeout=35,
+    )
+    remaining = await worker.run_worker_once(max_jobs=25, max_seconds=30)
+    summaries = [*first_two, remaining]
+    rows = await _job_rows(maker, ids)
+
+    assert [summary["jobs_processed"] for summary in first_two] == [25, 25]
+    assert remaining["jobs_processed"] == 15
+    assert all(summary["jobs_processed"] <= 25 for summary in summaries)
+    assert len(processed) == 65
+    assert Counter(processed) == Counter(ids), "no duplicate provider invocation"
+    assert {job.organization_id for job in rows} == set(organizations)
+    assert all(job.status == "completed" for job in rows)
+    assert all(job.attempts == 1 and job.locked_at is None for job in rows)
+    assert all(summary["health"] == worker.RUN_HEALTHY for summary in summaries)
+
+
+@pytest.mark.asyncio
+async def test_simulated_slow_provider_finishes_claim_before_deadline_exit(
+    isolated_worker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-shot deadline must be checked between, not inside, claims."""
+    maker, _engine, seed = isolated_worker
+    _orgs, ids = await seed(4)
+    seen: list[int] = []
+
+    async def _bounded_provider(*, db: Any, job: IntegrationJob) -> None:
+        assert job.job_type == JOB_TYPE
+        seen.append(job.id)
+        await asyncio.sleep(0.55)
+
+    monkeypatch.setattr(
+        worker.IntegrationJobService,
+        "execute",
+        staticmethod(_bounded_provider),
+    )
+    first = await worker.run_worker_once(max_jobs=10, max_seconds=0.30)
+    assert first["jobs_processed"] == 1
+    assert first["exit_reason"] == "max_seconds"
+    rows = await _job_rows(maker, ids)
+    assert sum(j.status == "completed" for j in rows) == 1
+    assert sum(j.status == "pending" for j in rows) == 3
+    assert all(j.status != "processing" for j in rows)
+
+    async def _recovered_provider(*, db: Any, job: IntegrationJob) -> None:
+        assert job.job_type == JOB_TYPE
+        seen.append(job.id)
+
+    monkeypatch.setattr(
+        worker.IntegrationJobService,
+        "execute",
+        staticmethod(_recovered_provider),
+    )
+    second = await worker.run_worker_once(max_jobs=10, max_seconds=15)
+    assert second["jobs_processed"] == 3
+    assert Counter(seen) == Counter(ids)
+    assert all(j.status == "completed" for j in await _job_rows(maker, ids))
+
+
+@pytest.mark.asyncio
+async def test_simulated_provider_failure_storm_retry_recovery(
+    isolated_worker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """20 independent transient failures, real backoff/fencing, eventual recovery."""
+    maker, _engine, seed = isolated_worker
+    _orgs, ids = await seed(20)
+    attempts: dict[int, list[int]] = {job_id: [] for job_id in ids}
+
+    async def _flaky_provider(*, db: Any, job: IntegrationJob) -> None:
+        assert job.job_type == JOB_TYPE
+        attempts[job.id].append(job.attempts)
+        if job.attempts == 1:
+            raise RuntimeError("synthetic provider temporary outage")
+
+    monkeypatch.setattr(
+        worker.IntegrationJobService,
+        "execute",
+        staticmethod(_flaky_provider),
+    )
+    for _ in range(6):
+        await worker.run_worker_once(max_jobs=20, max_seconds=25)
+        # Advance ONLY synthetic, disposable retry timestamps. Never sleep
+        # minutes or change the production retry/backoff implementation.
+        async with maker() as db:
+            await db.execute(
+                update(IntegrationJob)
+                .where(
+                    IntegrationJob.id.in_(ids),
+                    IntegrationJob.status == "retry",
+                )
+                .values(available_at=datetime.now(UTC) - timedelta(seconds=2))
+            )
+            await db.commit()
+        rows = await _job_rows(maker, ids)
+        if all(row.status == "completed" for row in rows):
+            break
+    else:
+        pytest.fail("bounded synthetic retry-storm did not recover")
+
+    assert len(attempts) == 20
+    assert all(history == [1, 2] for history in attempts.values())
+    assert all(row.attempts == 2 and row.locked_at is None for row in rows)
+    assert all(row.status == "completed" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_simulated_cancellation_reclaimed_only_after_stale_fence(
+    isolated_worker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Abrupt task cancellation leaves no false completion; stale reclaim works."""
+    maker, _engine, seed = isolated_worker
+    _orgs, ids = await seed(1)
+    entered = asyncio.Event()
+    held = asyncio.Event()
+    finished: list[int] = []
+
+    async def _blocking_fake_provider(*, db: Any, job: IntegrationJob) -> None:
+        assert job.id == ids[0]
+        entered.set()
+        await held.wait()  # cancelled by test: no provider work or socket
+
+    monkeypatch.setattr(
+        worker.IntegrationJobService,
+        "execute",
+        staticmethod(_blocking_fake_provider),
+    )
+    task = asyncio.create_task(
+        worker.run_worker_once(max_jobs=1, max_seconds=10)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+
+    row = (await _job_rows(maker, ids))[0]
+    assert row.status == "processing"
+    assert row.attempts == 1
+    assert row.locked_at is not None
+    assert finished == [], "cancelled provider never completed"
+
+    # Only accelerate this synthetic row beyond the real ten-minute fence.
+    async with maker() as db:
+        await db.execute(
+            update(IntegrationJob)
+            .where(IntegrationJob.id == ids[0])
+            .values(locked_at=datetime.now(UTC) - timedelta(minutes=15))
+        )
+        await db.commit()
+
+    async def _working_fake_provider(*, db: Any, job: IntegrationJob) -> None:
+        assert job.id == ids[0]
+        finished.append(job.id)
+
+    monkeypatch.setattr(
+        worker.IntegrationJobService,
+        "execute",
+        staticmethod(_working_fake_provider),
+    )
+    summary = await worker.run_worker_once(max_jobs=1, max_seconds=15)
+    current = (await _job_rows(maker, ids))[0]
+    assert summary["jobs_processed"] == 1
+    assert summary["health"] == worker.RUN_HEALTHY
+    assert current.status == "completed" and current.attempts == 2
+    assert finished == ids
