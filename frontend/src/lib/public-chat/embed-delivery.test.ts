@@ -41,7 +41,7 @@ describe("widget send (embed.tsx)", () => {
   });
 
   it("asks for async delivery", () => {
-    assert.match(embed, /messageId,\s*trimmed,\s*fetch,\s*"async",/);
+    assert.match(embed, /messageId,\s*trimmed,\s*fetcher,\s*"async",/);
   });
 });
 
@@ -58,7 +58,7 @@ describe("widget polling (embed.tsx)", () => {
 
   it("falls back to full-state polling on an older backend", () => {
     assert.match(embed, /updatesSupportedRef\.current = false;/);
-    assert.match(embed, /await fetchPublicChatState\(token\)/);
+    assert.match(embed, /await fetchPublicChatState\(token, fetcher\)/);
   });
 });
 

@@ -278,19 +278,19 @@ describe("authored widget chrome (open animation + placeholder)", () => {
 describe("transparent embed frame (visual hotfix)", () => {
   it("keeps the embed document's html/body/main backgrounds transparent", () => {
     const rules = embedSource.slice(
-      embedSource.indexOf("const EMBED_STYLE_RULES"),
-      embedSource.indexOf("`;", embedSource.indexOf("const EMBED_STYLE_RULES")) + 2,
+      embedSource.indexOf("const EMBED_DOCUMENT_STYLE_RULES"),
+      embedSource.indexOf("\";", embedSource.indexOf("const EMBED_DOCUMENT_STYLE_RULES")) + 2,
     );
     assert.ok(
-      rules.includes("html,\nbody {\n  background: transparent !important;\n}"),
+      rules.includes("html,\\nbody {\\n  background: transparent !important;\\n}"),
       "html/body must be forced transparent inside the embed document",
     );
     assert.ok(
-      rules.includes("body {\n  min-height: 0;\n}"),
+      rules.includes("body {\\n  min-height: 0;\\n}"),
       "the embed body must not stretch to the 100vh global rule",
     );
     assert.ok(
-      rules.includes("main {\n  background: transparent !important;\n}"),
+      rules.includes("main {\\n  background: transparent !important;\\n}"),
       "the embed page's main wrapper must be transparent",
     );
     assert.ok(
@@ -301,7 +301,7 @@ describe("transparent embed frame (visual hotfix)", () => {
   it("renders the embed chrome styles in every widget state", () => {
     assert.ok(
       embedSource.includes(
-        "const embedStyles = <style>{EMBED_STYLE_RULES}</style>;",
+        "<style>{EMBED_STYLE_RULES + (transparentFrame ? EMBED_DOCUMENT_STYLE_RULES : \"\")}</style>",
       ),
       "the authored sheet must be the single source of the embed chrome",
     );
@@ -319,8 +319,8 @@ describe("transparent embed frame (visual hotfix)", () => {
     // The only transparency override in the embed lives in the authored style
     // constant, which /chat/embed alone renders.
     const styleConstant = embedSource.slice(
-      embedSource.indexOf("const EMBED_STYLE_RULES"),
-      embedSource.indexOf("`;", embedSource.indexOf("const EMBED_STYLE_RULES")) + 2,
+      embedSource.indexOf("const EMBED_DOCUMENT_STYLE_RULES"),
+      embedSource.indexOf("\";", embedSource.indexOf("const EMBED_DOCUMENT_STYLE_RULES")) + 2,
     );
     assert.ok(styleConstant.includes("transparent"));
   });

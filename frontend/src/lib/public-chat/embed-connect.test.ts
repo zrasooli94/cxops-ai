@@ -46,7 +46,7 @@ const embedSource = readFileSync(
 describe("first-click latency", () => {
   it("opens the panel in the connecting state before any request", () => {
     const openStart = embedSource.indexOf("const open = useCallback");
-    const openEnd = embedSource.indexOf("widgetKey,\n  ]);", openStart);
+    const openEnd = embedSource.indexOf("fetcher,\n  ]);", openStart);
     assert.ok(openStart !== -1 && openEnd !== -1);
     const openBlock = embedSource.slice(openStart, openEnd);
     const connectingAt = openBlock.indexOf('setState("connecting")');
@@ -173,7 +173,7 @@ describe("config prefetch before any click", () => {
 
   it("creates a session only after the launcher is clicked", () => {
     const openStart = embedSource.indexOf("const open = useCallback");
-    const openEnd = embedSource.indexOf("widgetKey,\n  ]);", openStart);
+    const openEnd = embedSource.indexOf("fetcher,\n  ]);", openStart);
     assert.ok(openStart !== -1 && openEnd !== -1);
     const createAt = embedSource.indexOf("createPublicChatSession(");
     assert.ok(
@@ -246,7 +246,7 @@ describe("config prefetch before any click", () => {
 
   it("shares one public-config GET between prefetch and resume", () => {
     assert.equal(
-      embedSource.split("fetchPublicChatConfig(widgetKey)").length - 1,
+      embedSource.split("fetchPublicChatConfig(widgetKey, fetcher)").length - 1,
       1,
       "all callers must go through the shared getPublicConfig promise",
     );
@@ -405,12 +405,12 @@ describe("minimize vs end conversation (Phase 1P.6.1)", () => {
       "const endConversation = useCallback",
     );
     const endEnd = embedSource.indexOf(
-      "}, [clearPoll, discardSession]);",
+      "}, [clearPoll, discardSession, fetcher]);",
       endStart,
     );
     assert.ok(endStart !== -1 && endEnd !== -1);
     const endBlock = embedSource.slice(endStart, endEnd);
-    assert.ok(endBlock.includes("await closePublicChatSession(token);"));
+    assert.ok(endBlock.includes("await closePublicChatSession(token, fetcher);"));
     assert.ok(endBlock.includes("discardSession();"));
     assert.ok(endBlock.includes("setSessionToken(null);"));
     assert.ok(endBlock.includes("setMessages([]);"));
@@ -433,7 +433,7 @@ describe("end-conversation failure safety (Phase 1P.6.1 correction)", () => {
     "const endConversation = useCallback",
   );
   const endEnd = embedSource.indexOf(
-    "}, [clearPoll, discardSession]);",
+    "}, [clearPoll, discardSession, fetcher]);",
     endStart,
   );
   const endBlock = embedSource.slice(endStart, endEnd);
@@ -494,7 +494,7 @@ describe("end-conversation failure safety (Phase 1P.6.1 correction)", () => {
 
   it("successful End still performs full cleanup, only after the backend close", () => {
     const awaitIndex = endBlock.indexOf(
-      "await closePublicChatSession(token);",
+      "await closePublicChatSession(token, fetcher);",
     );
     const confirmIndex = endBlock.indexOf(confirmMarker);
     assert.ok(awaitIndex !== -1 && confirmIndex !== -1);

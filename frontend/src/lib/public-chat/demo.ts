@@ -127,7 +127,7 @@ export function demoAnswer(
   else if (/refund|return|exchange|مرجوع|بازگشت|پس دادن|بازپرداخت/.test(value)) topic = "returns";
   else if (/price|cost|how much|fee|quote|قیمت|هزینه|چند|ریال|رینگیت/.test(value)) topic = "prices";
   else if (/hour|open|clos(e|ing)|schedule|time|weekend|sunday|saturday|ساعت|ساعات|زمان|باز|بسته|آخر هفته|شنبه|یکشنبه/.test(value)) topic = "hours";
-  else if (/service|repair|fix|puncture|tune.?up|bike|bicycle|offer|products?|accessor|sell|محصول|خدمات|تعمیر|دوچرخه|پنچری/.test(value)) topic = "services";
+  else if (/service|repair|fix|puncture|tune.?up|bike|bicycle|offer|products?|accessor|محصول|خدمات|تعمیر|دوچرخه|پنچری/.test(value)) topic = "services";
   else if (/location|address|where are|find you|آدرس|کجا|موقعیت/.test(value)) topic = "location";
   else if (/what about (it|that)|how about (it|that)|در مورد آن|در موردش/.test(value) && lastTopic) topic = lastTopic;
 

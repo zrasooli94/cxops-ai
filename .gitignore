@@ -42,3 +42,6 @@ docs/screenshots/Thumbnail1.png
 docs/screenshots/Thumbnail2.png
 docs/screenshots/Thumbnail3.jpg
 .replit-python/
+
+# Disposable local integration database (never source or customer data).
+.local-pg/
