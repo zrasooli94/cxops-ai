@@ -197,9 +197,18 @@
         fail("Review ID does not match the author of the imported draft.");
       }
       for (const field of IMMUTABLE) {
-        if (typeof row[field] !== "string" || row[field].length > 120_000) {
-          fail("A protected source field exceeds the offline limit.");
+        if (typeof row[field] !== "string" || row[field].length > 120_000
+            || DISALLOWED_FORMULA.test(row[field])) {
+          fail("Protected source data is too long or spreadsheet-unsafe.");
         }
+      }
+      if (!safelyEditable(row[ownPrefix], 80)
+          || !safelyEditable(row[ownPrefix + "_label"], 20)
+          || !safelyEditable(row[ownPrefix + "_evidence"], 1000)
+          || !safelyEditable(row[ownPrefix + "_note"], 500)
+          || (row[ownPrefix + "_label"]
+            && !LABELS.includes(row[ownPrefix + "_label"]))) {
+        fail("An imported private reviewer field is invalid.");
       }
       if (index > MAX_ROWS) fail("Too many claims.");
       return row;
@@ -265,7 +274,7 @@
     return updated;
   }
 
-  function exportReviewerCsv(rows, slot, identity) {
+  function exportReviewerCsv(rows, slot, identity, options = {}) {
     if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_ROWS) {
       fail("No bounded review data to export.");
     }
@@ -277,9 +286,18 @@
       if (row[prefix + "_label"] && !LABELS.includes(row[prefix + "_label"])) {
         fail("A claim has an invalid label.");
       }
-      if (row[prefix + "_label"]) {
-        const checked = reviewStatus(row, slot, identity);
-        if (!checked.complete) fail("Finish or clear the invalid judgment before export.");
+      const checked = reviewStatus(row, slot, identity);
+      if (!checked.complete && row[prefix + "_label"] && !options.allowIncomplete) {
+        fail("Finish or clear the invalid judgment before export.");
+      }
+      for (const field of [prefix, prefix + "_label", prefix + "_evidence",
+        prefix + "_note"]) {
+        const max = field === prefix ? 80
+          : field.endsWith("_note") ? 500
+            : field.endsWith("_evidence") ? 1000 : 20;
+        if (!safelyEditable(row[field], max)) {
+          fail("A reviewer field contains an unsafe spreadsheet value.");
+        }
       }
       const other = "reviewer_" + (slot === 1 ? 2 : 1);
       if ([other, other + "_label", other + "_evidence",
