@@ -215,10 +215,8 @@ async def test_create_assign_admin_only_and_no_body_tenant_spoofing(client, orgs
         json={"organization_id": second.id, "created_by_subject": "other"},
         headers=headers("c11-owner", first.id),
     )
-    # No request body schema: no caller-controlled tenant identity.
-    assert spoofed.status_code in {201, 422}
-    if spoofed.status_code == 201:
-        assert spoofed.json()["dataset_id"] == "c6-fictional-faq-20261021"
+    # No request body accepted: no caller-controlled tenant/source or actor.
+    assert spoofed.status_code == 422
     batch = await make_batch(client, first)
     queue_before = await client.get(
         f"{PREFIX}/batches/{batch}/my-queue",
