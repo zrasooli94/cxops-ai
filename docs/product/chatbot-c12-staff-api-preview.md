@@ -56,7 +56,7 @@ organization-selected page; C8 requires `evaluation.read` and
 that guard and cannot be enabled by a browser parameter or input CSV.
 
 `private-api.ts` sends only closed typed requests to the EXISTING
-same-origin `/api/backend/evaluations/claim-reviews` BFF. It NEVER
+same-origin `/api/claim-review` BFF. It NEVER
 chooses an `Authorization` bearer token, JWT subject or
 `X-CXOps-Organization-ID`. The BFF derives these from the existing
 authenticated staff session and trusted active organization cookie, then
