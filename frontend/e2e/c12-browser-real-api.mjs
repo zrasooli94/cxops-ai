@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { chromium } from "playwright-core";
 
 const WEB = "http://127.0.0.1:18768";
-const API = WEB + "/api/backend/evaluations/claim-reviews";
+const API = WEB + "/api/claim-review";
 const CSV = process.env.C12_BLANK_SHEET;
 const ORGS = JSON.parse(readFileSync(process.env.C12_ORGS_JSON_PATH, "utf8"));
 const CHROME = process.env.CHROME_BINARY;
