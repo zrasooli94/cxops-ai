@@ -1,0 +1,172 @@
+# C9 disposable real-browser verification of ACTUAL Next staff route.
+# Every account, role, tenant and document is fabricated in localhost test code.
+# Never deploy this mock server or use production credentials/customer data.
+name: Chatbot C9 — Real Browser Synthetic Staff Permissions
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c8-staff-claim-review
+    paths:
+      - '.github/workflows/chatbot-c9-real-browser-offline.yml'
+      - 'frontend/e2e/c9-*.mjs'
+      - 'docs/product/chatbot-c9-browser-tenant-test.md'
+      - 'frontend/src/app/(control-center)/evaluations/claim-review/**'
+      - 'frontend/src/lib/claim-review/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-c9-real-browser-offline
+  cancel-in-progress: true
+
+jobs:
+  browser-auth:
+    name: Actual Next Route + Headless Chrome / Fictional Local Auth
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      ENVIRONMENT: development
+      NEXT_TELEMETRY_DISABLED: '1'
+      BACKEND_API_URL: 'http://127.0.0.1:18767'
+      DATABASE_URL: ''
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      ZENDESK_CLIENT_SECRET: ''
+      ZENDESK_CLIENT_ID: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+
+    steps:
+      - name: Checkout PR merge result, credentials disabled
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Python 3.11, only for the fictional blank CSV fixture
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reject live credentials, paid features and remote backend target
+        run: |
+          test "$CI" = true
+          test "$GITHUB_ACTIONS" = true
+          test "$ENVIRONMENT" = development
+          test "$BACKEND_API_URL" = http://127.0.0.1:18767
+          test -z "$DATABASE_URL"
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_WEBHOOK_SECRET"
+          test -z "$ZENDESK_CLIENT_SECRET"
+          test -z "$ZENDESK_CLIENT_ID"
+          test -z "$HANDOFF_NOTIFICATION_EMAIL_URL"
+          test -z "$HANDOFF_NOTIFICATION_TELEGRAM_URL"
+          test "$HANDOFF_NOTIFICATIONS_ENABLED" = false
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$PUBLIC_CHAT_ASYNC_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+
+      - name: Check fixture scripts and prevent real provider references
+        run: |
+          node --check frontend/e2e/c9-local-authorization.mjs
+          node --check frontend/e2e/c9-browser.mjs
+          cmp \
+            tools/chatbot-claim-review/review-core.js \
+            frontend/src/lib/claim-review/review-core.js
+
+      - name: Generate genuine C6 unlabelled fictional fixture
+        run: |
+          python -m scripts.chatbot_claim_review validate
+          python -m scripts.chatbot_claim_review prepare \
+            --out "$RUNNER_TEMP/c9-blank.csv"
+
+      - name: Install locked Next application
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Entire existing frontend unit and permission suite
+        working-directory: frontend
+        run: npm test
+
+      - name: Build real Next.js production route in disposable CI
+        working-directory: frontend
+        run: |
+          npx next typegen
+          npx tsc --noEmit
+          npm run build
+
+      - name: Install pinned headless Chrome test driver, no app lockfile change
+        working-directory: frontend
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts \
+            --no-audit --no-fund playwright-core@1.58.0
+          chrome="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)"
+          if [ -z "$chrome" ]; then
+            echo "No preinstalled Chromium/Google Chrome in disposable runner" >&2
+            exit 1
+          fi
+          "$chrome" --version
+          echo "CHROME_BINARY=$chrome" >> "$GITHUB_ENV"
+
+      - name: Start local-only fictional auth and run real Next browser suite
+        env:
+          C9_BLANK_SHEET: ${{ runner.temp }}/c9-blank.csv
+        run: |
+          set -euo pipefail
+          node frontend/e2e/c9-local-authorization.mjs \
+            > "$RUNNER_TEMP/c9-local-auth.log" 2>&1 &
+          auth_pid=$!
+          npm --prefix frontend run start -- -p 18768 -H 127.0.0.1 \
+            > "$RUNNER_TEMP/c9-next-start.log" 2>&1 &
+          next_pid=$!
+          cleanup() {
+            kill "$next_pid" "$auth_pid" 2>/dev/null || true
+            wait "$next_pid" "$auth_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for attempt in $(seq 1 90); do
+            if curl --max-time 2 -sSf http://127.0.0.1:18767/__c9__/audit > /dev/null \
+               && curl --max-time 2 -sS -o /dev/null http://127.0.0.1:18768/; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Disposable test services never became healthy" >&2
+            tail -n 25 "$RUNNER_TEMP/c9-next-start.log" >&2 || true
+            tail -n 25 "$RUNNER_TEMP/c9-local-auth.log" >&2 || true
+            exit 1
+          fi
+          node --test frontend/e2e/c9-browser.mjs
+
+      - name: Upload fictional browser screenshots for UI inspection
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CXOps-C9-Local-Synthetic-Browser-Screenshots
+          path: |
+            ${{ runner.temp }}/c9-desktop-fixture.png
+            ${{ runner.temp }}/c9-mobile-org-b-fixture.png
+          retention-days: 7
+          if-no-files-found: error
