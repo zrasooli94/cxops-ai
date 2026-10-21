@@ -197,6 +197,33 @@ describe("reviewer slot, validity and evidence", () => {
     );
   });
 
+  it("preserves a draft-in-progress but will not label it complete", () => {
+    const rows = core.validateWorksheet(sheet(), 1, "A1");
+    const partial = core.editRow(rows, 0, 1, "A1", {
+      label: "supported", evidence: "insufficient quote",
+    });
+    assert.equal(core.progress(partial, 1, "A1").complete, false);
+    assert.throws(
+      () => core.exportReviewerCsv(partial, 1, "A1"), /Finish or clear/,
+    );
+    const draft = core.exportReviewerCsv(
+      partial, 1, "A1", { allowIncomplete: true },
+    );
+    const imported = core.validateWorksheet(draft, 1, "A1");
+    assert.equal(imported[0].reviewer_1_label, "supported");
+    assert.equal(imported[0].reviewer_1_evidence, "insufficient quote");
+    assert.equal(core.progress(imported, 1, "A1").complete, false);
+  });
+
+  it("refuses formula-leading source values, including malformed protected CSV", () => {
+    const rows = sampleRows();
+    rows[0].answer_text = "=HYPERLINK('bad') [S1]";
+    assert.throws(
+      () => core.validateWorksheet(sheet(rows), 1, "A1"),
+      /spreadsheet-unsafe/,
+    );
+  });
+
   it("refuses spreadsheet-formula payloads from reviewer-entered fields", () => {
     for (const value of ["=HYPERLINK('bad')", " +SUM(1,2)", "@foo"]) {
       assert.equal(core.safeIdentity(value), false);
