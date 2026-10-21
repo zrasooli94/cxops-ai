@@ -7,11 +7,13 @@ export interface Judgment { id: number; batch_id: number; review_key: string; ev
 export interface Assignment { batch_id: number; assigned_slots: 2 }
 
 export class ReviewApiError extends Error {
-  constructor(public readonly status: number) {
+  readonly status: number;
+  constructor(status: number) {
     super(status === 401 ? "Authentication required." :
       status === 403 ? "Insufficient permissions." :
       status === 404 ? "Review preview disabled or record unavailable." :
       status === 409 ? "Review conflict." : "Reviewer request failed.");
+    this.status = status;
   }
 }
 function safeId(value: number): string {
