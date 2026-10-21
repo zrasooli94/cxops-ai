@@ -17,7 +17,7 @@ import {
 import { c12SyntheticStaffPreviewEnabled } from "./preview.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, "..", "..", "..", "..");
+const ROOT = join(HERE, "..", "..", "..");
 const routePage = readFileSync(join(
   ROOT, "src", "app", "(control-center)", "evaluations",
   "claim-review", "page.tsx",
@@ -85,7 +85,7 @@ describe("C12 double feature gate never activates by default or in production", 
     assert.doesNotMatch(staffUi, /localStorage|indexedDB|sessionStorage|dangerouslySetInnerHTML/);
     assert.doesNotMatch(panel, /X-CXOps-Organization-ID|Authorization:|localStorage|indexedDB|dangerouslySetInnerHTML/);
     assert.match(panel, /tenantRef\.current !== requestOrganizationId/);
-    assert.match(panel, /key=\{organizationId\}/); // key on component parent
+    assert.match(staffUi, /key=\{organizationId\}/); // key on component parent
   });
 });
 
@@ -114,9 +114,9 @@ describe("C12 closed private API contract over existing authenticated BFF", () =
     assert.deepEqual(Object.keys(payload(stub.calls[0]) ?? {}).sort(), [
       "reviewer_one_subject", "reviewer_two_subject",
     ]);
-    assert.throws(() => assignSyntheticReviewers(0, "A", "B", stub.fetcher));
-    assert.throws(() => assignSyntheticReviewers(17, "A", "A", stub.fetcher));
-    assert.throws(() => assignSyntheticReviewers(17, "A\n", "B", stub.fetcher));
+    await assert.rejects(() => assignSyntheticReviewers(0, "A", "B", stub.fetcher));
+    await assert.rejects(() => assignSyntheticReviewers(17, "A", "A", stub.fetcher));
+    await assert.rejects(() => assignSyntheticReviewers(17, "A\n", "B", stub.fetcher));
     assert.equal(stub.calls.length, 1, "invalid inputs never reach backend");
   });
 
