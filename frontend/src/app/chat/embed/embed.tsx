@@ -732,6 +732,7 @@ export function PublicChatWidget({
       const result =
         await requestPublicChatHuman(token, fetcher);
       setState("human_requested");
+      pollNowRef.current?.();
       if (result.reply) {
         setMessages((previous) => [
           ...previous,
