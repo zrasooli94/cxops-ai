@@ -266,7 +266,10 @@
     row[prefix] = identity.trim();
     for (const [key, value] of Object.entries(changes)) {
       const max = key === "evidence" ? 1000 : key === "note" ? 500 : 20;
-      if (!safelyEditable(value, max)) fail("Invalid or formula-like review field.");
+      if (!safelyEditable(value, max)
+          || (key === "label" && value && !LABELS.includes(value))) {
+        fail("Invalid or formula-like review field.");
+      }
       row[prefix + "_" + key] = value;
     }
     const updated = rows.slice();
