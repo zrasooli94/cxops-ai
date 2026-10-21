@@ -270,12 +270,15 @@ export function PublicChatWidget({
   fetcher = fetch,
   sessionStorageKey = CHAT_SESSION_STORAGE_KEY,
   transparentFrame = true,
+  initialPollDelayMs = LEGACY_POLL_INTERVAL_MS,
 }: {
   widgetKey: string;
   /** Optional isolated transport for a local-only synthetic preview. */
   fetcher?: typeof fetch;
   sessionStorageKey?: string;
   transparentFrame?: boolean;
+  /** Faster synthetic preview polling without changing live-widget defaults. */
+  initialPollDelayMs?: number;
 }) {
   // Server/session state. "closed" is terminal (explicit End or a server-side
   // close); the launcher is a separate UI concern — see ``panelOpen`` below.
@@ -905,7 +908,7 @@ export function PublicChatWidget({
 
     let cancelled = false;
     let inflight = false;
-    let delay = LEGACY_POLL_INTERVAL_MS;
+    let delay = initialPollDelayMs;
 
     const schedule = (ms: number) => {
       clearPoll();
@@ -949,7 +952,7 @@ export function PublicChatWidget({
       document.removeEventListener("visibilitychange", onVisibility);
       clearPoll();
     };
-  }, [state, clearPoll, pollOnce]);
+  }, [state, clearPoll, pollOnce, initialPollDelayMs]);
 
   useEffect(() => {
     const isPanel =
