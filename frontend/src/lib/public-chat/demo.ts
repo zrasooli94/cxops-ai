@@ -358,7 +358,7 @@ export class DemoChatTransport {
       }
       const response: PublicChatMessageSendResponse = {
         message_id: id, reply: null, status: session.status, handoff,
-        processing_state: "completed",
+        processing_state: "accepted",
       };
       session.seen[key] = { text, response };
       if (Object.keys(session.seen).length > 60) {
