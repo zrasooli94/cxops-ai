@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
-  ClipboardCheck,
   FileText,
   LockKeyhole,
   ShieldCheck,
@@ -15,7 +14,6 @@ import {
 import Link from "next/link";
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -77,13 +75,9 @@ export default function ClaimReviewWorkspace({
 
   const scoped = reviewForOrganization(review, organizationId);
   const active = scoped?.rows[selected] ?? null;
-  const progress = useMemo(
-    () =>
-      scoped
-        ? reviewCore.progress(scoped.rows, scoped.reviewerRole, scoped.reviewerId)
-        : null,
-    [scoped],
-  );
+  const progress = scoped
+    ? reviewCore.progress(scoped.rows, scoped.reviewerRole, scoped.reviewerId)
+    : null;
   const status = active && scoped
     ? reviewCore.reviewStatus(active, scoped.reviewerRole, scoped.reviewerId)
     : null;
