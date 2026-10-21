@@ -133,3 +133,48 @@ jobs:
           python -m ruff check \
             scripts/chatbot_claim_review.py \
             tests/test_chatbot_claim_review.py
+
+      - name: Package standalone offline reviewer (fictional blank data only)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          root = Path("tools/chatbot-claim-review")
+          sample = Path(__import__("os").environ["RUNNER_TEMP"]) / "c7-blank.csv"
+          package = Path(".artifacts/CXOps-C7-Offline-Reviewer.zip")
+          package.parent.mkdir(exist_ok=True)
+
+          names = {
+              "index.html": root / "index.html",
+              "review.css": root / "review.css",
+              "review-core.js": root / "review-core.js",
+              "app.js": root / "app.js",
+              "README.txt": root / "README.txt",
+              "C6-SYNTHETIC-BLANK.csv": sample,
+          }
+          assert all(file.is_file() for file in names.values())
+          with ZipFile(package, mode="x", compression=ZIP_DEFLATED) as archive:
+              for name, file in names.items():
+                  archive.write(file, arcname="CXOps-C7-Offline-Review/" + name)
+
+          with ZipFile(package) as archive:
+              assert sorted(archive.namelist()) == sorted(
+                  "CXOps-C7-Offline-Review/" + name for name in names
+              )
+              assert archive.testzip() is None
+              source = archive.read(
+                  "CXOps-C7-Offline-Review/C6-SYNTHETIC-BLANK.csv"
+              ).decode("utf-8")
+              assert "c6-fictional-faq-20261021" in source
+              assert "fixture-only-reviewer" not in source
+          print("Created self-contained, blank-fixture-only offline review ZIP.")
+          PY
+
+      - name: Attach verified offline ZIP to PR-only CI
+        uses: actions/upload-artifact@v4
+        with:
+          name: CXOps-C7-Offline-Reviewer-Synthetic-Only
+          path: .artifacts/CXOps-C7-Offline-Reviewer.zip
+          if-no-files-found: error
+          retention-days: 7
