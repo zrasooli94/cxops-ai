@@ -1,0 +1,135 @@
+# C7 — Offline HTML reviewer UI. No customer data, DB, provider or deployment.
+name: Chatbot C7 — Offline Reviewer UI
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c6-claim-review-workbench
+    paths:
+      - '.github/workflows/chatbot-c7-reviewer-ui-offline.yml'
+      - 'tools/chatbot-claim-review/**'
+      - 'docs/product/chatbot-c7-offline-reviewer-ui.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-chatbot-c7-reviewer-ui-offline
+  cancel-in-progress: true
+
+jobs:
+  offline-reviewer-ui:
+    name: Offline Browser Source + CSV Interop / No Providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      ENVIRONMENT: development
+      DATABASE_URL: ''
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+    steps:
+      - name: Checkout PR merge source without credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refuse production credentials, DB and external features
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          test "$CI" = true
+          test "$ENVIRONMENT" = development
+          test -z "$DATABASE_URL"
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_WEBHOOK_SECRET"
+          test -z "$HANDOFF_NOTIFICATION_EMAIL_URL"
+          test -z "$HANDOFF_NOTIFICATION_TELEGRAM_URL"
+          test "$HANDOFF_NOTIFICATIONS_ENABLED" = false
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$PUBLIC_CHAT_ASYNC_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+
+      - name: Check all offline JavaScript syntax (no npm install)
+        run: |
+          node --check tools/chatbot-claim-review/review-core.js
+          node --check tools/chatbot-claim-review/app.js
+          node --check tools/chatbot-claim-review/c6-interop.js
+          node --check tools/chatbot-claim-review/review-core.test.js
+          node --check tools/chatbot-claim-review/ui-flow.test.js
+
+      - name: Install only pinned offline test/lint tooling
+        run: |
+          python -m pip install --disable-pip-version-check pytest==9.1.1 ruff==0.16.10
+
+      - name: Export the authoritative C6 blank CSV
+        run: |
+          python -m scripts.chatbot_claim_review validate
+          python -m scripts.chatbot_claim_review prepare \
+            --out "$RUNNER_TEMP/c7-blank.csv"
+
+      - name: Execute offline browser codec and DOM event tests
+        run: |
+          C7_BLANK_SHEET="$RUNNER_TEMP/c7-blank.csv" node --test \
+            tools/chatbot-claim-review/review-core.test.js \
+            tools/chatbot-claim-review/ui-flow.test.js
+
+      - name: Roundtrip JavaScript reviewer exports into authoritative Python C6
+        run: |
+          node tools/chatbot-claim-review/c6-interop.js \
+            "$RUNNER_TEMP/c7-blank.csv" "$RUNNER_TEMP"
+          python -m scripts.chatbot_claim_review combine \
+            --reviewer-one "$RUNNER_TEMP/fixture-only-reviewer-1.csv" \
+            --reviewer-two "$RUNNER_TEMP/fixture-only-reviewer-2.csv" \
+            --out "$RUNNER_TEMP/c7-combined-test-only.csv"
+          python -m scripts.chatbot_claim_review score \
+            --sheet "$RUNNER_TEMP/c7-combined-test-only.csv" \
+            --report "$RUNNER_TEMP/c7-report-test-only.json" \
+            --require-complete
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "c7-report-test-only.json")
+              .read_text(encoding="utf-8")
+          )
+          assert report["review_state"] == "self_attested_complete_not_certified"
+          assert report["independent_human_identity_verified"] is False
+          assert report["production_certified"] is False
+          assert report["counts"]["unclear"] == 12
+          assert report["counts"]["scored"] == 0
+          assert report["guard_comparison"]["unsafe_miss_rate"] is None
+          print("Python/JS CSV interop passed with 12 FABRICATED test labels; NOT CERTIFIED")
+          PY
+
+      - name: Rerun C6 Python scorer regressions without DB conftest
+        run: |
+          python -m pytest --noconftest -q --tb=short \
+            tests/test_chatbot_claim_review.py
+
+      - name: Ruff pinned C6 scorer and tests
+        run: |
+          python -m ruff check \
+            scripts/chatbot_claim_review.py \
+            tests/test_chatbot_claim_review.py
