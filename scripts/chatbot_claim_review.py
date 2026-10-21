@@ -315,8 +315,8 @@ def combine_sheets(
     one_by_id = {row["review_key"]: row for row in left}
     two_by_id = {row["review_key"]: row for row in right}
     combined = []
-    for key in one_by_id:
-        a, b = one_by_id[key], two_by_id[key]
+    for key, a in one_by_id.items():
+        b = two_by_id[key]
         slot_1 = [name for name in EDITABLE if name.startswith("reviewer_1")]
         slot_2 = [name for name in EDITABLE if name.startswith("reviewer_2")]
         other = [name for name in EDITABLE if name not in slot_1 + slot_2]
