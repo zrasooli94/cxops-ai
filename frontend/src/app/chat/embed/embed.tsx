@@ -134,26 +134,16 @@ const EMBED_STYLE_RULES = `
 .cxops-chat-input::placeholder {
   color: var(--cxops-chat-placeholder, #64748b);
 }
-/* Visual hotfix (Phase 1P.6): the embed runs in an iframe the loader sizes
-   ~40px larger than the panel so the 20px breathing room and shadow are
-   preserved. Keep that document's html/body/main transparent so the host
-   site stays visible behind the panel; this component is rendered only by
-   /chat/embed, so the rules never reach normal CXOps/control-center pages. */
-html,
-body {
-  background: transparent !important;
-}
-body {
-  min-height: 0;
-}
-main {
-  background: transparent !important;
-}
 @media (prefers-reduced-motion: reduce) {
   .cxops-chat-spinner,
   .cxops-chat-panel { animation: none; }
 }
 `;
+
+// The iframe host needs transparency; the development showroom does not.
+// Keep this as a separate constant so previewing the actual widget inline
+// does not make the showroom page's html/body/main transparent.
+const EMBED_DOCUMENT_STYLE_RULES = "/* Visual hotfix (Phase 1P.6): the embed runs in an iframe the loader sizes\n   ~40px larger than the panel so the 20px breathing room and shadow are\n   preserved. Keep that document's html/body/main transparent so the host\n   site stays visible behind the panel; this component is rendered only by\n   /chat/embed, so the rules never reach normal CXOps/control-center pages. */\nhtml,\nbody {\n  background: transparent !important;\n}\nbody {\n  min-height: 0;\n}\nmain {\n  background: transparent !important;\n}\n";
 
 // Phase 1Q-R: the API refuses a widget's config with 403/404 when the widget
 // is switched off, its key is wrong, or the tenant is not approved/suspended.
@@ -279,11 +269,13 @@ export function PublicChatWidget({
   widgetKey,
   fetcher = fetch,
   sessionStorageKey = CHAT_SESSION_STORAGE_KEY,
+  transparentFrame = true,
 }: {
   widgetKey: string;
   /** Optional isolated transport for a local-only synthetic preview. */
   fetcher?: typeof fetch;
   sessionStorageKey?: string;
+  transparentFrame?: boolean;
 }) {
   // Server/session state. "closed" is terminal (explicit End or a server-side
   // close); the launcher is a separate UI concern — see ``panelOpen`` below.
@@ -990,7 +982,9 @@ export function PublicChatWidget({
   // The authored chrome styles must apply to the /chat/embed document in every
   // widget state — the launcher and the panel both render the sheet — so the
   // transparent-frame rules reach html/body even before a click.
-  const embedStyles = <style>{EMBED_STYLE_RULES}</style>;
+  const embedStyles = (
+    <style>{EMBED_STYLE_RULES}{transparentFrame ? EMBED_DOCUMENT_STYLE_RULES : ""}</style>
+  );
 
   if (unavailable && !panelOpen) {
     // Nothing to offer: no launcher, no session, no polling.
