@@ -71,7 +71,10 @@ function permitted(subject, orgId, authCallNumber) {
     return orgId === 9001 ? MANAGE : READ;
   }
   if (subject === "revoked" && authCallNumber >= 2) {
-    return READ; // Parent layout passed, child page MUST recheck and deny.
+    // Simulates revoked capability on the NEXT HTTP request. The two
+    // server-side calls in a single Next RSC render may share a memoized
+    // response; never assert separate calls mean instant revocation.
+    return READ;
   }
   return MANAGE;
 }
