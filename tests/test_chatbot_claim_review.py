@@ -69,8 +69,8 @@ def _complete_fake_reviews(rows: list[dict[str, str]]) -> None:
         if expected in {"supported", "contradicted"}:
             # A quote proves the human actually supplied a string that exists
             # in a cited source passage; it does NOT prove label correctness.
-            cited = row["cited_source_passages"].split("\n", 2)
-            quote = cited[2][:80] if len(cited) == 3 else ""
+            cited = row["cited_source_passages"].split("\n", 1)
+            quote = cited[1][:80] if len(cited) == 2 else ""
             row["reviewer_1_evidence"] = quote
             row["reviewer_2_evidence"] = quote
         else:
