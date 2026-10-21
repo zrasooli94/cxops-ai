@@ -41,6 +41,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # C11 synthetic evidence-review API. OFF by default even when the code
+    # exists. Hard-deny if ENVIRONMENT is production regardless of the flag.
+    # Only the committed fictional C6 data may be reviewed; this switch does
+    # NOT authorize customer data, reviewer storage rollout or LLM usage.
+    claim_review_synthetic_api_enabled: bool = False
+
     # Authentication / Identity
     auth_mode: str = "hs256"
     auth_jwt_secret: str = ""
