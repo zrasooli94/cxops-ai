@@ -106,7 +106,7 @@ jobs:
           python scripts/chatbot_c2_disposable_guard.py
           test "$(alembic heads | wc -l | tr -d ' ')" = "1"
           alembic upgrade head
-          python scripts/c12_seed_disposable_staff.py "$RUNNER_TEMP/c12-orgs.json"
+          python -m scripts.c12_seed_disposable_staff "$RUNNER_TEMP/c12-orgs.json"
           python -m scripts.chatbot_claim_review prepare \
             --out "$RUNNER_TEMP/c12-blank.csv"
       - name: Run entire frontend suite and synthetic C8 import
@@ -177,7 +177,7 @@ jobs:
       - name: Independent SQL verification of C12 browser-created audit records
         run: |
           python scripts/chatbot_c2_disposable_guard.py
-          python scripts/c12_verify_disposable_audit.py "$RUNNER_TEMP/c12-orgs.json"
+          python -m scripts.c12_verify_disposable_audit "$RUNNER_TEMP/c12-orgs.json"
       - name: Upload purely fictional Chrome screenshots
         if: success()
         uses: actions/upload-artifact@v4
