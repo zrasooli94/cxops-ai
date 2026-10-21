@@ -23,6 +23,7 @@ import InsufficientPermission from "@/components/insufficient-permission";
 import { CAPABILITIES } from "@/lib/authorization/capabilities";
 import { useAuthorization } from "@/lib/authorization/context";
 import { mayUseClaimReview } from "@/lib/claim-review/access";
+import SyntheticApiPanel from "./synthetic-api-panel";
 import {
   reviewCore,
   reviewForOrganization,
@@ -37,8 +38,10 @@ const LABEL = "mb-2 block text-xs font-semibold text-slate-600";
 
 export default function ClaimReviewWorkspace({
   authorizedOrganizationId,
+  syntheticApiPreviewEnabled = false,
 }: {
   authorizedOrganizationId: number;
+  syntheticApiPreviewEnabled?: boolean;
 }) {
   const { organizationId, capabilities, can } = useAuthorization();
   const isAuthorized =
@@ -224,6 +227,16 @@ export default function ClaimReviewWorkspace({
               is saved to CXOps databases or treated as a release approval.
             </p>
           </section>
+
+          {syntheticApiPreviewEnabled && (
+            <SyntheticApiPanel
+              key={organizationId}
+              organizationId={organizationId}
+              localClaim={active}
+              localReviewerSlot={scoped?.reviewerRole ?? role}
+              localJudgmentComplete={status?.complete ?? false}
+            />
+          )}
 
           {!scoped ? (
             <section className="grid gap-7 rounded-[22px] border border-slate-200 bg-white p-6 shadow-sm lg:grid-cols-2 lg:p-8">

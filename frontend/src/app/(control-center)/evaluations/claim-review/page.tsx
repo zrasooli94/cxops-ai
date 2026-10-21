@@ -2,6 +2,7 @@ import AuthorizationUnavailable from "@/components/authorization-unavailable";
 import type { AuthorizationInfo } from "@/lib/authorization/types";
 import InsufficientPermission from "@/components/insufficient-permission";
 import { mayUseClaimReview } from "@/lib/claim-review/access";
+import { c12SyntheticStaffPreviewEnabled } from "@/lib/claim-review/preview";
 import { getActiveOrganizationId } from "@/lib/tenant/cookie";
 import { getMyAuthorizationReadOnly } from "@/lib/tenant/backend-client";
 
@@ -31,5 +32,10 @@ export default async function ClaimReviewPage() {
   if (!mayUseClaimReview(authorization, activeOrganizationId)) {
     return <InsufficientPermission />;
   }
-  return <ClaimReviewWorkspace authorizedOrganizationId={activeOrganizationId} />;
+  return (
+    <ClaimReviewWorkspace
+      authorizedOrganizationId={activeOrganizationId}
+      syntheticApiPreviewEnabled={c12SyntheticStaffPreviewEnabled()}
+    />
+  );
 }

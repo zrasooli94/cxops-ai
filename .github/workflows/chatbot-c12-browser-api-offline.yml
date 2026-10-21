@@ -1,0 +1,200 @@
+# C12 source-only: genuine Next BFF -> real FastAPI JWT -> disposable PG16.
+name: Chatbot C12 — Full Synthetic Browser API Integration
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c11-synthetic-review-api
+    paths:
+      - '.github/workflows/chatbot-c12-browser-api-offline.yml'
+      - 'frontend/src/app/(control-center)/evaluations/claim-review/**'
+      - 'frontend/src/app/api/claim-review/**'
+      - 'frontend/src/lib/claim-review/**'
+      - 'frontend/e2e/c12-browser-real-api.mjs'
+      - 'scripts/c12_*'
+      - 'docs/product/chatbot-c12-staff-api-preview.md'
+permissions:
+  contents: read
+concurrency:
+  group: cxops-c12-browser-api-offline
+  cancel-in-progress: true
+jobs:
+  full-synthetic-review:
+    name: Chrome + Next BFF + Authenticated FastAPI + PG16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      CXOPS_CHATBOT_C2_OFFLINE: 'true'
+      CLAIM_REVIEW_SYNTHETIC_API_ENABLED: 'true'
+      CXOPS_C12_SYNTHETIC_STAFF_PREVIEW_ENABLED: 'true'
+      ENVIRONMENT: development
+      DEBUG: 'false'
+      AUTH_MODE: hs256
+      AUTH_DEV_MODE: 'false'
+      AUTH_JWT_SECRET: 'cccccccccccccccccccccccccccccccc'
+      AUTH_JWT_ISSUER: c12-synthetic-test-issuer
+      AUTH_JWT_AUDIENCE: c12-synthetic-test-audience
+      DATABASE_URL: 'postgresql+asyncpg://c2_probe:c2_probe@127.0.0.1:5432/cxops_chatbot_c2_disposable_test'
+      BACKEND_API_URL: 'http://127.0.0.1:18767'
+      NEXT_TELEMETRY_DISABLED: '1'
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      ZENDESK_CLIENT_SECRET: ''
+      ZENDESK_CLIENT_ID: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops_chatbot_c2_disposable_test
+          POSTGRES_USER: c2_probe
+          POSTGRES_PASSWORD: c2_probe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U c2_probe -d cxops_chatbot_c2_disposable_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout PR merge, disable persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Hard refuse remote DB, provider credentials and production flags
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          test "$BACKEND_API_URL" = http://127.0.0.1:18767
+          test "$CLAIM_REVIEW_SYNTHETIC_API_ENABLED" = true
+          test "$CXOPS_C12_SYNTHETIC_STAFF_PREVIEW_ENABLED" = true
+          test "$AUTH_JWT_SECRET" = cccccccccccccccccccccccccccccccc
+          test "$AUTH_JWT_ISSUER" = c12-synthetic-test-issuer
+          test "$AUTH_JWT_AUDIENCE" = c12-synthetic-test-audience
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_CLIENT_SECRET"
+          test -z "$ZENDESK_CLIENT_ID"
+          test -z "$HANDOFF_NOTIFICATION_EMAIL_URL"
+          test -z "$HANDOFF_NOTIFICATION_TELEGRAM_URL"
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+      - name: Install exact locked backend and frontend dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-lock.txt
+          python -m pip install --disable-pip-version-check ruff==0.16.10
+          npm --prefix frontend ci --no-audit --no-fund
+      - name: Migrate only disposable PG and seed fictional test members
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          test "$(alembic heads | wc -l | tr -d ' ')" = "1"
+          alembic upgrade head
+          python -m scripts.c12_seed_disposable_staff "$RUNNER_TEMP/c12-orgs.json"
+          python -m scripts.chatbot_claim_review prepare \
+            --out "$RUNNER_TEMP/c12-blank.csv"
+      - name: Run entire frontend suite and synthetic C8 import
+        working-directory: frontend
+        run: C8_BLANK_SHEET="$RUNNER_TEMP/c12-blank.csv" npm test
+      - name: Targeted ESLint, Next route types, strict TS and Next build
+        working-directory: frontend
+        run: |
+          npx eslint \
+            'src/app/(control-center)/evaluations/claim-review/page.tsx' \
+            'src/app/(control-center)/evaluations/claim-review/review-workspace.tsx' \
+            'src/app/(control-center)/evaluations/claim-review/synthetic-api-panel.tsx' \
+            'src/lib/claim-review/private-api.ts' \
+            'src/lib/claim-review/private-api.test.ts' \
+            'src/lib/claim-review/server-allowlist.ts' \
+            'src/lib/claim-review/server-allowlist.test.ts' \
+            'src/lib/claim-review/preview.ts' \
+            'src/app/api/claim-review/[...path]/route.ts'
+          npx next typegen
+          npx tsc --noEmit
+          npm run build
+      - name: Recheck real C11 JWT APIs and immutable C10 PG rules
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          python -m pytest -q --tb=short \
+            tests/test_chatbot_c11_api.py \
+            tests/test_chatbot_c10_private_audit.py \
+            tests/test_chatbot_c2_guard.py
+      - name: Ephemeral pinned Playwright driver, no app lockfile edit
+        working-directory: frontend
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts \
+            --no-audit --no-fund playwright-core@1.58.0
+          chrome="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)"
+          test -n "$chrome"
+          "$chrome" --version
+          echo "CHROME_BINARY=$chrome" >> "$GITHUB_ENV"
+          node --check e2e/c12-browser-real-api.mjs
+      - name: Run real Chrome through actual Next BFF and FastAPI into disposable PG
+        run: |
+          set -euo pipefail
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 18767 \
+            --lifespan off > "$RUNNER_TEMP/c12-fastapi.log" 2>&1 &
+          api_pid=$!
+          npm --prefix frontend run start -- -p 18768 -H 127.0.0.1 \
+            > "$RUNNER_TEMP/c12-next.log" 2>&1 &
+          web_pid=$!
+          cleanup() {
+            code=$?
+            if [ "$code" -ne 0 ]; then
+              echo "C12 fixed-category proxy refusals (no JWTs or request bodies):"
+              grep -oE 'C12_PROXY_REFUSAL_[0-9]+_[a-z_]+' "$RUNNER_TEMP/c12-next.log" | sort -u || true
+            fi
+            kill "$api_pid" "$web_pid" 2>/dev/null || true
+            wait "$api_pid" "$web_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for attempt in $(seq 1 90); do
+            if curl --max-time 2 -sSf http://127.0.0.1:18767/health >/dev/null \
+              && curl --max-time 2 -sS -o /dev/null http://127.0.0.1:18768/; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then
+            echo "Local-only C12 application failed to start" >&2
+            tail -n 30 "$RUNNER_TEMP/c12-fastapi.log" >&2 || true
+            tail -n 30 "$RUNNER_TEMP/c12-next.log" >&2 || true
+            exit 1
+          fi
+          C12_BLANK_SHEET="$RUNNER_TEMP/c12-blank.csv" \
+          C12_ORGS_JSON_PATH="$RUNNER_TEMP/c12-orgs.json" \
+            node --test frontend/e2e/c12-browser-real-api.mjs
+      - name: Independent SQL verification of C12 browser-created audit records
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          python -m scripts.c12_verify_disposable_audit "$RUNNER_TEMP/c12-orgs.json"
+      - name: Upload purely fictional Chrome screenshots
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CXOps-C12-Real-API-Synthetic-Browser-Screenshots
+          path: |
+            ${{ runner.temp }}/c12-owner-fixture.png
+            ${{ runner.temp }}/c12-adjudicator-fixture.png
+            ${{ runner.temp }}/c12-mobile-org-b-fixture.png
+          retention-days: 7
+          if-no-files-found: error
