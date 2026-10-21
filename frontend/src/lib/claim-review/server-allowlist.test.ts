@@ -83,7 +83,9 @@ describe("C12 dedicated reviewer proxy has its own server-side boundaries", () =
     assert.doesNotMatch(route, /request\.headers\.get\("x-cxops-organization-id"\)/i);
     assert.doesNotMatch(route, /request\.nextUrl\.searchParams\.forEach/);
     assert.match(route, /!backendPath \|\| request\.nextUrl\.search\) return refuse\(404, "route"\)/);
-    assert.match(route, /origin !== request\.nextUrl\.origin/);
+    assert.match(route, /origin !== expectedOrigin/);
+    assert.match(route, /const host = request\.headers\.get\("host"\)/);
+    assert.match(route, /if \(!host\) return refuse\(403, "host"\)/);
     assert.match(route, /text\.length > 4096/);
     assert.doesNotMatch(route, /localStorage|IndexedDB|eval\(/);
   });
