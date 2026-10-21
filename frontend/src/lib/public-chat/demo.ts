@@ -108,6 +108,14 @@ export function demoAnswer(
       ? "درخواست پشتیبانی انسانی به‌صورت آزمایشی ثبت شد. هیچ کارمند واقعی مطلع نشده است."
       : "Human assistance requested in this demo. No real support team has been notified.", topic: null };
   }
+  // Transactional requests need a person: this mock never books, orders,
+  // refunds, promises stock, or executes a real business action.
+  if (/\b(book|reserve|place an order|make an appointment|cancel my|refund me|pay now|order status|track my order)\b|رزرو|ثبت سفارش|پرداخت|کنسل|لغو نوبت/.test(value)) {
+    return handoff();
+  }
+  if (/\b(free|complimentary)\b|رایگان|مجانی/.test(value)) {
+    return handoff();
+  }
   if (/^(hi|hello|hey|سلام|درود)[!.؟\s]*$/.test(value)) {
     return { kind: "answer", body: persian
       ? "سلام! درباره خدمات، ساعات کاری، قیمت‌ها یا قوانین فروشگاه چه سؤالی دارید؟"
