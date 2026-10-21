@@ -64,10 +64,10 @@ describe("lossless C6 CSV transport", () => {
   it("rejects unexpected column counts and a duplicated or unknown header", () => {
     assert.throws(() => core.validateWorksheet(
       sheet().replace("reviewer_1", "reviewer_2"), 1, "A1",
-    ), /columns/);
+    ), /column/);
     assert.throws(() => core.validateWorksheet(
       core.serializeCsv([[...core.FIELDS], ["a"]]), 1, "A1",
-    ), /columns/);
+    ), /column/);
   });
 
   it("refuses extra rows, duplicate claim keys, unapproved tenant and source", () => {
