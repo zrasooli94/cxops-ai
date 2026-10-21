@@ -8,6 +8,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
 import { useAuthorization } from "@/lib/authorization/context";
 import {
@@ -744,6 +745,31 @@ export default function EvaluationsPage() {
               dimensions across RAG and Agent targets.
             </p>
           </section>
+
+          {canManage && (
+            <section className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-[22px] border border-violet-200/80 bg-violet-50/50 p-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.13em] text-violet-600">
+                  Staff evaluation workbench · Synthetic only
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">
+                  Claim-by-claim evidence review
+                </h2>
+                <p className="mt-1 max-w-2xl text-xs leading-6 text-slate-600">
+                  Compare chatbot statements against their cited passages using a
+                  private, local CSV workflow. No AI calls, customer data uploads,
+                  database writes, or automatic release approvals.
+                </p>
+              </div>
+              <Link
+                href="/evaluations/claim-review"
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
+              >
+                <ClipboardCheck className="h-4 w-4" />
+                Open claim review
+              </Link>
+            </section>
+          )}
 
           {error && (
             <div className="mb-6 flex gap-3 rounded-[18px] border border-rose-200 bg-rose-50/80 p-4 text-sm text-rose-700">
