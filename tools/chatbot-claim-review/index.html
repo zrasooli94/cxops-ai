@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; connect-src 'none'; img-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>CXOps AI — Claim Review Studio (Offline)</title>
+  <link rel="stylesheet" href="./review.css">
+  <script src="./review-core.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="site-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">C<span>×</span></span>
+        <div><strong>CXOps AI</strong><small>QUALITY ASSURANCE / C7</small></div>
+      </div>
+      <div class="topbar-right"><span class="offline-indicator"><span aria-hidden="true">●</span> LOCAL ONLY</span><span class="topbar-separator">/</span><span class="readiness">SOURCE-ONLY · RELEASE HOLD</span></div>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div class="eyebrow">EVIDENCE INTELLIGENCE <span class="eyebrow-rule" aria-hidden="true"></span> REVIEW WORKSPACE 01</div>
+        <h1 id="page-title">Every claim deserves <em>evidence.</em></h1>
+        <p>Assess what the chatbot says against what the business actually documented. One claim, one cited passage, one deliberate judgment at a time.</p>
+      </section>
+
+      <section class="setup" aria-labelledby="setup-title">
+        <div class="section-number">01 / START REVIEW</div>
+        <div class="setup-grid">
+          <div class="setup-description">
+            <h2 id="setup-title">Open a synthetic review worksheet</h2>
+            <p>Works without internet, API keys, or server access. Import the unlabelled C6 CSV exported by the Python tool. This demo accepts only its fictional dataset.</p>
+            <p class="privacy-note">Nothing is uploaded or automatically saved. Download your completed or draft CSV before closing this page.</p>
+          </div>
+          <div class="setup-controls">
+            <div class="field-grid">
+              <div class="field">
+                <label for="reviewer-role">My assignment</label>
+                <select id="reviewer-role">
+                  <option value="1">Reviewer A · first review</option>
+                  <option value="2">Reviewer B · independent review</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="reviewer-id">My reviewer ID <span class="field-suffix">(self-attested)</span></label>
+                <input id="reviewer-id" type="text" autocomplete="off" spellcheck="false" maxlength="80" placeholder="Enter your reviewer ID">
+              </div>
+            </div>
+            <label class="file-picker" for="worksheet-file">
+              <span class="file-icon" aria-hidden="true">↑</span>
+              <span><strong>Choose C6 review CSV</strong><small>Locally from your device · maximum 12 MB</small></span>
+              <input id="worksheet-file" type="file" accept=".csv,text/csv" aria-describedby="import-hint">
+            </label>
+            <p id="import-hint" class="tiny">Review assignments are locked after import. Reviewer A and B must work from separate private copies.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="workspace" class="workspace" hidden aria-label="Claim review workspace">
+        <div class="workspace-heading">
+          <div>
+            <div class="section-number">02 / EVALUATE CLAIMS</div>
+            <h2>Claim review <span class="soft-divider" aria-hidden="true">/</span> <span id="dataset-name">Synthetic dataset</span></h2>
+          </div>
+          <div class="progress-group">
+            <span id="progress-text" aria-live="polite">0 of 0 reviewed</span>
+            <div class="progress-track" aria-hidden="true"><div id="progress-fill" class="progress-fill"></div></div>
+          </div>
+        </div>
+
+        <div class="review-layout">
+          <nav class="claim-nav" aria-label="Claims to review">
+            <div class="nav-top"><span>CLAIMS</span><span id="nav-total">0 TOTAL</span></div>
+            <div id="claim-list" class="claim-list"></div>
+            <p class="nav-foot">Choose a claim. Your annotations stay on this device until you download the CSV.</p>
+          </nav>
+
+          <div class="review-main">
+            <div class="detail-head">
+              <div class="detail-index"><span id="claim-position">01 / 12</span><span class="pill">SYNTHETIC SOURCE</span></div>
+              <span id="claim-key" class="claim-key">case:c1</span>
+            </div>
+            <section class="evidence-panel" aria-labelledby="claim-heading">
+              <div class="small-heading"><span class="tiny-square" aria-hidden="true"></span> AI CLAIM <span class="small-heading-note">/ TO VERIFY</span></div>
+              <h3 id="claim-heading" dir="auto">Select a worksheet to begin.</h3>
+              <div class="answer-section">
+                <p class="micro-label">FULL RESPONSE</p>
+                <p id="answer-text" dir="auto"></p>
+              </div>
+              <div class="source-section">
+                <div class="source-section-head">
+                  <div><span class="source-indicator" aria-hidden="true"></span><span>CITED EVIDENCE <span class="small-heading-note">/ FROZEN SOURCE VERSION</span></span></div>
+                  <button type="button" id="use-selection" class="text-button">Use selected text as quote <span aria-hidden="true">↗</span></button>
+                </div>
+                <pre id="source-text" dir="auto" tabindex="0" aria-label="Cited source passages; select an excerpt to quote"></pre>
+                <p class="micro-help">Select a relevant excerpt in the source above, then choose “Use selected text.” Review each claim using only its cited passages.</p>
+              </div>
+            </section>
+
+            <section class="judgment-panel" aria-labelledby="judgment-title">
+              <div class="small-heading"><span class="tiny-square" aria-hidden="true"></span> INDEPENDENT ASSESSMENT</div>
+              <h3 id="judgment-title">What does the evidence actually establish?</h3>
+              <div class="field">
+                <label for="claim-label">My assessment</label>
+                <select id="claim-label">
+                  <option value="">Not reviewed</option>
+                  <option value="supported">Supported — cited passage establishes this claim</option>
+                  <option value="contradicted">Contradicted — cited passage opposes this claim</option>
+                  <option value="unsupported">Unsupported — citation doesn't establish this claim</option>
+                  <option value="unclear">Unclear — evidence is inconclusive or conflicting</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="claim-evidence">Evidence quotation <span class="field-suffix">(required for supported / contradicted)</span></label>
+                <textarea id="claim-evidence" dir="auto" rows="3" maxlength="1000" placeholder="Quote 8+ exact characters from a cited source."></textarea>
+              </div>
+              <div class="field">
+                <label for="claim-note">Review rationale <span class="field-suffix">(required for unsupported / unclear)</span></label>
+                <textarea id="claim-note" dir="auto" rows="3" maxlength="500" placeholder="Explain what's missing or ambiguous in the cited evidence."></textarea>
+              </div>
+              <p id="claim-validation" class="validation-hint" aria-live="polite">Choose your assessment to begin.</p>
+              <div class="navigation">
+                <button id="previous-claim" class="nav-button" type="button"><span aria-hidden="true">←</span> Previous claim</button>
+                <button id="next-claim" class="nav-button next" type="button">Next claim <span aria-hidden="true">→</span></button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="export-section" class="export-section" hidden aria-labelledby="export-title">
+        <div class="section-number">03 / PRIVATE HANDOFF</div>
+        <div class="export-content">
+          <div>
+            <h2 id="export-title">Keep a copy of your work.</h2>
+            <p id="export-description">No changes are saved outside this tab. Download your review CSV to keep your progress.</p>
+            <p class="privacy-note">Exported annotations contain reviewer-entered text. Share privately with the review coordinator; don't commit completed sheets to public GitHub.</p>
+          </div>
+          <button type="button" id="download-csv" class="primary-button">Download review CSV <span aria-hidden="true">↓</span></button>
+        </div>
+      </section>
+    </main>
+    <footer><span>CXOPS / QUALITY SYSTEMS</span><span>OFFLINE REVIEW ONLY · NOT PRODUCTION CERTIFICATION</span><span>V 0.1</span></footer>
+  </div>
+  <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <div id="notice" class="notice" hidden role="alert"></div>
+</body>
+</html>
