@@ -146,10 +146,19 @@ test("real C12 browser-to-backend synthetic reviewer flow", async (t) => {
       try {
         const page = await ctx.newPage();
         await visible(page);
+        const created = page.waitForResponse((response) =>
+          response.url().endsWith(API + "/synthetic-batches") &&
+          response.request().method() === "POST",
+        );
         await page.getByRole("button", { name: /Create fictional batch/ }).click();
+        const response = await created;
+        assert.equal(
+          response.status(), 201,
+          "Actual Next-to-FastAPI create-batch POST did not return HTTP 201",
+        );
         await page.getByText("Fictional review batch created.", {
           exact: false,
-        }).waitFor({ state: "visible", timeout: 20_000 });
+        }).waitFor({ state: "visible", timeout: 8_000 });
         batchId = Number(await page.getByLabel("Synthetic claim batch ID").inputValue());
         assert.ok(Number.isSafeInteger(batchId) && batchId > 0);
         await page.getByLabel("Reviewer A subject ID").fill("c12-r-a");
@@ -171,6 +180,7 @@ test("real C12 browser-to-backend synthetic reviewer flow", async (t) => {
     });
 
     await t.test("A sees exact hash + submits one immutable claim", async () => {
+      if (!batchId) { t.skip("Owner batch creation failed"); return; }
       const ctx = await contextFor(browser, "c12-r-a", ORGS.org_a);
       try {
         const page = await ctx.newPage();
@@ -204,6 +214,7 @@ test("real C12 browser-to-backend synthetic reviewer flow", async (t) => {
     });
 
     await t.test("B cannot see A's completion and submits a differing label", async () => {
+      if (!batchId) { t.skip("Owner batch creation failed"); return; }
       const ctx = await contextFor(browser, "c12-r-b", ORGS.org_a);
       try {
         const page = await ctx.newPage();
@@ -228,6 +239,7 @@ test("real C12 browser-to-backend synthetic reviewer flow", async (t) => {
     });
 
     await t.test("third authorized member adjudicates actual disputed database events", async () => {
+      if (!batchId) { t.skip("Owner batch creation failed"); return; }
       const ctx = await contextFor(browser, "c12-third", ORGS.org_a);
       try {
         const page = await ctx.newPage();
@@ -248,6 +260,7 @@ test("real C12 browser-to-backend synthetic reviewer flow", async (t) => {
     });
 
     await t.test("fully authorized Org B cannot read Org A's audit batch", async () => {
+      if (!batchId) { t.skip("Owner batch creation failed"); return; }
       const ctx = await contextFor(browser, "c12-both", ORGS.org_b);
       try {
         const res = await ctx.request.get(
