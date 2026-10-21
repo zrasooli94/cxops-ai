@@ -20,34 +20,50 @@ WIDGET_KEY = "pk_local_aster_cycle_offline_demo"
 ORG_EXTERNAL_ID = "cxops-local-offline-demo"
 KNOWLEDGE = (
     (
-        "Opening hours | ساعات کاری",
+        "Opening hours",
         (
             "Our bicycle workshop is open Monday to Friday from 9:00 AM to 6:00 PM, "
-            "Saturday from 10:00 AM to 4:00 PM, and closed Sunday. "
-            "ساعات کاری تعمیرگاه دوچرخه دوشنبه تا جمعه ۹ صبح تا ۶ عصر، شنبه ۱۰ صبح تا ۴ عصر است و یکشنبه تعطیل است."
+            "Saturday from 10:00 AM to 4:00 PM, and closed Sunday."
         ),
     ),
     (
-        "Workshop services | خدمات",
-        (
-            "We offer bicycle tune-ups, puncture repairs, safety inspections, and accessory sales. "
-            "خدمات ما شامل سرویس دوچرخه، تعمیر پنچری، بررسی ایمنی و فروش لوازم جانبی است."
-        ),
+        "ساعات کاری",
+        "ساعات کاری تعمیرگاه دوچرخه دوشنبه تا جمعه ۹ صبح تا ۶ عصر، شنبه ۱۰ صبح تا ۴ عصر است و یکشنبه تعطیل است.",
     ),
     (
-        "Pricing | قیمت",
+        "Workshop services",
+        "We offer bicycle tune-ups, puncture repairs, safety inspections, and accessory sales.",
+    ),
+    (
+        "خدمات تعمیرگاه",
+        "خدمات ما شامل سرویس دوچرخه، تعمیر پنچری، بررسی ایمنی و فروش لوازم جانبی است.",
+    ),
+    (
+        "Pricing",
         (
             "A standard bicycle tune-up costs RM 80. A puncture repair starts at RM 25. "
-            "Other repairs require an inspection before a quote. هزینه سرویس معمولی دوچرخه ۸۰ رینگیت "
-            "و تعمیر پنچری از ۲۵ رینگیت شروع می‌شود."
+            "Other repairs require an inspection before a quote."
         ),
     ),
     (
-        "Returns and warranty | بازگشت و ضمانت",
+        "قیمت",
+        (
+            "هزینه سرویس معمولی دوچرخه ۸۰ رینگیت و تعمیر پنچری از ۲۵ رینگیت شروع می‌شود. "
+            "قیمت تعمیرات دیگر پس از بررسی مشخص می‌شود."
+        ),
+    ),
+    (
+        "Returns and warranty",
         (
             "Unused accessories may be returned within 14 days with proof of purchase. "
-            "Repair workmanship is covered for 90 days; accidental damage and normal wear are excluded. "
-            "لوازم جانبی استفاده‌نشده تا ۱۴ روز با رسید قابل بازگشت‌اند و کیفیت تعمیرات ۹۰ روز ضمانت دارد."
+            "Repair workmanship is covered for 90 days; accidental damage and normal wear are excluded."
+        ),
+    ),
+    (
+        "بازگشت و ضمانت",
+        (
+            "لوازم جانبی استفاده‌نشده تا ۱۴ روز با رسید قابل بازگشت‌اند. کیفیت تعمیرات ۹۰ روز ضمانت دارد؛ "
+            "آسیب تصادفی و فرسودگی معمول شامل ضمانت نیست."
         ),
     ),
 )

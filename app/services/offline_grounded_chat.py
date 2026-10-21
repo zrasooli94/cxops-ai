@@ -27,12 +27,10 @@ _STOPWORDS = frozenset(
         "شما", "که", "مورد", "می", "چیست",
     }
 )
-_ACTION_WORDS = frozenset(
-    {
-        "book", "buy", "cancel", "change", "contact", "order", "pay",
-        "refund", "reserve", "schedule", "track",
-        "پرداخت", "خرید", "رزرو", "سفارش", "لغو", "بازپرداخت",
-    }
+_ACTION_REQUEST = re.compile(
+    r"\b(book|buy|cancel|change my|contact|order|pay|refund me|reserve|schedule|track)\b"
+    r"|پرداخت|خرید|رزرو|ثبت سفارش|لغو|بازپرداخت (کنید|می خواهم|می‌خواهم)",
+    re.IGNORECASE,
 )
 _FOLLOWUP_WORDS = frozenset({"it", "that", "those", "آن", "این", "همان"})
 
@@ -69,7 +67,7 @@ class OfflineGroundedChat:
         previous_customer_question: str | None = None,
     ) -> OfflineGroundedAnswer | None:
         raw_question_tokens = _raw_tokens(question)
-        if raw_question_tokens & _ACTION_WORDS:
+        if _ACTION_REQUEST.search(question):
             return None
         question_tokens = raw_question_tokens - _STOPWORDS
 

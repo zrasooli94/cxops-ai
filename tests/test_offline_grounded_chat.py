@@ -111,6 +111,29 @@ async def test_referential_followup_reuses_only_the_previous_question_topic(db):
 
     assert answer is not None
     assert "Monday to Friday" in answer.text
+
+
+@pytest.mark.asyncio
+async def test_informational_refund_question_is_not_mistaken_for_an_action(db):
+    suffix = uuid.uuid4().hex
+    organization = Organization(name=f"Offline policy {suffix}")
+    db.add(organization)
+    await db.commit()
+    await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="Refund policy",
+        content="Unused accessories may be returned within 14 days.",
+    )
+
+    answer = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="What is your refund policy for unused accessories?",
+    )
+
+    assert answer is not None
+    assert "14 days" in answer.text
     assert await offline_grounded_chat.answer(
         db,
         organization_id=organization.id,
