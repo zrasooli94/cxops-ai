@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,6 +122,7 @@ def _safe_review_error(exc: ValueError | PermissionError | IntegrityError) -> HT
     responses=AUTH_RESPONSES,
 )
 async def create_synthetic_claim_batch(
+    request: Request,
     tenant: CurrentTenant,
     db: DatabaseSession,
     authz: ReviewManageAuthz,
@@ -129,6 +130,14 @@ async def create_synthetic_claim_batch(
     _staff_admin: MemberManageAuthz,
 ):
     """Owner/admin only. Constructs a fixed fictional C6 snapshot; no body."""
+    # Deliberately no request-body fields. Reject opaque uploads rather than
+    # silently accepting caller-supplied tenant IDs or sensitive source text.
+    async for chunk in request.stream():
+        if chunk:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Synthetic batch creation accepts no request body",
+            )
     try:
         batch = await PrivateClaimReviewService.create_synthetic_batch(
             db, actor=authz,
