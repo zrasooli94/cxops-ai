@@ -31,5 +31,17 @@ export default async function ClaimReviewPage() {
   if (!mayUseClaimReview(authorization, activeOrganizationId)) {
     return <InsufficientPermission />;
   }
-  return <ClaimReviewWorkspace authorizedOrganizationId={activeOrganizationId} />;
+  // C12 is source-only: preview must be explicitly enabled on the Next
+  // development server AND on the C11 FastAPI development backend. Never
+  // expose reviewer writes in production, even if a flag is misconfigured.
+  const previewEnabled =
+    process.env.NODE_ENV !== "production" &&
+    process.env.CXOPS_C12_SYNTHETIC_REVIEW_PREVIEW === "true";
+  return (
+    <ClaimReviewWorkspace
+      key={activeOrganizationId}
+      authorizedOrganizationId={activeOrganizationId}
+      previewEnabled={previewEnabled}
+    />
+  );
 }
