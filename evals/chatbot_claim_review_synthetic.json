@@ -1,0 +1,262 @@
+{
+  "schema": "cxops-claim-review-dataset-v1",
+  "dataset_kind": "synthetic",
+  "dataset_id": "c6-fictional-faq-20261021",
+  "description": "Fictional authored benchmark for generating an independent-review worksheet. There are NO independently verified human labels or model-quality results in this fixture.",
+  "cases": [
+    {
+      "case_id": "aster-direct-contradiction",
+      "tenant_id": "aster-synthetic",
+      "question": "Are bicycle repairs free?",
+      "answer": "All Aster bicycle repairs are free. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-pricing-2026-10-21",
+          "text": "Aster bicycle repairs are not free."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "All Aster bicycle repairs are free.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-paraphrase",
+      "tenant_id": "aster-synthetic",
+      "question": "Do you charge for repairs?",
+      "answer": "Aster repairs are complimentary. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-pricing-2026-10-21",
+          "text": "Aster bicycle repairs are not free."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Aster repairs are complimentary.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-brake-checks",
+      "tenant_id": "aster-synthetic",
+      "question": "Do you check brakes?",
+      "answer": "Aster Cycleworks offers brake checks. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-services-2026-10-21",
+          "text": "Aster Cycleworks repairs commuter bicycles, performs brake checks, and offers safety inspections."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Aster Cycleworks offers brake checks.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-unsupported-sale",
+      "tenant_id": "aster-synthetic",
+      "question": "Do you sell e-bikes?",
+      "answer": "Aster Cycleworks sells e-bikes. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-services-2026-10-21",
+          "text": "Aster Cycleworks repairs commuter bicycles, performs brake checks, and offers safety inspections."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Aster Cycleworks sells e-bikes.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "birch-refund-reversed",
+      "tenant_id": "birch-synthetic",
+      "question": "Is refund approval automatic?",
+      "answer": "Refund approval is automatic. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "birch-refunds-2026-10-21",
+          "text": "Refund approval is not automatic."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Refund approval is automatic.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "birch-refund-supported",
+      "tenant_id": "birch-synthetic",
+      "question": "Are refunds automatic?",
+      "answer": "Refund approval is not automatic. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "birch-refunds-2026-10-21",
+          "text": "Refund approval is not automatic."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Refund approval is not automatic.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-hours",
+      "tenant_id": "aster-synthetic",
+      "question": "Are you open on Sunday?",
+      "answer": "The workshop is closed on Sunday. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-hours-2026-10-21",
+          "text": "Aster's workshop is open Monday through Saturday. The workshop is closed on Sunday."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "The workshop is closed on Sunday.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-farsi-incorrect",
+      "tenant_id": "aster-synthetic",
+      "question": "آیا تعمیرات دوچرخه رایگان است؟",
+      "answer": "تعمیرات دوچرخه رایگان است. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-fa-pricing-2026-10-21",
+          "text": "تعمیرات دوچرخه رایگان نیست."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "تعمیرات دوچرخه رایگان است.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-two-supported-claims",
+      "tenant_id": "aster-synthetic",
+      "question": "Which workshop services do you offer?",
+      "answer": "Aster Cycleworks performs brake checks. [S1] Aster Cycleworks offers safety inspections. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-services-2026-10-21",
+          "text": "Aster Cycleworks performs brake checks. Aster Cycleworks offers safety inspections."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Aster Cycleworks performs brake checks.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        },
+        {
+          "claim_id": "c2",
+          "text": "Aster Cycleworks offers safety inspections.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "aster-uncited-other-doc",
+      "tenant_id": "aster-synthetic",
+      "question": "Is the membership guaranteed?",
+      "answer": "Membership is guaranteed. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "aster-memberships-2026-10-21",
+          "text": "Membership is guaranteed."
+        },
+        {
+          "source_id": "S2",
+          "revision": "aster-old-2026-10-20",
+          "text": "Membership is not guaranteed."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Membership is guaranteed.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "birch-unclear-staff-time",
+      "tenant_id": "birch-synthetic",
+      "question": "Will staff reply within an hour?",
+      "answer": "Support usually replies promptly. [S1]",
+      "sources": [
+        {
+          "source_id": "S1",
+          "revision": "birch-contact-2026-10-21",
+          "text": "Customers can contact support during business hours."
+        }
+      ],
+      "claims": [
+        {
+          "claim_id": "c1",
+          "text": "Support usually replies promptly.",
+          "cited_source_ids": [
+            "S1"
+          ]
+        }
+      ]
+    }
+  ]
+}

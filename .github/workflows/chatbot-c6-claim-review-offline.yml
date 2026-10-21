@@ -1,0 +1,124 @@
+# Offline, synthetic-only claim-evidence reviewer workbench.
+# No production DB, human reviewer identities, LLM provider calls or secrets.
+name: Chatbot C6 — Claim Review Offline
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c5-evidence-contradictions
+    paths:
+      - '.github/workflows/chatbot-c6-claim-review-offline.yml'
+      - 'scripts/chatbot_claim_review.py'
+      - 'evals/chatbot_claim_review_synthetic.json'
+      - 'tests/test_chatbot_claim_review.py'
+      - 'docs/product/chatbot-c6-claim-review.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-chatbot-c6-claim-review-offline
+  cancel-in-progress: true
+
+jobs:
+  claim-review:
+    name: Claim Worksheet + Audit Metrics / No Providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      ENVIRONMENT: development
+      DEBUG: 'false'
+      DATABASE_URL: ''
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+
+    steps:
+      - name: Checkout PR merge result with credentials disabled
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reject any external credentials or production target
+        run: |
+          test "$CI" = true
+          test "$GITHUB_ACTIONS" = true
+          test "$ENVIRONMENT" = development
+          test -z "$DATABASE_URL"
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_WEBHOOK_SECRET"
+          test -z "$HANDOFF_NOTIFICATION_EMAIL_URL"
+          test -z "$HANDOFF_NOTIFICATION_TELEGRAM_URL"
+          test "$HANDOFF_NOTIFICATIONS_ENABLED" = false
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$PUBLIC_CHAT_ASYNC_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+
+      - name: Install lockfile Python dependencies without provider keys
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-lock.txt
+          python -m pip install --disable-pip-version-check ruff==0.16.10
+
+      - name: Validate synthetic-only dataset and export empty review sheet
+        run: |
+          python -m scripts.chatbot_claim_review validate
+          python -m scripts.chatbot_claim_review prepare \
+            --out "$RUNNER_TEMP/c6_unlabelled.csv"
+          python -m scripts.chatbot_claim_review score \
+            --sheet "$RUNNER_TEMP/c6_unlabelled.csv" \
+            --report "$RUNNER_TEMP/c6_not_certified.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["RUNNER_TEMP"]) / "c6_not_certified.json"
+          report = json.loads(output.read_text(encoding="utf-8"))
+          assert report["counts"]["pending"] == 12
+          assert report["production_certified"] is False
+          assert report["independent_human_identity_verified"] is False
+          assert report["guard_comparison"]["unsafe_miss_rate"] is None
+          print("Unlabelled synthetic worksheet: NOT CERTIFIED")
+          PY
+
+      - name: Confirm strict mode refuses unfinished human review
+        run: |
+          set +e
+          python -m scripts.chatbot_claim_review score \
+            --sheet "$RUNNER_TEMP/c6_unlabelled.csv" \
+            --require-complete > "$RUNNER_TEMP/c6_strict_refusal.json"
+          code=$?
+          set -e
+          test "$code" -eq 2
+          echo "PASS: incomplete or disputed evidence cannot pass strict review"
+
+      - name: Reviewer integrity and previous C5 evidence regressions
+        run: |
+          # These are pure offline tests. Suppress the repo-wide conftest
+          # which otherwise initializes the production-style DB engine at
+          # import time even though no test here uses PostgreSQL.
+          python -m pytest --noconftest -q --tb=short \
+            tests/test_chatbot_claim_review.py \
+            tests/test_chatbot_c5_evidence.py \
+            tests/test_rag_reliability.py
+
+      - name: Pinned Ruff check on scorer and its tests
+        run: |
+          python -m ruff check \
+            scripts/chatbot_claim_review.py \
+            tests/test_chatbot_claim_review.py
