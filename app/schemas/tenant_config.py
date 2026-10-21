@@ -130,3 +130,18 @@ class BusinessIntegrationStateResponse(BaseModel):
     provider: str
     enabled: bool
     provider_mode: str | None
+
+
+class OfflineFaqItem(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class OfflineFaqsResponse(BaseModel):
+    items: list[OfflineFaqItem]
+
+
+class OfflineFaqsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[OfflineFaqItem] = Field(min_length=1, max_length=40)

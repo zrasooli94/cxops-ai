@@ -57,3 +57,30 @@ Suggested checks:
 4. Ask `Can I book a snowboard repair?` and confirm human handoff.
 5. Send another message after handoff and confirm it is stored with no
    automated reply.
+
+## Local business-owner studio
+
+The seeder also creates a synthetic owner membership. Start Next.js with the
+same development-only HS256 secret as the API and the organization id printed
+by the seeder:
+
+```bash
+cd frontend
+BACKEND_API_URL=http://127.0.0.1:8000 \
+AUTH_JWT_SECRET='<same development-only API secret>' \
+LOCAL_DEMO_ORGANIZATION_ID='<seeded organization id>' \
+npm run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+Open `http://127.0.0.1:3000/chat/owner-studio`. The studio saves assistant
+identity, greeting, appearance, and the synthetic FAQ pack to the disposable
+tenant. Its inbox reads persisted conversations and supports staff claim,
+reply, release, and resolution. Language is a browser-local preview preference
+until the production configuration contract gains a tenant language field.
+
+The local identity bridge is rejected in production, accepts only loopback
+hostnames, forwards only an explicit route allowlist, and keeps its five-minute
+token server-side. Every forwarded request still passes normal backend
+membership, tenant, and capability checks. The FAQ endpoints independently
+return 404 unless the API is non-production, the offline provider is enabled,
+and the database host is loopback.

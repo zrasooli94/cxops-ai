@@ -10,14 +10,17 @@ from sqlalchemy import delete, select
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.rbac import OrganizationRole
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import LIFECYCLE_ACTIVE, Organization
+from app.models.organization_membership import OrganizationMembership
 from app.models.public_chat import PublicChatConfiguration
 from app.services.public_chat_service import hash_digest
 
 WIDGET_KEY = "pk_local_aster_cycle_offline_demo"
 ORG_EXTERNAL_ID = "cxops-local-offline-demo"
+OWNER_SUBJECT = "cxops-local-owner"
 KNOWLEDGE = (
     (
         "Opening hours",
@@ -92,6 +95,22 @@ async def seed() -> None:
             )
             db.add(organization)
             await db.flush()
+
+        membership = await db.scalar(
+            select(OrganizationMembership).where(
+                OrganizationMembership.organization_id == organization.id,
+                OrganizationMembership.subject == OWNER_SUBJECT,
+            )
+        )
+        if membership is None:
+            db.add(
+                OrganizationMembership(
+                    organization_id=organization.id,
+                    subject=OWNER_SUBJECT,
+                    role=OrganizationRole.OWNER,
+                    email="owner@aster-cycle.example",
+                )
+            )
 
         configuration = await db.scalar(
             select(PublicChatConfiguration).where(

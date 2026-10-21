@@ -10,19 +10,28 @@ because it is the one irreversible action here: the old key stops working
 immediately and the new key is displayed once.
 """
 
+import hashlib
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.rbac import AuthorizationContext, Capability
+from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.knowledge_document import KnowledgeDocument
 from app.schemas.tenant_config import (
     BusinessIntegrationsResponse,
     BusinessIntegrationState,
     BusinessIntegrationStateResponse,
     BusinessIntegrationUpdateRequest,
+    OfflineFaqItem,
+    OfflineFaqsResponse,
+    OfflineFaqsUpdateRequest,
     PublicChatSettingsResponse,
     PublicChatUpdateRequest,
     WidgetKeyRotationResponse,
@@ -50,6 +59,19 @@ ManageAuthz = Annotated[
     AuthorizationContext,
     Depends(RequireCapability(Capability.INTEGRATION_MANAGE)),
 ]
+
+
+def _require_local_offline_demo() -> None:
+    settings = get_settings()
+    host = urlsplit(
+        settings.database_url.replace("postgresql+asyncpg", "postgresql")
+    ).hostname
+    if (
+        settings.environment == "production"
+        or not settings.public_chat_offline_provider_enabled
+        or host not in {"localhost", "127.0.0.1", None}
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
 
 
 def _fail(exc: Exception) -> None:
@@ -148,6 +170,76 @@ async def update_public_chat_settings(
         _fail(exc)
         raise  # pragma: no cover - _fail always raises
     return PublicChatSettingsResponse(**result)
+
+
+@router.get("/offline-faqs", response_model=OfflineFaqsResponse)
+async def get_offline_faqs(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _authz: ManageAuthz,
+):
+    """Read synthetic FAQs only in the disposable local offline demo."""
+    _require_local_offline_demo()
+    rows = (
+        await db.execute(
+            select(KnowledgeDocument.title, KnowledgeChunk.content)
+            .join(KnowledgeChunk, KnowledgeChunk.document_id == KnowledgeDocument.id)
+            .where(
+                KnowledgeDocument.organization_id == tenant.organization_id,
+                KnowledgeDocument.source == "local_synthetic",
+            )
+            .order_by(KnowledgeChunk.chunk_index, KnowledgeDocument.id)
+        )
+    ).all()
+    return OfflineFaqsResponse(
+        items=[OfflineFaqItem(title=title, content=content) for title, content in rows]
+    )
+
+
+@router.put("/offline-faqs", response_model=OfflineFaqsResponse)
+async def replace_offline_faqs(
+    payload: OfflineFaqsUpdateRequest,
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _principal: CurrentPrincipal,
+    _authz: ManageAuthz,
+):
+    """Replace only this tenant's local synthetic FAQ pack."""
+    _require_local_offline_demo()
+    document_ids = select(KnowledgeDocument.id).where(
+        KnowledgeDocument.organization_id == tenant.organization_id,
+        KnowledgeDocument.source == "local_synthetic",
+    )
+    await db.execute(
+        delete(KnowledgeChunk).where(
+            KnowledgeChunk.organization_id == tenant.organization_id,
+            KnowledgeChunk.document_id.in_(document_ids),
+        )
+    )
+    await db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.id.in_(document_ids)))
+    for index, item in enumerate(payload.items):
+        document = KnowledgeDocument(
+            organization_id=tenant.organization_id,
+            title=item.title.strip(),
+            source="local_synthetic",
+            checksum=hashlib.sha256(item.content.strip().encode()).hexdigest(),
+            metadata_json={"demo": True, "synthetic": True, "owner_edited": True},
+        )
+        db.add(document)
+        await db.flush()
+        db.add(
+            KnowledgeChunk(
+                organization_id=tenant.organization_id,
+                document_id=document.id,
+                chunk_index=index,
+                content=item.content.strip(),
+                token_count=len(item.content.split()),
+                metadata_json={"demo": True, "synthetic": True, "owner_edited": True},
+                embedding=[0.0] * 1536,
+            )
+        )
+    await db.commit()
+    return OfflineFaqsResponse(items=payload.items)
 
 
 @router.post(
