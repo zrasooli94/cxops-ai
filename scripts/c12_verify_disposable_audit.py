@@ -31,7 +31,9 @@ async def verify(org_a: int, org_b: int) -> None:
     async with AsyncSessionLocal() as db:
         batches = (
             await db.execute(
-                select(ClaimReviewBatch).order_by(ClaimReviewBatch.id)
+                select(ClaimReviewBatch).where(
+                    ClaimReviewBatch.organization_id == org_a
+                ).order_by(ClaimReviewBatch.id)
             )
         ).scalars().all()
         assert len(batches) == 1, "one fictional browser-created batch required"
