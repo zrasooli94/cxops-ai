@@ -165,12 +165,24 @@ test("C9 real headless Chrome + real Next auth boundary, synthetic only", async 
       }
     });
 
-    await t.test("server's second authorization read blocks mid-render downgrade", async () => {
+    await t.test("revoking evaluation.manage blocks a fresh page request", async () => {
       const context = await makeContext(browser, "revoked", 9001);
       try {
         const page = await context.newPage();
         await rendered(page);
+        // A single Next server render may memoize identical GETs to
+        // /me/authorization: a repeated function call is not guaranteed
+        // to be a fresh revocation check *within the same request*.
+        await assertAllowed(page);
+        await loadFirstClaim(page);
+        // The mock revokes evaluation.manage AFTER its first completed
+        // authorization response. A new SSR request must obtain a new
+        // authorization snapshot and render the denial, never the review.
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 45_000 });
         await assertDenied(page);
+        assert.equal(await page.getByText(
+          "All Aster bicycle repairs are free.", { exact: true },
+        ).count(), 0);
       } finally {
         await context.close();
       }
