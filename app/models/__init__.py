@@ -10,6 +10,12 @@ from app.models.automation_rule import AutomationRule
 from app.models.base import Base
 from app.models.business_action import BusinessAction
 from app.models.business_integration import BusinessIntegrationConfiguration
+from app.models.claim_review import (
+    ClaimReviewAssignment,
+    ClaimReviewBatch,
+    ClaimReviewEvent,
+    ClaimReviewItem,
+)
 from app.models.commercial import OrganizationInvitation, PlatformOperator, SalesLead
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
@@ -50,6 +56,10 @@ __all__ = [
     "Base",
     "BusinessAction",
     "BusinessIntegrationConfiguration",
+    "ClaimReviewAssignment",
+    "ClaimReviewBatch",
+    "ClaimReviewEvent",
+    "ClaimReviewItem",
     "Conversation",
     "ConversationMessage",
     "Customer",
