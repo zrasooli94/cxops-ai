@@ -40,9 +40,19 @@ export function DemoClient() {
     const unsubscribe = transport.subscribe(() => setSnapshot(transport.snapshot()));
     try { transport.attachStorage(window.sessionStorage); }
     catch { /* Optional browser storage: this page still works in memory. */ }
-    setSnapshot(transport.snapshot());
-    setReady(true);
-    return unsubscribe;
+    // Hydrate the browser-only preview after mount rather than changing
+    // render state synchronously inside an effect.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setSnapshot(transport.snapshot());
+        setReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [transport]);
 
   const restart = () => {
