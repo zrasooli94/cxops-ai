@@ -48,6 +48,7 @@ export type ControlCenterRoute =
   | "/observability"
   | "/operations"
   | "/evaluations"
+  | "/evaluations/claim-review"
   | "/transformation"
   | "/simulations"
   | "/automotive-pilot"
@@ -80,6 +81,7 @@ export const ROUTE_REQUIREMENTS: Readonly<
   "/observability": CAPABILITIES.OBSERVABILITY_READ,
   "/operations": CAPABILITIES.TICKET_READ,
   "/evaluations": CAPABILITIES.EVALUATION_READ,
+  "/evaluations/claim-review": CAPABILITIES.EVALUATION_MANAGE,
   "/transformation": CAPABILITIES.TICKET_READ,
   "/simulations": CAPABILITIES.TRANSFORMATION_SIMULATION_READ,
   "/automotive-pilot": CAPABILITIES.TICKET_READ,
