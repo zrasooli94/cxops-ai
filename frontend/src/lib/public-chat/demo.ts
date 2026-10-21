@@ -308,7 +308,8 @@ export class DemoChatTransport {
       let body: { public_widget_key?: string };
       try { body = JSON.parse(String(init?.body ?? "")); }
       catch { return json({ detail: "Invalid JSON." }, 400); }
-      if (body.public_widget_key !== DEMO_WIDGET_KEY) return json({ detail: "Unknown demo widget." }, 404);
+      if (!body || typeof body !== "object" || body.public_widget_key !== DEMO_WIDGET_KEY)
+        return json({ detail: "Unknown demo widget." }, 404);
       const token = "demo_" + crypto.randomUUID();
       this.session = {
         token, status: "ai_active", messages: [], lastTopic: null, seen: {},
@@ -337,8 +338,8 @@ export class DemoChatTransport {
       let body: { client_message_id?: string; text?: string };
       try { body = JSON.parse(String(init?.body ?? "")); }
       catch { return json({ detail: "Invalid JSON." }, 400); }
-      const text = body?.text?.trim() ?? "";
-      const key = body?.client_message_id ?? "";
+      const text = typeof body?.text === "string" ? body.text.trim() : "";
+      const key = typeof body?.client_message_id === "string" ? body.client_message_id : "";
       if (!/^[a-f0-9]{32}$/i.test(key) || !text || text.length > config.max_message_length)
         return json({ detail: "Invalid message or message identifier." }, 422);
       const previous = session.seen[key];
