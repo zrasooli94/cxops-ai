@@ -986,7 +986,7 @@ export function PublicChatWidget({
   // widget state — the launcher and the panel both render the sheet — so the
   // transparent-frame rules reach html/body even before a click.
   const embedStyles = (
-    <style>{EMBED_STYLE_RULES}{transparentFrame ? EMBED_DOCUMENT_STYLE_RULES : ""}</style>
+    <style>{EMBED_STYLE_RULES + (transparentFrame ? EMBED_DOCUMENT_STYLE_RULES : "")}</style>
   );
 
   if (unavailable && !panelOpen) {
