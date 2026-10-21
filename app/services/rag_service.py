@@ -46,6 +46,7 @@ class RAGService:
         return ChatOpenAI(
             model=settings.chat_model,
             api_key=SecretStr(settings.openai_api_key),
+            max_tokens=settings.chat_max_output_tokens,
             timeout=settings.openai_request_timeout_seconds,
             max_retries=settings.openai_max_retries,
         )

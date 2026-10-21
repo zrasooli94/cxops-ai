@@ -12,10 +12,16 @@ type Message = { id: number; direction: string; body: string; created_at: string
 type Handoff = { session_id: number; conversation_id: number; status: string; assigned_to_subject: string | null };
 
 async function request(path: string, init?: RequestInit) {
-  const response = await fetch(`${api}${path}`, { cache: "no-store", ...init, headers: { "content-type": "application/json", ...init?.headers } });
+  const response = await fetch(`${api}${path}`, { cache: "no-store", ...init, headers: { "content-type": "application/json", "x-cxops-local-origin": window.location.origin, ...init?.headers } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.detail ?? `Request failed (${response.status})`);
   return body;
+}
+
+async function localPreviewFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("X-Embedding-Origin", window.location.origin);
+  return fetch(input, { ...init, headers });
 }
 
 export default function OwnerStudio({ initialView }: { initialView: "setup" | "knowledge" | "inbox" }) {
@@ -53,7 +59,15 @@ export default function OwnerStudio({ initialView }: { initialView: "setup" | "k
   const selectedHandoff = useMemo(() => handoffs.find((item) => item.conversation_id === selected), [handoffs, selected]);
   async function saveSettings() {
     if (!settings) return;
-    const saved = await request("/staff/tenant-config/public-chat", { method: "PATCH", body: JSON.stringify(settings) });
+    const saved = await request("/staff/tenant-config/public-chat", {
+      method: "PATCH",
+      body: JSON.stringify({
+        display_name: settings.display_name,
+        welcome_message: settings.welcome_message,
+        theme_token: settings.theme_token,
+        enabled: settings.enabled,
+      }),
+    });
     setSettings(saved); localStorage.setItem("cxops.owner.language", language); setNotice("Assistant settings saved. Preview reloads with the persisted greeting and theme.");
   }
   async function saveFaqs() {
@@ -91,6 +105,6 @@ export default function OwnerStudio({ initialView }: { initialView: "setup" | "k
       <aside><div className="sticky top-6 rounded-2xl border border-slate-200 bg-[#e8f5f2] p-5"><p className="text-xs font-semibold uppercase tracking-wider text-teal-800">Live customer preview</p><h2 className="mt-1 font-semibold">Production widget contract</h2><p className="mt-2 text-sm text-slate-600">Open the bubble below. New messages use the real local API, persisted sessions and saved FAQs.</p><div className="mt-80 text-xs text-slate-500">Language: {language === "fa" ? "فارسی" : language === "en" ? "English" : "Automatic bilingual"}</div></div></aside>
     </div>
     <div className="fixed bottom-3 left-1/2 z-50 -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-xs text-white shadow-lg">{notice}</div>
-    <PublicChatWidget widgetKey={widgetKey} sessionStorageKey="cxops.chat.owner-studio.preview.v1" transparentFrame initialPollDelayMs={800}/>
+    <PublicChatWidget widgetKey={widgetKey} sessionStorageKey="cxops.chat.owner-studio.preview.v1" transparentFrame={false} initialPollDelayMs={800} fetcher={localPreviewFetch}/>
   </main>;
 }

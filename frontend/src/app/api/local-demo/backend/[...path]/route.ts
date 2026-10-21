@@ -1,18 +1,9 @@
 import { createHmac } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { isAllowedLocalDemoPath, isAuthorizedLocalDemoRequest } from "@/lib/local-demo/security";
 
 const BACKEND_API_URL = process.env.BACKEND_API_URL ?? "http://127.0.0.1:8000";
 const SUBJECT = "cxops-local-owner";
-const ALLOWED = [
-  /^staff\/tenant-config\/public-chat$/,
-  /^staff\/tenant-config\/offline-faqs$/,
-  /^staff\/public-chat\/handoff$/,
-  /^staff\/public-chat\/sessions\/\d+\/(assign|release|resolve)$/,
-  /^conversations$/,
-  /^conversations\/\d+\/messages$/,
-  /^conversations\/\d+\/replies$/,
-];
-
 function base64url(value: string) {
   return Buffer.from(value).toString("base64url");
 }
@@ -28,7 +19,15 @@ function token(secret: string) {
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const hostname = request.nextUrl.hostname;
-  if (process.env.NODE_ENV === "production" || !["localhost", "127.0.0.1"].includes(hostname)) {
+  if (!isAuthorizedLocalDemoRequest({
+    nodeEnv: process.env.NODE_ENV,
+    hostname,
+    method: request.method,
+    origin: request.headers.get("origin"),
+    fetchSite: request.headers.get("sec-fetch-site"),
+    localOrigin: request.headers.get("x-cxops-local-origin"),
+    requestOrigin: request.nextUrl.origin,
+  })) {
     return NextResponse.json({ detail: "Not found" }, { status: 404 });
   }
   const secret = process.env.AUTH_JWT_SECRET;
@@ -38,7 +37,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   }
   const { path } = await context.params;
   const relative = path.join("/");
-  if (!ALLOWED.some((pattern) => pattern.test(relative))) {
+  if (!isAllowedLocalDemoPath(relative)) {
     return NextResponse.json({ detail: "Route is not allowed." }, { status: 404 });
   }
   const url = new URL(`${BACKEND_API_URL}/${relative}`);

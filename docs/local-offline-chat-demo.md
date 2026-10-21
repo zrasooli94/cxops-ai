@@ -84,3 +84,35 @@ token server-side. Every forwarded request still passes normal backend
 membership, tenant, and capability checks. The FAQ endpoints independently
 return 404 unless the API is non-production, the offline provider is enabled,
 and the database host is loopback.
+
+Run the isolated browser interaction check while both services are running:
+
+```bash
+node scripts/headless_owner_studio_e2e.mjs
+```
+
+It uses a separate headless Chrome process, creates a fresh synthetic visitor
+session, verifies save/reload for settings and FAQs, visitor polling and reload
+continuity, staff claim/reply/release/resolve, and that a visitor message after
+takeover does not receive an automated reply. It writes the setup and inbox
+screenshots under `artifacts/`.
+
+## Paid-model evaluation readiness
+
+`scripts/plan_chat_model_evaluation.py` is deliberately plan-only: it never
+creates a model client or sends a provider request. It expands bilingual
+grounding, uncertainty, policy, and handoff scenarios, applies hard turn and
+per-turn input/output token limits, and fails closed when the worst-case cost
+at explicitly supplied rates exceeds the requested ceiling. For example:
+
+```bash
+python -m scripts.plan_chat_model_evaluation \
+  --turns 50 --cost-ceiling-usd 0.25 \
+  --input-rate 0.15 --output-rate 0.60
+```
+
+Those example rates are repository inputs, not a claim about current provider
+pricing. Before any real run, the owner must separately approve a provider,
+model, credential method, current verified rates, and usage ceiling. The normal
+OpenAI adapters now apply `CHAT_MAX_OUTPUT_TOKENS` (default 500) in addition to
+the existing request timeout and retry limits.
