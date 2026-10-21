@@ -80,7 +80,13 @@ async function handler(request: NextRequest, context: RouteContext) {
   let body: string | undefined;
   if (request.method === "POST") {
     const origin = request.headers.get("origin");
-    if (origin && origin !== request.nextUrl.origin) return refuse(403, "origin");
+    // Next may normalize 127.0.0.1 to localhost inside nextUrl.origin.
+    // Compare with the actual browser-visible Host, preserving the exact
+    // scheme and refusing foreign origins rather than skipping this check.
+    const host = request.headers.get("host");
+    if (!host) return refuse(403, "host");
+    const expectedOrigin = request.nextUrl.protocol + "//" + host;
+    if (origin && origin !== expectedOrigin) return refuse(403, "origin");
     const text = await request.text();
     if (text.length > 4096) return refuse(413);
     if (path.length === 1) {
