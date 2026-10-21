@@ -8,8 +8,8 @@
  *
  * No reviewer API or persistent mutation exists in this milestone.
  */
-import { CAPABILITIES } from "@/lib/authorization/capabilities";
-import type { AuthorizationInfo } from "@/lib/authorization/types";
+import { CAPABILITIES } from "../authorization/capabilities.ts";
+import type { AuthorizationInfo } from "../authorization/types.ts";
 
 export function mayUseClaimReview(
   authorization: Pick<AuthorizationInfo, "organization_id" | "capabilities">,
