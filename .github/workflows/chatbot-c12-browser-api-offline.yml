@@ -156,6 +156,11 @@ jobs:
             > "$RUNNER_TEMP/c12-next.log" 2>&1 &
           web_pid=$!
           cleanup() {
+            code=$?
+            if [ "$code" -ne 0 ]; then
+              echo "C12 fixed-category proxy refusals (no JWTs or request bodies):"
+              grep -oE 'C12_PROXY_REFUSAL_[0-9]+_[a-z_]+' "$RUNNER_TEMP/c12-next.log" | sort -u || true
+            fi
             kill "$api_pid" "$web_pid" 2>/dev/null || true
             wait "$api_pid" "$web_pid" 2>/dev/null || true
           }
