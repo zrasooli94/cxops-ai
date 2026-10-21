@@ -20,6 +20,7 @@ import {
 } from "react";
 
 import InsufficientPermission from "@/components/insufficient-permission";
+import SyntheticApiPreview from "./synthetic-api-preview";
 import { CAPABILITIES } from "@/lib/authorization/capabilities";
 import { useAuthorization } from "@/lib/authorization/context";
 import { mayUseClaimReview } from "@/lib/claim-review/access";
@@ -37,8 +38,10 @@ const LABEL = "mb-2 block text-xs font-semibold text-slate-600";
 
 export default function ClaimReviewWorkspace({
   authorizedOrganizationId,
+  previewEnabled = false,
 }: {
   authorizedOrganizationId: number;
+  previewEnabled?: boolean;
 }) {
   const { organizationId, capabilities, can } = useAuthorization();
   const isAuthorized =
@@ -224,6 +227,10 @@ export default function ClaimReviewWorkspace({
               is saved to CXOps databases or treated as a release approval.
             </p>
           </section>
+
+          {previewEnabled && (
+            <SyntheticApiPreview organizationId={authorizedOrganizationId} />
+          )}
 
           {!scoped ? (
             <section className="grid gap-7 rounded-[22px] border border-slate-200 bg-white p-6 shadow-sm lg:grid-cols-2 lg:p-8">
