@@ -30,7 +30,11 @@ const BACKEND_API_URL =
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-function refuse(status: number): NextResponse {
+function refuse(status: number, code = "unspecified"): NextResponse {
+  // Only static category labels in a fictional CI run; no JWT/PII/body.
+  if (process.env.CI === "true" && process.env.GITHUB_ACTIONS === "true") {
+    console.warn("C12_PROXY_REFUSAL_" + String(status) + "_" + code);
+  }
   return NextResponse.json(
     { detail: status === 404 ? "Not found" : "Synthetic reviewer request denied." },
     { status, headers: {
@@ -44,20 +48,20 @@ function refuse(status: number): NextResponse {
 async function handler(request: NextRequest, context: RouteContext) {
   // Hard gate BEFORE cookie reads, organization resolution, backend calls.
   // Production and staging can never enable this source-only preview.
-  if (!c12SyntheticStaffPreviewEnabled()) return refuse(404);
+  if (!c12SyntheticStaffPreviewEnabled()) return refuse(404, "flag");
 
   const { path } = await context.params;
   const backendPath = c12ReviewerBackendPath(path, request.method);
-  if (!backendPath || request.nextUrl.search) return refuse(404);
+  if (!backendPath || request.nextUrl.search) return refuse(404, "route");
 
   const sessionCookie = (await cookies()).get(SESSION_COOKIE_NAME)?.value ?? null;
   const session = deserializeSession(sessionCookie);
-  if (classifySessionState(session) !== "valid") return refuse(401);
+  if (classifySessionState(session) !== "valid") return refuse(401, "session");
   const authorization = accessTokenAuthHeader(session);
-  if (!authorization) return refuse(401);
+  if (!authorization) return refuse(401, "auth_header");
 
   const selectedOrganizationId = await getActiveOrganizationId();
-  if (selectedOrganizationId === null) return refuse(403);
+  if (selectedOrganizationId === null) return refuse(403, "tenant_missing");
 
   // This backend GET validates the actual JWT and membership under the
   // selected, trusted HttpOnly organization cookie (not a request header).
@@ -65,18 +69,18 @@ async function handler(request: NextRequest, context: RouteContext) {
   try {
     authz = await getMyAuthorizationReadOnly(selectedOrganizationId);
   } catch {
-    return refuse(403);
+    return refuse(403, "auth_lookup");
   }
-  if (!mayUseClaimReview(authz, selectedOrganizationId)) return refuse(403);
+  if (!mayUseClaimReview(authz, selectedOrganizationId)) return refuse(403, "eval_capability");
   if (
     c12ReviewerAdminPath(path) &&
     !authz.capabilities.includes("member.manage")
-  ) return refuse(403);
+  ) return refuse(403, "member_manage");
 
   let body: string | undefined;
   if (request.method === "POST") {
     const origin = request.headers.get("origin");
-    if (origin && origin !== request.nextUrl.origin) return refuse(403);
+    if (origin && origin !== request.nextUrl.origin) return refuse(403, "origin");
     const text = await request.text();
     if (text.length > 4096) return refuse(413);
     if (path.length === 1) {
