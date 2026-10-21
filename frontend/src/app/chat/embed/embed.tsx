@@ -277,8 +277,13 @@ function LauncherButton({
 
 export function PublicChatWidget({
   widgetKey,
+  fetcher = fetch,
+  sessionStorageKey = CHAT_SESSION_STORAGE_KEY,
 }: {
   widgetKey: string;
+  /** Optional isolated transport for a local-only synthetic preview. */
+  fetcher?: typeof fetch;
+  sessionStorageKey?: string;
 }) {
   // Server/session state. "closed" is terminal (explicit End or a server-side
   // close); the launcher is a separate UI concern — see ``panelOpen`` below.
@@ -396,6 +401,7 @@ export function PublicChatWidget({
         const updates = await fetchPublicChatUpdates(
           token,
           cursorOf(messagesRef.current),
+          fetcher,
         );
         if (updates) {
           if (updates.messages.length > 0) {
@@ -410,19 +416,19 @@ export function PublicChatWidget({
         updatesSupportedRef.current = false;
       }
       const nextState =
-        await fetchPublicChatState(token);
+        await fetchPublicChatState(token, fetcher);
       setMessages(nextState.messages);
       setAwaitingReply(false);
       applyStatus(nextState.status);
       return LEGACY_POLL_INTERVAL_MS;
     },
-    [applyStatus],
+    [applyStatus, fetcher],
   );
 
   const loadState = useCallback(
     async (token: string): Promise<WidgetState> => {
       const nextState =
-        await fetchPublicChatState(token);
+        await fetchPublicChatState(token, fetcher);
       setMessages(nextState.messages);
       if (nextState.status === "human_requested") {
         setState("human_requested");
@@ -439,42 +445,42 @@ export function PublicChatWidget({
       setState("ai_active");
       return "ai_active";
     },
-    [],
+    [fetcher],
   );
 
   const persistSession = useCallback(
     (token: string) => {
       try {
         window.sessionStorage.setItem(
-          CHAT_SESSION_STORAGE_KEY,
+          sessionStorageKey,
           token,
         );
       } catch {
         // Storage may be unavailable (private mode); the session still works.
       }
     },
-    [],
+    [sessionStorageKey],
   );
 
   const discardSession = useCallback(() => {
     try {
       window.sessionStorage.removeItem(
-        CHAT_SESSION_STORAGE_KEY,
+        sessionStorageKey,
       );
     } catch {
       // Ignore storage failures.
     }
-  }, []);
+  }, [sessionStorageKey]);
 
   const readStoredSession = useCallback((): string | null => {
     try {
       return window.sessionStorage.getItem(
-        CHAT_SESSION_STORAGE_KEY,
+        sessionStorageKey,
       );
     } catch {
       return null;
     }
-  }, []);
+  }, [sessionStorageKey]);
 
   // Bounded, best-effort public-config prefetch started when the widget
   // mounts, so a tenant theme (e.g. RISPU) is resolved before the customer
@@ -488,13 +494,13 @@ export function PublicChatWidget({
     (): Promise<PublicChatConfigResponse> => {
       if (configPrefetchRef.current === null) {
         configPrefetchRef.current =
-          fetchPublicChatConfig(widgetKey).finally(() => {
+          fetchPublicChatConfig(widgetKey, fetcher).finally(() => {
             configPrefetchRef.current = null;
           });
       }
       return configPrefetchRef.current;
     },
-    [widgetKey],
+    [widgetKey, fetcher],
   );
 
   // The whole connect flow lives behind one button, so the panel opens in the
@@ -570,6 +576,7 @@ export function PublicChatWidget({
           await createPublicChatSession(
             widgetKey,
             embeddingOriginRef.current,
+            fetcher,
           );
         setConfig(created.config);
         token = created.session.token;
@@ -612,6 +619,7 @@ export function PublicChatWidget({
     persistSession,
     readStoredSession,
     widgetKey,
+    fetcher,
   ]);
 
   const sendMessage = useCallback(
@@ -658,7 +666,7 @@ export function PublicChatWidget({
             embeddingOriginRef.current,
             messageId,
             trimmed,
-            fetch,
+            fetcher,
             "async",
           ),
         );
@@ -710,7 +718,7 @@ export function PublicChatWidget({
         setSending(false);
       }
     },
-    [sending],
+    [sending, fetcher],
   );
 
   const requestHuman = useCallback(async () => {
@@ -722,7 +730,7 @@ export function PublicChatWidget({
     setSending(true);
     try {
       const result =
-        await requestPublicChatHuman(token);
+        await requestPublicChatHuman(token, fetcher);
       setState("human_requested");
       if (result.reply) {
         setMessages((previous) => [
@@ -746,7 +754,7 @@ export function PublicChatWidget({
     } finally {
       setSending(false);
     }
-  }, []);
+  }, [fetcher]);
 
   const minimize = useCallback(() => {
     // UI-only collapse: hide the panel but keep the conversation, the in-memory
@@ -773,7 +781,7 @@ export function PublicChatWidget({
     }
 
     try {
-      await closePublicChatSession(token);
+      await closePublicChatSession(token, fetcher);
     } catch {
       // A failed backend close must not diverge the client from a still-active
       // server session: keep the token, stored token, messages, panel, state,
@@ -793,7 +801,7 @@ export function PublicChatWidget({
     setPanelOpen(false);
     setEndConfirm(false);
     setState("closed");
-  }, [clearPoll, discardSession]);
+  }, [clearPoll, discardSession, fetcher]);
 
   // Close the current server session, then open a brand-new one. The old
   // conversation stays with the team; nothing is reactivated, and the AI never
@@ -802,7 +810,7 @@ export function PublicChatWidget({
     const token = sessionTokenRef.current;
     if (token) {
       try {
-        await closePublicChatSession(token);
+        await closePublicChatSession(token, fetcher);
       } catch {
         setErrorMessage(
           "Unable to start a new conversation right now. Please try again.",
@@ -822,7 +830,7 @@ export function PublicChatWidget({
     setAwaitingReply(false);
     setState("closed");
     await open();
-  }, [clearPoll, discardSession, open]);
+  }, [clearPoll, discardSession, open, fetcher]);
 
   useEffect(() => {
     embeddingOriginRef.current =
