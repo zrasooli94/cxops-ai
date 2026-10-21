@@ -27,7 +27,6 @@ export default function SyntheticApiPreview({ organizationId }: { organizationId
   const [label, setLabel] = useState<ReviewLabel>("unclear");
   const [evidence, setEvidence] = useState("");
   const [rationale, setRationale] = useState("");
-  const [adjudication, setAdjudication] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
@@ -107,9 +106,9 @@ export default function SyntheticApiPreview({ organizationId }: { organizationId
       return;
     }
     void act(async () => {
-      const response = adjudication
-        ? await reviewApi.adjudicate(id, selected, label, evidence, rationale)
-        : await reviewApi.submit(id, selected, label, evidence, rationale);
+      const response = await reviewApi.submit(
+        id, selected, label, evidence, rationale,
+      );
       const refreshed = await reviewApi.queue(id);
       setQueue(refreshed);
       setEvidence("");
@@ -235,11 +234,10 @@ export default function SyntheticApiPreview({ organizationId }: { organizationId
                   maxLength={500} onChange={(event) => setRationale(event.target.value)}
                   className="mt-1 block min-h-16 w-full rounded border p-2" />
               </label>
-              <label className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={adjudication}
-                  onChange={(event) => setAdjudication(event.target.checked)} />
-                Adjudication (only a third authorized reviewer after disagreement)
-              </label>
+              <p className="text-xs text-amber-900">
+                Third-person adjudication remains API-only until a separate
+                dispute-only private queue is designed and audited.
+              </p>
               <button type="button" disabled={busy || !local || entry.completed}
                 className="rounded-lg bg-amber-900 px-4 py-2 text-sm text-white disabled:opacity-50"
                 onClick={persist}>
