@@ -156,13 +156,13 @@ def load_dataset(path: Path) -> dict[str, Any]:
             if (
                 not isinstance(cited, list)
                 or not 1 <= len(cited) <= 10
-                or len(set(cited)) != len(cited)
                 or any(
                     not isinstance(source_id, str)
                     or source_id not in sources_by_id
                     or f"[{source_id}]" not in answer
                     for source_id in cited
                 )
+                or len(set(cited)) != len(cited)
             ):
                 _reject("claim has missing, duplicate or foreign citations")
             claimed_total += 1
@@ -248,24 +248,30 @@ def _validate_reviewer(
         _reject(f"{prefix}: annotations without reviewer identity")
     if identity and len(identity) > 80:
         _reject(f"{prefix}: identity too long")
-    if evidence and len(evidence) > 1000 or len(note) > 500:
+    if (evidence and len(evidence) > 1000) or len(note) > 500:
         _reject(f"{prefix}: review note/evidence outside size limit")
     if not label:
         return None
     if not identity:
         _reject(f"{prefix}: missing reviewer identity")
     if label in {"supported", "contradicted"}:
-        if not evidence or not any(evidence in passage for passage in passages):
-            _reject(f"{prefix}: evidence must quote an exact cited-source excerpt")
+        if len(evidence) < 8 or not any(
+            evidence in passage for passage in passages
+        ):
+            _reject(f"{prefix}: evidence must quote a cited-source excerpt")
     elif not note or len(note) < 10:
         _reject(f"{prefix}: unsupported or unclear needs a rationale")
     return label
 
 
-def score_sheet(data: dict, sheet: Path) -> dict[str, Any]:
+def _read_verified_rows(data: dict, sheet: Path) -> list[dict[str, str]]:
     expected = _worksheet_rows(data)
     expected_by_id = {row["review_key"]: row for row in expected}
     try:
+        # Bound memory while reading an untrusted (possibly spreadsheet-edited)
+        # file. Review material is synthetic and at most 500 small claims.
+        if sheet.stat().st_size > 12_000_000:
+            _reject("worksheet exceeds offline file-size budget")
         with sheet.open(newline="", encoding="utf-8-sig") as stream:
             reader = csv.DictReader(stream)
             if reader.fieldnames != SHEET_FIELDS:
@@ -277,13 +283,6 @@ def score_sheet(data: dict, sheet: Path) -> dict[str, Any]:
     if len(actual) != len(expected):
         _reject("worksheet does not contain the exact expected claim count")
     seen: set[str] = set()
-    labels: Counter[str] = Counter()
-    confusion: Counter[str] = Counter()
-    pending = 0
-    disputed = 0
-    unclear = 0
-    judged = 0
-    candidate_risk_keys: list[str] = []
     for row in actual:
         if None in row or any(v is None for v in row.values()):
             _reject("worksheet row has an unexpected number of columns")
@@ -292,9 +291,78 @@ def score_sheet(data: dict, sheet: Path) -> dict[str, Any]:
             _reject("worksheet has unexpected or repeated claim identifiers")
         seen.add(key)
         reference = expected_by_id[key]
-        if any(row[field] != reference[field] for field in SHEET_FIELDS if field not in EDITABLE):
+        if any(
+            row[field] != reference[field]
+            for field in SHEET_FIELDS
+            if field not in EDITABLE
+        ):
             _reject("worksheet dataset/fingerprint/source content was modified")
+    return actual
 
+
+def combine_sheets(
+    data: dict, reviewer_one: Path, reviewer_two: Path, output: Path,
+) -> int:
+    """Join separately completed reviewer slots, never overwrite either.
+
+    Reviewers see no other reviewer's annotations when they work from
+    separate *copies* of the initially blank template. The join checks
+    every source fingerprint and refuses cross-slot edits or adjudication.
+    A human resolves disputes on the combined copy afterward.
+    """
+    left = _read_verified_rows(data, reviewer_one)
+    right = _read_verified_rows(data, reviewer_two)
+    one_by_id = {row["review_key"]: row for row in left}
+    two_by_id = {row["review_key"]: row for row in right}
+    combined = []
+    for key in one_by_id:
+        a, b = one_by_id[key], two_by_id[key]
+        slot_1 = [name for name in EDITABLE if name.startswith("reviewer_1")]
+        slot_2 = [name for name in EDITABLE if name.startswith("reviewer_2")]
+        other = [name for name in EDITABLE if name not in slot_1 + slot_2]
+        if any(a[name] for name in slot_2 + other):
+            _reject("reviewer-one worksheet edits fields outside its slot")
+        if any(b[name] for name in slot_1 + other):
+            _reject("reviewer-two worksheet edits fields outside its slot")
+        sources = _cited_sources(
+            next(c for c in data["cases"] if c["case_id"] == a["case_id"]),
+            next(
+                claim
+                for claim in next(
+                    c for c in data["cases"] if c["case_id"] == a["case_id"]
+                )["claims"]
+                if claim["claim_id"] == a["claim_id"]
+            ),
+        )
+        passages = [source["text"] for source in sources]
+        if _validate_reviewer(a, 1, passages) is None:
+            _reject("reviewer-one worksheet contains unfinished labels")
+        if _validate_reviewer(b, 2, passages) is None:
+            _reject("reviewer-two worksheet contains unfinished labels")
+        if a["reviewer_1"].casefold() == b["reviewer_2"].casefold():
+            _reject("same claimed identity on independently reviewed sheets")
+        merged = dict(a)
+        merged.update({field: b[field] for field in slot_2})
+        combined.append(merged)
+    with output.open("x", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=SHEET_FIELDS)
+        writer.writeheader()
+        writer.writerows(combined)
+    return len(combined)
+
+
+def score_sheet(data: dict, sheet: Path) -> dict[str, Any]:
+    expected = _worksheet_rows(data)
+    actual = _read_verified_rows(data, sheet)
+    labels: Counter[str] = Counter()
+    confusion: Counter[str] = Counter()
+    pending = 0
+    disputed = 0
+    unclear = 0
+    judged = 0
+    candidate_risk_keys: list[str] = []
+    for row in actual:
+        key = row["review_key"]
         case_id, claim_id = key.split(":")
         case = next(x for x in data["cases"] if x["case_id"] == case_id)
         claim = next(x for x in case["claims"] if x["claim_id"] == claim_id)
@@ -418,6 +486,12 @@ def _command_line(argv: list[str] | None = None) -> int:
     sub.add_parser("validate", help="Validate exact synthetic dataset contract")
     prepare = sub.add_parser("prepare", help="Create non-overwriting, empty human review CSV")
     prepare.add_argument("--out", type=Path, required=True)
+    combine = sub.add_parser(
+        "combine", help="Merge separate reviewer A/B sheets, no labels inferred"
+    )
+    combine.add_argument("--reviewer-one", type=Path, required=True)
+    combine.add_argument("--reviewer-two", type=Path, required=True)
+    combine.add_argument("--out", type=Path, required=True)
     score = sub.add_parser("score", help="Check self-attested reviews and score C5 guard")
     score.add_argument("--sheet", type=Path, required=True)
     score.add_argument("--report", type=Path)
@@ -440,6 +514,12 @@ def _command_line(argv: list[str] | None = None) -> int:
         if args.command == "prepare":
             count = prepare_sheet(data, args.out)
             print(f"Created {count} unlabelled review rows; NOT CERTIFIED")
+            return 0
+        if args.command == "combine":
+            count = combine_sheets(
+                data, args.reviewer_one, args.reviewer_two, args.out
+            )
+            print(f"Merged {count} self-attested review rows; NOT CERTIFIED")
             return 0
         report = score_sheet(data, args.sheet)
         payload = json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
