@@ -17,6 +17,7 @@ from scripts.chatbot_claim_review import (
     EDITABLE,
     SHEET_FIELDS,
     ReviewValidationError,
+    combine_sheets,
     _command_line,
     _worksheet_rows,
     load_dataset,
@@ -313,3 +314,81 @@ def test_cli_report_never_overwrites_prior_review_or_score(tmp_path: Path) -> No
         "--dataset", str(DATA_PATH), "score", "--sheet", str(sheet),
         "--report", str(report),
     ]) == 2
+
+
+
+def _separate_mock_reviewer_sheets(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    """Entirely fictional reviewer assignments. They are NOT real humans."""
+    left, right, merged = (
+        tmp_path / "reviewer-one.csv",
+        tmp_path / "reviewer-two.csv",
+        tmp_path / "combined.csv",
+    )
+    prepare_sheet(_data(), left)
+    prepare_sheet(_data(), right)
+    for path, forbidden_prefix in [(left, "reviewer_2"), (right, "reviewer_1")]:
+        rows = _rows(path)
+        _complete_fake_reviews(rows)
+        for row in rows:
+            for field in EDITABLE:
+                if field.startswith(forbidden_prefix):
+                    row[field] = ""
+        _write(path, rows)
+    return left, right, merged
+
+
+def test_separate_private_reviewer_sheets_combine_without_label_leak(
+    tmp_path: Path,
+) -> None:
+    left, right, merged = _separate_mock_reviewer_sheets(tmp_path)
+    assert all(not row["reviewer_2"] for row in _rows(left))
+    assert all(not row["reviewer_1"] for row in _rows(right))
+    assert combine_sheets(_data(), left, right, merged) == 12
+    report = score_sheet(_data(), merged)
+    assert report["review_state"] == "self_attested_complete_not_certified"
+    assert report["production_certified"] is False
+    with pytest.raises(FileExistsError):
+        combine_sheets(_data(), left, right, merged)
+
+
+def test_combine_rejects_cross_reviewer_edits(tmp_path: Path) -> None:
+    left, right, merged = _separate_mock_reviewer_sheets(tmp_path)
+    rows = _rows(left)
+    rows[0]["reviewer_2"] = "not-independent"
+    _write(left, rows)
+    with pytest.raises(ReviewValidationError, match="outside its slot"):
+        combine_sheets(_data(), left, right, merged)
+    assert not merged.exists()
+
+
+def test_combine_rejects_missing_and_stale_reviewer_data(tmp_path: Path) -> None:
+    left, right, merged = _separate_mock_reviewer_sheets(tmp_path)
+    rows = _rows(right)
+    rows[0]["reviewer_2_label"] = ""
+    _write(right, rows)
+    with pytest.raises(ReviewValidationError, match="unfinished"):
+        combine_sheets(_data(), left, right, merged)
+    assert not merged.exists()
+
+    rows = _rows(right)
+    rows[0]["reviewer_2_label"] = "contradicted"
+    rows[0]["fingerprint"] = "0" * 64
+    _write(right, rows)
+    with pytest.raises(ReviewValidationError, match="fingerprint"):
+        combine_sheets(_data(), left, right, merged)
+    assert not merged.exists()
+
+
+def test_actual_independence_is_not_cryptographically_established(
+    tmp_path: Path,
+) -> None:
+    left, right, merged = _separate_mock_reviewer_sheets(tmp_path)
+    rows = _rows(right)
+    rows[0]["reviewer_2"] = "fixture-only-reviewer-A"
+    _write(right, rows)
+    with pytest.raises(ReviewValidationError, match="same claimed identity"):
+        combine_sheets(_data(), left, right, merged)
+    # Different names only provide self-attestation. The tool cannot tell
+    # whether two spreadsheets were really completed by two different people.
