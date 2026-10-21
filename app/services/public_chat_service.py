@@ -78,6 +78,7 @@ from app.services.chat_followup_context import (
 from app.services.conversation_ingestion_service import ConversationIngestionService
 from app.services.delivery_lease import chat_turn_lease_connection
 from app.services.integration_job_service import JobDeferredError, PermanentJobError
+from app.services.offline_grounded_chat import offline_grounded_chat
 from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
 from app.services.public_chat_resolution import PublicChatResolutionService
 from app.services.rag_reliability import public_answer_eligible
@@ -1126,6 +1127,86 @@ class PublicChatService:
                 "status": session.status,
                 "handoff": True,
                 "processing_state": "handoff",
+                "_organization_id": organization_id,
+                "_session_id": session.id,
+            }
+
+        # Explicit development-only adapter: exercise the real tenant/session/
+        # conversation path without a paid model or embeddings call. Production
+        # configuration rejects this flag at startup, and each tenant must still
+        # opt in to grounded replies. Unsupported or action-taking requests fail
+        # closed into the existing human handoff lifecycle.
+        if (
+            settings.public_chat_offline_provider_enabled
+            and configuration.grounded_auto_reply_enabled
+        ):
+            previous_question = await cls._previous_grounded_question_for_followup(
+                db,
+                organization_id=organization_id,
+                conversation_id=conversation.id,
+                inbound=inbound,
+                question=text,
+            )
+            offline_answer = await offline_grounded_chat.answer(
+                db,
+                organization_id=organization_id,
+                question=text,
+                previous_customer_question=previous_question,
+            )
+            if offline_answer is None:
+                handoff = True
+                reply_text = await cls.handoff_reply_for(db, organization_id)
+                retrieval_count = 0
+                best_similarity = None
+                sources: list[dict] = []
+            else:
+                handoff = False
+                reply_text = offline_answer.text
+                retrieval_count = 1
+                best_similarity = offline_answer.score
+                sources = [
+                    {
+                        "source_id": offline_answer.source_id,
+                        "title": offline_answer.title,
+                    }
+                ]
+            if handoff and session.status == "ai_active":
+                session = await PublicChatRepository.handoff_to_human(
+                    db,
+                    session=session,
+                    organization_id=organization_id,
+                )
+            await cls._insert_reply_message(
+                db,
+                conversation=conversation,
+                body=reply_text,
+                client_message_id=client_message_id,
+            )
+            db.add(
+                AIRequestLog(
+                    organization_id=organization_id,
+                    request_id=uuid4().hex,
+                    feature="public_chat_offline",
+                    model="offline-lexical-v1",
+                    status="success",
+                    question=text,
+                    answer=reply_text,
+                    grounded=not handoff,
+                    llm_called=False,
+                    retrieval_count=retrieval_count,
+                    best_similarity=best_similarity,
+                    sources=sources,
+                    latency_ms=0.0,
+                )
+            )
+            await TenantAIAllowanceService.settle(db, key=allowance_key)
+            timer.mark("offline_provider")
+            return {
+                "message_id": inbound.id,
+                "reply": reply_text,
+                "status": session.status,
+                "handoff": handoff,
+                "processing_state": "handoff" if handoff else "completed",
                 "_organization_id": organization_id,
                 "_session_id": session.id,
             }

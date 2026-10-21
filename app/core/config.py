@@ -103,6 +103,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "AUTH_DEV_MODE cannot be enabled when ENVIRONMENT=production"
             )
+        if self.environment == "production" and self.public_chat_offline_provider_enabled:
+            raise ValueError(
+                "PUBLIC_CHAT_OFFLINE_PROVIDER_ENABLED cannot be enabled in production"
+            )
         if self.environment == "production" and self.auth_mode == "hs256":
             raise ValueError(
                 "AUTH_MODE=hs256 is not allowed in production; use AUTH_MODE=jwks"
@@ -358,6 +362,10 @@ class Settings(BaseSettings):
     # Turning this off is the kill switch: every request is served
     # synchronously again, and turns already queued still complete.
     public_chat_async_enabled: bool = False
+    # Development-only, zero-cost provider used by the real public-chat
+    # persistence path. It retrieves tenant-owned chunks lexically and copies
+    # only authored knowledge into replies; no model or embedding API is called.
+    public_chat_offline_provider_enabled: bool = False
     # Concurrent AI turns run by one API process. A running turn holds one
     # pooled connection across the model call (its lease connection, which also
     # carries the analysis lock); its job session is released around model
