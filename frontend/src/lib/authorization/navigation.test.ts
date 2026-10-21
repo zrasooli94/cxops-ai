@@ -304,6 +304,7 @@ describe("control-center route requirements", () => {
     ["/observability", CAPABILITIES.OBSERVABILITY_READ],
     ["/operations", CAPABILITIES.TICKET_READ],
     ["/evaluations", CAPABILITIES.EVALUATION_READ],
+    ["/evaluations/claim-review", CAPABILITIES.EVALUATION_MANAGE],
     ["/transformation", CAPABILITIES.TICKET_READ],
     ["/simulations", CAPABILITIES.TRANSFORMATION_SIMULATION_READ],
     ["/automotive-pilot", CAPABILITIES.TICKET_READ],
