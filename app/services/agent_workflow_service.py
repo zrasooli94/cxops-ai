@@ -243,6 +243,9 @@ class AgentWorkflowService:
             api_key=SecretStr(settings.openai_api_key),
             temperature=0,
             max_tokens=settings.chat_max_output_tokens,
+            reasoning_effort=(
+                "none" if settings.chat_model.startswith("gpt-6") else None
+            ),
             timeout=settings.openai_request_timeout_seconds,
             max_retries=settings.openai_max_retries,
         )

@@ -145,3 +145,18 @@ class OfflineFaqsUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[OfflineFaqItem] = Field(min_length=1, max_length=40)
+
+
+class OfflineDocumentSummary(BaseModel):
+    document_id: int
+    title: str
+    filename: str
+    chunks_created: int
+
+
+class OfflineDocumentsResponse(BaseModel):
+    items: list[OfflineDocumentSummary]
+
+
+class OfflineDocumentUploadResponse(OfflineDocumentSummary):
+    duplicate: bool

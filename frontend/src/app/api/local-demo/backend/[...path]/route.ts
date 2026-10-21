@@ -54,6 +54,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
       cache: "no-store",
     });
+    if (response.status === 204) {
+      return new NextResponse(null, { status: 204 });
+    }
     return new NextResponse(await response.arrayBuffer(), {
       status: response.status,
       headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
@@ -67,3 +70,4 @@ export const GET = proxy;
 export const POST = proxy;
 export const PUT = proxy;
 export const PATCH = proxy;
+export const DELETE = proxy;

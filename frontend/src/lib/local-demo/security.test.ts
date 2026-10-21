@@ -20,6 +20,9 @@ describe("local demo bridge boundary", () => {
   });
   it("allows only the owner-studio route set", () => {
     assert.equal(isAllowedLocalDemoPath("staff/tenant-config/offline-faqs"), true);
+    assert.equal(isAllowedLocalDemoPath("staff/tenant-config/offline-documents"), true);
+    assert.equal(isAllowedLocalDemoPath("staff/tenant-config/offline-documents/42"), true);
+    assert.equal(isAllowedLocalDemoPath("staff/tenant-config/offline-documents/not-an-id"), false);
     assert.equal(isAllowedLocalDemoPath("staff/public-chat/sessions/42/assign"), true);
     assert.equal(isAllowedLocalDemoPath("operator/platform"), false);
     assert.equal(isAllowedLocalDemoPath("staff/public-chat/sessions/42/delete"), false);

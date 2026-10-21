@@ -78,7 +78,10 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
 
-    chat_model: str = "gpt-4o-mini"
+    # Supported economical baseline verified against the official model catalog.
+    # Changing this value alone does not enable provider calls: the existing
+    # allowance gates and OPENAI_API_KEY are still required.
+    chat_model: str = "gpt-6-luna"
     # Provider-side output ceiling. This is a per-request safety bound, not a
     # substitute for tenant budgets or an evaluation-wide spend ceiling.
     chat_max_output_tokens: int = 500

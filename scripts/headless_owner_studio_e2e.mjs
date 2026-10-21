@@ -51,12 +51,14 @@ async function main() {
     throw new Error(`Timed out: ${expression}`);
   }
   const clickText = (text) => evaluate(`(()=>{const e=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(text)});if(!e)return false;e.click();return true})()`);
+  const clickButtonWithinText = (containerText, buttonText) => evaluate(`(()=>{const c=[...document.querySelectorAll('div')].find(x=>x.textContent.includes(${JSON.stringify(containerText)})&&[...x.querySelectorAll('button')].some(b=>b.textContent.trim()===${JSON.stringify(buttonText)}));const b=c&&[...c.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(buttonText)});if(!b)return false;b.click();return true})()`);
   const setValue = (selector, value) => evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return false;const s=Object.getOwnPropertyDescriptor(e.constructor.prototype,'value').set;s.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
 
   await waitFor(`location.origin==='http://127.0.0.1:3000'`);
   await evaluate(`sessionStorage.removeItem('cxops.chat.owner-studio.preview.v1')`);
   await command("Page.reload", {}, sessionId);
   await waitFor(`document.querySelector('input')?.value==='Aster Cycle Studio'`);
+  await waitFor(`document.body.innerText.includes('Installation snippet preview') && document.body.innerText.includes('YOUR_CXOPS_HOST')`);
   const originalName = await evaluate(`document.querySelector('input').value`);
   const changedName = `${originalName} UI verified`;
   await setValue("input", changedName); await clickText("Save and preview");
@@ -71,22 +73,26 @@ async function main() {
   await clickText("knowledge"); await waitFor(`document.querySelectorAll('textarea').length>0`);
   const originalFaq = (await evaluate(`document.querySelector('textarea').value`)).replaceAll(" UI-SAVE-CHECK", "");
   const changedFaq = `${originalFaq} UI-SAVE-CHECK`;
-  await setValue("textarea", changedFaq); await clickText("Save knowledge");
+  await setValue("textarea", changedFaq); await clickText("Save FAQs");
   await waitFor(`document.body.innerText.includes('FAQ knowledge saved')`);
   await command("Page.reload", {}, sessionId); await waitFor(`!!document.querySelector('input')`); await clickText("knowledge");
   await waitFor(`document.querySelector('textarea')?.value?.includes('UI-SAVE-CHECK')`);
-  await setValue("textarea", originalFaq); await clickText("Save knowledge");
+  await setValue("textarea", originalFaq); await clickText("Save FAQs");
+  await waitFor(`!!document.querySelector('input[aria-label="Synthetic knowledge document"]')`);
+  await evaluate(`(()=>{const input=document.querySelector('input[aria-label="Synthetic knowledge document"]');const transfer=new DataTransfer();transfer.items.add(new File(['Synthetic curbside pickup is available at 7:15 PM.'],'ui-synthetic-policy.txt',{type:'text/plain'}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));return input.files.length===1})()`);
+  await clickText("Upload document");
+  await waitFor(`document.body.innerText.includes('ui-synthetic-policy.txt') && document.body.innerText.includes('Document uploaded as')`);
 
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio" }, sessionId);
   await waitFor(`location.pathname==='/chat/owner-studio' && document.body.innerText.includes('Assistant setup')`);
   await waitFor(`!!document.querySelector('[aria-label="Open support chat"]')`); await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
-  await waitFor(`!!document.querySelector('#cxops-chat-input')`); await setValue("#cxops-chat-input", "What are your opening hours?");
+  await waitFor(`!!document.querySelector('#cxops-chat-input')`); await setValue("#cxops-chat-input", "When is synthetic curbside pickup available?");
   await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
   await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
-  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('Monday')`, 15000);
+  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('7:15 PM')`, 15000);
   await command("Page.reload", {}, sessionId); await waitFor(`document.body.innerText.includes('Assistant setup')`); await waitFor(`!!document.querySelector('[aria-label="Open support chat"]')`);
   await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
-  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('Monday')`, 15000);
+  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('7:15 PM')`, 15000);
 
   await setValue("#cxops-chat-input", "Please book a snowboard repair");
   await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
@@ -121,7 +127,16 @@ async function main() {
   writeFileSync("artifacts/owner-studio-inbox.png", Buffer.from(inboxShot.data, "base64"));
   await clickText("Resolve"); await waitFor(`!document.body.innerText.includes('Release')`);
 
-  console.log(JSON.stringify({ settings_save_reload: true, faq_save_reload: true, visitor_send_poll_restore: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true }));
+  await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=knowledge" }, sessionId);
+  await waitFor(`document.body.innerText.includes('ui-synthetic-policy.txt')`);
+  await evaluate(`(()=>{const e=[...document.querySelectorAll('p')].find(x=>x.textContent.includes('ui-synthetic-policy.txt'));e?.scrollIntoView({block:'center'});return !!e})()`);
+  await sleep(250);
+  const knowledgeShot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+  writeFileSync("artifacts/owner-studio-knowledge.png", Buffer.from(knowledgeShot.data, "base64"));
+  if (!await clickButtonWithinText("ui-synthetic-policy.txt", "Remove")) throw new Error("document remove button not found");
+  await waitFor(`!document.body.innerText.includes('ui-synthetic-policy.txt')`);
+
+  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, visitor_send_poll_restore: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true }));
   chrome.kill();
 }
 

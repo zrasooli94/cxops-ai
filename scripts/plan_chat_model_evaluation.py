@@ -30,13 +30,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--turns", type=int, default=50)
     parser.add_argument("--cost-ceiling-usd", type=float, default=0.25)
-    parser.add_argument("--input-rate", type=float, default=0.15)
-    parser.add_argument("--output-rate", type=float, default=0.60)
+    parser.add_argument("--input-rate", type=float, default=0.10)
+    parser.add_argument("--output-rate", type=float, default=0.50)
+    parser.add_argument("--max-retries", type=int, default=1)
     args = parser.parse_args()
     budget = ModelEvalBudget(
         max_turns=50,
         max_input_tokens_per_turn=3000,
         max_output_tokens_per_turn=500,
+        max_attempts_per_turn=args.max_retries + 1,
         input_cost_per_million=args.input_rate,
         output_cost_per_million=args.output_rate,
         cost_ceiling_usd=args.cost_ceiling_usd,
@@ -47,12 +49,16 @@ def main() -> None:
         raise SystemExit("case exceeds the conservative input-token bound")
     print(json.dumps({
         "mode": "plan_only_no_provider_calls",
-        "model": os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+        "model": os.getenv("CHAT_MODEL", "gpt-6-luna"),
         "credential_configured": bool(os.getenv("OPENAI_API_KEY")),
         "turns": len(expanded),
         "languages": ["en", "fa"],
         "max_input_tokens_per_turn": budget.max_input_tokens_per_turn,
         "max_output_tokens_per_turn": budget.max_output_tokens_per_turn,
+        "max_retries": args.max_retries,
+        "max_billable_attempts_per_turn": budget.max_attempts_per_turn,
+        "max_billable_attempts_total": len(expanded) * budget.max_attempts_per_turn,
+        "retry_accounting": "worst case treats every initial request and retry as fully billed",
         "cost_ceiling_usd": budget.cost_ceiling_usd,
         "worst_case_cost_usd_at_supplied_rates": round(worst_case, 6),
         "pricing_requires_owner_verified_current_rates": True,

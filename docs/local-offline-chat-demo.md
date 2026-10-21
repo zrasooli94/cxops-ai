@@ -108,11 +108,26 @@ at explicitly supplied rates exceeds the requested ceiling. For example:
 ```bash
 python -m scripts.plan_chat_model_evaluation \
   --turns 50 --cost-ceiling-usd 0.25 \
-  --input-rate 0.15 --output-rate 0.60
+  --input-rate 0.10 --output-rate 0.50 --max-retries 1
 ```
 
-Those example rates are repository inputs, not a claim about current provider
-pricing. Before any real run, the owner must separately approve a provider,
-model, credential method, current verified rates, and usage ceiling. The normal
-OpenAI adapters now apply `CHAT_MAX_OUTPUT_TOKENS` (default 500) in addition to
-the existing request timeout and retry limits.
+The source-only baseline is `gpt-6-luna`, which the official model page lists
+as a supported Chat Completions model for focused, high-volume work:
+https://developers.openai.com/api/docs/models/gpt-6-luna. Standard token prices
+were verified on 2026-10-21 as $0.10 input and $0.50 output per million tokens:
+https://developers.openai.com/api/docs/pricing. The 50-turn plan caps input at
+3,000 tokens and output at 500 tokens per turn. Its $0.055 worst-case treats
+the configured one retry as a second fully billed attempt for every turn (100
+total attempts), rather than assuming failed attempts are free. Before any real
+run, the owner must still approve the provider, model, credential method, and
+usage ceiling. The normal OpenAI adapters apply `CHAT_MAX_OUTPUT_TOKENS`
+(default 500), a 30-second timeout, one retry, and `reasoning_effort=none` for
+the GPT-6 Chat Completions compatibility path.
+
+The owner studio also accepts synthetic `.txt`, `.md`, `.markdown`, and
+text-based `.pdf` files up to 512 KiB, with at most 20 local documents. Parsing
+and lexical chunking happen locally; this path does not fetch URLs or create
+embeddings. Uploaded documents remain tenant-scoped in the disposable database
+and can be removed from the same screen. The setup screen shows a copyable
+installation template containing a placeholder host; it does not publish or
+activate a hosted widget.

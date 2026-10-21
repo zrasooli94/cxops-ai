@@ -57,6 +57,8 @@ OTHER_ORIGIN = "https://other.example.test"
 ORG_PREFIX = "Phase1P3-api-test-"
 
 _PURGE_TABLES = [
+    "knowledge_chunks",
+    "knowledge_documents",
     "public_chat_sessions",
     "public_chat_configurations",
     "business_actions",
@@ -93,6 +95,7 @@ def _configure_auth(monkeypatch):
         monkeypatch.setenv(key, value)
     reset_settings_cache()
     yield
+    reset_settings_cache()
 
 
 @pytest.fixture
@@ -193,6 +196,11 @@ def _headers(subject: str, org: Organization) -> dict:
 
 async def _resolve(db, key: str) -> PublicChatConfiguration:
     return await public_chat_service.resolve_config(db, key)
+
+
+def _enable_local_offline_demo(monkeypatch) -> None:
+    monkeypatch.setenv("PUBLIC_CHAT_OFFLINE_PROVIDER_ENABLED", "true")
+    reset_settings_cache()
 
 
 # ----------------------------------------------------------------------
@@ -759,3 +767,94 @@ async def test_version_identifies_the_build(client):
     assert body["version"]
     assert body["environment"]
     assert "database" not in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_local_document_upload_list_duplicate_and_delete(
+    db, client, monkeypatch
+):
+    _enable_local_offline_demo(monkeypatch)
+    org, subject, _key = await _make_tenant(db)
+    headers = _headers(subject, org)
+    content = b"Repairs booked before noon can be collected after 4 PM."
+
+    created = await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("collection-policy.md", content, "text/markdown")},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["duplicate"] is False
+    assert body["chunks_created"] == 1
+
+    duplicate = await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("collection-policy.md", content, "text/markdown")},
+        headers=headers,
+    )
+    assert duplicate.status_code == 201, duplicate.text
+    assert duplicate.json()["duplicate"] is True
+    assert duplicate.json()["document_id"] == body["document_id"]
+
+    listed = await client.get(
+        "/staff/tenant-config/offline-documents", headers=headers
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"] == [
+        {
+            "document_id": body["document_id"],
+            "title": "collection-policy",
+            "filename": "collection-policy.md",
+            "chunks_created": 1,
+        }
+    ]
+
+    removed = await client.delete(
+        f"/staff/tenant-config/offline-documents/{body['document_id']}",
+        headers=headers,
+    )
+    assert removed.status_code == 204, removed.text
+    listed_again = await client.get(
+        "/staff/tenant-config/offline-documents", headers=headers
+    )
+    assert listed_again.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_local_document_routes_are_hidden_without_offline_demo_gate(db, client):
+    org, subject, _key = await _make_tenant(db)
+    response = await client.get(
+        "/staff/tenant-config/offline-documents", headers=_headers(subject, org)
+    )
+    assert response.status_code == 404, response.text
+
+
+@pytest.mark.asyncio
+async def test_local_document_upload_is_bounded_typed_and_tenant_scoped(
+    db, client, monkeypatch
+):
+    _enable_local_offline_demo(monkeypatch)
+    mine, subject, _key = await _make_tenant(db)
+    theirs, _other_subject, _other_key = await _make_tenant(db)
+
+    wrong_tenant = await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("policy.txt", b"synthetic", "text/plain")},
+        headers=_headers(subject, theirs),
+    )
+    assert wrong_tenant.status_code == 403, wrong_tenant.text
+
+    unsupported = await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("policy.html", b"<p>synthetic</p>", "text/html")},
+        headers=_headers(subject, mine),
+    )
+    assert unsupported.status_code == 415, unsupported.text
+
+    too_large = await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("large.txt", b"x" * (512 * 1024 + 1), "text/plain")},
+        headers=_headers(subject, mine),
+    )
+    assert too_large.status_code == 413, too_large.text

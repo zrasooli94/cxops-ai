@@ -14,8 +14,8 @@ import hashlib
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentPrincipal, CurrentTenant, RequireCapability
@@ -29,6 +29,9 @@ from app.schemas.tenant_config import (
     BusinessIntegrationState,
     BusinessIntegrationStateResponse,
     BusinessIntegrationUpdateRequest,
+    OfflineDocumentsResponse,
+    OfflineDocumentSummary,
+    OfflineDocumentUploadResponse,
     OfflineFaqItem,
     OfflineFaqsResponse,
     OfflineFaqsUpdateRequest,
@@ -36,6 +39,11 @@ from app.schemas.tenant_config import (
     PublicChatUpdateRequest,
     WidgetKeyRotationResponse,
 )
+from app.services.document_parser_service import (
+    DocumentParserService,
+    UnsupportedDocumentTypeError,
+)
+from app.services.knowledge_ingestion_service import KnowledgeIngestionService
 from app.services.tenant_config_service import (
     CLEARABLE_PUBLIC_CHAT_FIELDS,
     AmbiguousWidgetError,
@@ -59,6 +67,10 @@ ManageAuthz = Annotated[
     AuthorizationContext,
     Depends(RequireCapability(Capability.INTEGRATION_MANAGE)),
 ]
+
+MAX_LOCAL_DOCUMENT_BYTES = 512 * 1024
+MAX_LOCAL_DOCUMENTS = 20
+LOCAL_DOCUMENT_SOURCE = "local_synthetic_document"
 
 
 def _require_local_offline_demo() -> None:
@@ -240,6 +252,186 @@ async def replace_offline_faqs(
         )
     await db.commit()
     return OfflineFaqsResponse(items=payload.items)
+
+
+@router.get("/offline-documents", response_model=OfflineDocumentsResponse)
+async def list_offline_documents(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _authz: ManageAuthz,
+):
+    """List locally uploaded synthetic documents without exposing contents."""
+    _require_local_offline_demo()
+    rows = (
+        await db.execute(
+            select(KnowledgeDocument)
+            .where(
+                KnowledgeDocument.organization_id == tenant.organization_id,
+                KnowledgeDocument.source == LOCAL_DOCUMENT_SOURCE,
+            )
+            .order_by(KnowledgeDocument.id.desc())
+            .limit(MAX_LOCAL_DOCUMENTS)
+        )
+    ).scalars().all()
+    items = []
+    for document in rows:
+        chunk_count = int(
+            await db.scalar(
+                select(func.count(KnowledgeChunk.id)).where(
+                    KnowledgeChunk.organization_id == tenant.organization_id,
+                    KnowledgeChunk.document_id == document.id,
+                )
+            )
+            or 0
+        )
+        items.append(
+            OfflineDocumentSummary(
+                document_id=document.id,
+                title=document.title,
+                filename=(document.metadata_json or {}).get("filename", "document"),
+                chunks_created=chunk_count,
+            )
+        )
+    return OfflineDocumentsResponse(items=items)
+
+
+@router.post(
+    "/offline-documents",
+    response_model=OfflineDocumentUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_offline_document(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _principal: CurrentPrincipal,
+    _authz: ManageAuthz,
+    file: Annotated[UploadFile, File()],
+    title: Annotated[str | None, Form()] = None,
+):
+    """Parse a bounded local file into lexical demo chunks without embeddings."""
+    _require_local_offline_demo()
+    filename = file.filename or "document"
+    content = await file.read(MAX_LOCAL_DOCUMENT_BYTES + 1)
+    if len(content) > MAX_LOCAL_DOCUMENT_BYTES:
+        raise HTTPException(status_code=413, detail="Document exceeds the 512 KiB local limit")
+    try:
+        text = DocumentParserService.parse(filename=filename, content=content)
+    except UnsupportedDocumentTypeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Document could not be parsed") from exc
+    cleaned = KnowledgeIngestionService.clean_text(text)
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="No readable text found in document")
+    checksum = KnowledgeIngestionService.checksum(cleaned)
+    existing = (
+        await db.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.organization_id == tenant.organization_id,
+                KnowledgeDocument.source == LOCAL_DOCUMENT_SOURCE,
+                KnowledgeDocument.checksum == checksum,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        chunk_count = len(
+            (
+                await db.execute(
+                    select(KnowledgeChunk.id).where(
+                        KnowledgeChunk.organization_id == tenant.organization_id,
+                        KnowledgeChunk.document_id == existing.id,
+                    )
+                )
+            ).scalars().all()
+        )
+        return OfflineDocumentUploadResponse(
+            document_id=existing.id,
+            title=existing.title,
+            filename=(existing.metadata_json or {}).get("filename", filename),
+            chunks_created=chunk_count,
+            duplicate=True,
+        )
+    document_count = int(
+        await db.scalar(
+            select(func.count(KnowledgeDocument.id)).where(
+                KnowledgeDocument.organization_id == tenant.organization_id,
+                KnowledgeDocument.source == LOCAL_DOCUMENT_SOURCE,
+            )
+        )
+        or 0
+    )
+    if document_count >= MAX_LOCAL_DOCUMENTS:
+        raise HTTPException(status_code=409, detail="Local document limit reached")
+    fallback_title = filename.rsplit(".", 1)[0].strip() or "document"
+    document_title = (title or fallback_title).strip()[:160] or fallback_title[:160]
+    document = KnowledgeDocument(
+        organization_id=tenant.organization_id,
+        title=document_title,
+        source=LOCAL_DOCUMENT_SOURCE,
+        source_uri=filename,
+        checksum=checksum,
+        metadata_json={"filename": filename, "demo": True, "synthetic": True},
+    )
+    db.add(document)
+    await db.flush()
+    chunks = KnowledgeIngestionService.chunk_text(cleaned)
+    db.add_all(
+        KnowledgeChunk(
+            organization_id=tenant.organization_id,
+            document_id=document.id,
+            chunk_index=index,
+            content=chunk_content,
+            token_count=token_count,
+            metadata_json={
+                "filename": filename,
+                "title": document.title,
+                "demo": True,
+                "synthetic": True,
+                "chunk_index": index,
+            },
+            embedding=[0.0] * 1536,
+        )
+        for index, (chunk_content, token_count) in enumerate(chunks)
+    )
+    await db.commit()
+    return OfflineDocumentUploadResponse(
+        document_id=document.id,
+        title=document.title,
+        filename=filename,
+        chunks_created=len(chunks),
+        duplicate=False,
+    )
+
+
+@router.delete("/offline-documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_offline_document(
+    document_id: int,
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _principal: CurrentPrincipal,
+    _authz: ManageAuthz,
+):
+    """Delete only a local synthetic document owned by the resolved tenant."""
+    _require_local_offline_demo()
+    document = (
+        await db.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.id == document_id,
+                KnowledgeDocument.organization_id == tenant.organization_id,
+                KnowledgeDocument.source == LOCAL_DOCUMENT_SOURCE,
+            )
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await db.execute(
+        delete(KnowledgeChunk).where(
+            KnowledgeChunk.organization_id == tenant.organization_id,
+            KnowledgeChunk.document_id == document.id,
+        )
+    )
+    await db.delete(document)
+    await db.commit()
 
 
 @router.post(

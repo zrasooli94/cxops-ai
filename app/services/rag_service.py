@@ -47,6 +47,9 @@ class RAGService:
             model=settings.chat_model,
             api_key=SecretStr(settings.openai_api_key),
             max_tokens=settings.chat_max_output_tokens,
+            reasoning_effort=(
+                "none" if settings.chat_model.startswith("gpt-6") else None
+            ),
             timeout=settings.openai_request_timeout_seconds,
             max_retries=settings.openai_max_retries,
         )
