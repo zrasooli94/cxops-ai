@@ -1,0 +1,145 @@
+# C11 synthetically scoped authenticated reviewer APIs.
+# Test only against exact disposable local PostgreSQL; never enable outside CI.
+name: Chatbot C11 — Authenticated Synthetic Review API
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c10-private-review-audit
+    paths:
+      - '.github/workflows/chatbot-c11-review-api-offline.yml'
+      - 'app/api/routes/claim_review.py'
+      - 'app/api/router.py'
+      - 'app/core/config.py'
+      - 'app/schemas/claim_review.py'
+      - 'app/services/private_claim_review_service.py'
+      - 'tests/test_chatbot_c11_api.py'
+      - 'docs/product/chatbot-c11-review-api.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-chatbot-c11-review-api-offline
+  cancel-in-progress: true
+
+jobs:
+  synthetic-private-api:
+    name: Real JWT/RBAC + HTTP + Audit PG16 / No Providers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      CXOPS_CHATBOT_C2_OFFLINE: 'true'
+      CLAIM_REVIEW_SYNTHETIC_API_ENABLED: 'true'
+      ENVIRONMENT: development
+      DEBUG: 'false'
+      AUTH_MODE: hs256
+      AUTH_DEV_MODE: 'false'
+      DATABASE_URL: 'postgresql+asyncpg://c2_probe:c2_probe@127.0.0.1:5432/cxops_chatbot_c2_disposable_test'
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      ZENDESK_CLIENT_SECRET: ''
+      ZENDESK_CLIENT_ID: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+      NEXT_TELEMETRY_DISABLED: '1'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cxops_chatbot_c2_disposable_test
+          POSTGRES_USER: c2_probe
+          POSTGRES_PASSWORD: c2_probe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U c2_probe -d cxops_chatbot_c2_disposable_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout PR merge without repository credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refuse remote database, real providers, production flags
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          test "$CLAIM_REVIEW_SYNTHETIC_API_ENABLED" = true
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_WEBHOOK_SECRET"
+          test -z "$ZENDESK_CLIENT_SECRET"
+          test -z "$ZENDESK_CLIENT_ID"
+          test -z "$HANDOFF_NOTIFICATION_EMAIL_URL"
+          test -z "$HANDOFF_NOTIFICATION_TELEGRAM_URL"
+          test "$HANDOFF_NOTIFICATIONS_ENABLED" = false
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$PUBLIC_CHAT_ASYNC_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+
+      - name: Install existing locked dependencies and pinned lint
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-lock.txt
+          python -m pip install --disable-pip-version-check ruff==0.16.10
+
+      - name: Upgrade ONLY disposable local Postgres to C10 head
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          test "$(alembic heads | wc -l | tr -d ' ')" = "1"
+          alembic upgrade head
+          alembic current
+
+      - name: Real JWT staff API, tenant isolation, C10 append-only audit and C6 regressions
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          python -m pytest -q --tb=short \
+            tests/test_chatbot_c11_api.py \
+            tests/test_chatbot_c10_private_audit.py \
+            tests/test_chatbot_claim_review.py \
+            tests/test_chatbot_c2_guard.py \
+            -o faulthandler_timeout=120
+
+      - name: Pinned Ruff on C11 HTTP surface, config and tests
+        run: |
+          python -m ruff check \
+            app/api/routes/claim_review.py \
+            app/api/router.py \
+            app/core/config.py \
+            app/schemas/claim_review.py \
+            app/services/private_claim_review_service.py \
+            tests/test_chatbot_c11_api.py
+
+      - name: Verify production flag-off and schema still development only
+        run: |
+          python scripts/chatbot_c2_disposable_guard.py
+          python - <<'PY'
+          import os
+          from app.core.config import get_settings, reset_settings_cache
+
+          assert get_settings().environment == "development"
+          assert get_settings().claim_review_synthetic_api_enabled is True
+
+          os.environ["CLAIM_REVIEW_SYNTHETIC_API_ENABLED"] = "false"
+          reset_settings_cache()
+          assert get_settings().claim_review_synthetic_api_enabled is False
+          os.environ["CLAIM_REVIEW_SYNTHETIC_API_ENABLED"] = "true"
+          reset_settings_cache()
+          print("C11 release gate is explicitly OFF by default.")
+          PY
