@@ -136,7 +136,28 @@ async function main() {
   if (!await clickButtonWithinText("ui-synthetic-policy.txt", "Remove")) throw new Error("document remove button not found");
   await waitFor(`!document.body.innerText.includes('ui-synthetic-policy.txt')`);
 
-  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, visitor_send_poll_restore: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true }));
+  // Verify the owner workflow at a narrow mobile viewport with Persian direction.
+  await evaluate(`localStorage.setItem('cxops.owner.language','fa')`);
+  await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }, sessionId);
+  await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio" }, sessionId);
+  await waitFor(`document.querySelector('[dir="rtl"]') && document.body.innerText.includes('Assistant setup')`);
+  const setupHasNoHorizontalOverflow = await evaluate(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`);
+  if (!setupHasNoHorizontalOverflow) {
+    const overflow = await evaluate(`JSON.stringify({viewport:{innerWidth,clientWidth:document.documentElement.clientWidth,scrollWidth:document.documentElement.scrollWidth},elements:[...document.querySelectorAll('*')].filter((element)=>element.getBoundingClientRect().right>document.documentElement.clientWidth+1||element.getBoundingClientRect().left<-1).slice(0,12).map((element)=>({tag:element.tagName,class:String(element.className),text:element.textContent?.slice(0,60),rect:element.getBoundingClientRect().toJSON()}))})`);
+    throw new Error(`mobile RTL setup has horizontal overflow: ${overflow}`);
+  }
+  await clickText("inbox");
+  await waitFor(`!!document.querySelector('[aria-label="Conversation analytics"]')`);
+  const inboxHasNoHorizontalOverflow = await evaluate(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`);
+  if (!inboxHasNoHorizontalOverflow) {
+    const overflow = await evaluate(`JSON.stringify({viewport:{innerWidth,clientWidth:document.documentElement.clientWidth,scrollWidth:document.documentElement.scrollWidth},elements:[...document.querySelectorAll('*')].filter((element)=>element.scrollWidth>element.clientWidth+1||element.getBoundingClientRect().right>innerWidth+1||element.getBoundingClientRect().left<-1).slice(0,12).map((element)=>({tag:element.tagName,class:String(element.className),rect:element.getBoundingClientRect().toJSON(),clientWidth:element.clientWidth,scrollWidth:element.scrollWidth,overflowX:getComputedStyle(element).overflowX}))})`);
+    throw new Error(`mobile inbox has horizontal overflow: ${overflow}`);
+  }
+  const mobileShot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
+  writeFileSync("artifacts/owner-studio-mobile-rtl.png", Buffer.from(mobileShot.data, "base64"));
+  await evaluate(`localStorage.setItem('cxops.owner.language','auto')`);
+
+  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, visitor_send_poll_restore: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
   chrome.kill();
 }
 

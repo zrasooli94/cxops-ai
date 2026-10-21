@@ -94,8 +94,37 @@ node scripts/headless_owner_studio_e2e.mjs
 It uses a separate headless Chrome process, creates a fresh synthetic visitor
 session, verifies save/reload for settings and FAQs, visitor polling and reload
 continuity, staff claim/reply/release/resolve, and that a visitor message after
-takeover does not receive an automated reply. It writes the setup and inbox
+takeover does not receive an automated reply. It also verifies the owner studio
+at a 390 px mobile viewport with Persian direction, rejects horizontal overflow,
+and checks the tenant-derived conversation summary. It writes desktop and mobile
 screenshots under `artifacts/`.
+
+The inbox summary shows persisted conversation count, conversations awaiting a
+reply, active handoffs, and resolved conversations from the same tenant-scoped
+responses already used by the inbox. It is a current local snapshot, not a
+historical reporting pipeline.
+
+## Reproducible start and stop
+
+Use two terminals after bootstrapping the disposable database. Set one random,
+development-only `AUTH_JWT_SECRET` in both terminals; never reuse a production
+secret. Start the API with the backend command above (plus that secret), then
+start the frontend with `BACKEND_API_URL`, the same secret, and the seeded local
+organization id. The owner studio is at
+`http://127.0.0.1:3000/chat/owner-studio`; the visitor-only demo is at
+`http://127.0.0.1:3000/chat/backend-demo`.
+
+Stop the two foreground processes with `Ctrl-C` in their terminals. Stop the
+disposable PostgreSQL instance using the same local database tool or container
+command used to start it. Do not point these commands at a production or remote
+database. To reset all synthetic state, recreate only the disposable
+`cxops_local` database and rerun the bootstrap command.
+
+Current local limitations: the language choice is browser-local; document
+retrieval is lexical and text-only; scanned PDFs need OCR outside this demo;
+analytics are point-in-time counts; the install host is a placeholder; and the
+responder is deterministic rather than a genuine model. Paid-model evaluation
+and credentials remain disabled pending explicit approval.
 
 ## Paid-model evaluation readiness
 
