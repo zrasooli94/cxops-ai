@@ -1,5 +1,5 @@
 /* CXOps C7 | Offline browser interface. Works directly under file://.
- * No fetch/XMLHttpRequest/WebSocket, storage, external models or provider keys.
+ * Zero remote requests, persistent browser storage, external models or keys.
  * The Python C6 scorer alone decides whether a CSV can be combined/scored.
  */
 (function () {
