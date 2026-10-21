@@ -109,7 +109,10 @@ jobs:
 
       - name: Reviewer integrity and previous C5 evidence regressions
         run: |
-          python -m pytest -q --tb=short \
+          # These are pure offline tests. Suppress the repo-wide conftest
+          # which otherwise initializes the production-style DB engine at
+          # import time even though no test here uses PostgreSQL.
+          python -m pytest --noconftest -q --tb=short \
             tests/test_chatbot_claim_review.py \
             tests/test_chatbot_c5_evidence.py \
             tests/test_rag_reliability.py
