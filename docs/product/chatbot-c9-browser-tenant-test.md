@@ -55,7 +55,7 @@ or a human/assistive-technology usability trial.
 | Missing session cookie | Actual protected Next page redirects to /login before rendering reviewer content |
 | Staff has evaluation.read only | Route is denied; file import and claim editor are absent |
 | Staff has evaluation.manage only | Parent evaluation.read guard + server double-check deny |
-| First server authorization passes, second check is downgraded | Reviewer page fails closed despite a stale parent grant |
+| Authorization grant revoked after the first successful request | New full SSR request denies staff review and no previous claim is visible; a second `getMyAuthorizationReadOnly` within the *same render* may reuse the first GET response, so it is **not** certified as an independent mid-request revocation check |
 | Manager of Org A selects Org B where read-only | Route denied; Org A's privilege cannot unlock B |
 | Tenant not in logged-in subject's memberships | Redirect to existing tenant-selection handler, no reviewer |
 | Valid manager in Org A | Actual Next page visible; import C6 CSV; label a fictional claim, quote cited source, see progress, download private **draft** CSV |
