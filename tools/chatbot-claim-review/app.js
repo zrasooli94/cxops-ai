@@ -222,7 +222,9 @@
     if (!ready()) return;
     try {
       const status = core.progress(rows, slot, identity);
-      const body = core.exportReviewerCsv(rows, slot, identity);
+      const body = core.exportReviewerCsv(rows, slot, identity, {
+        allowIncomplete: !status.complete,
+      });
       const blob = new Blob(["\ufeff", body], {
         type: "text/csv;charset=utf-8",
       });
