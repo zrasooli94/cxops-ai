@@ -98,7 +98,7 @@ describe("C12 source boundaries and dev flag", () => {
   it("client never passes user-chosen org/actor headers and checks stale scope", () => {
     assert.match(preview, /auth\.organizationId === organizationId/);
     assert.match(preview, /scope\.current !== orgAtStart/);
-    assert.match(preview, /entry\.fingerprint/);
+    assert.match(preview, /entry\?\.fingerprint/);
     assert.match(preview, /reviewCore\.validateWorksheet\(/);
     assert.match(preview, /reviewApi\.queue/);
     assert.match(preview, /reviewApi\.submit/);
