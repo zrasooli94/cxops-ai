@@ -40,6 +40,8 @@ interface ReviewCore {
   readonly FIELDS: readonly string[];
   readonly LABELS: readonly ClaimLabel[];
   validateWorksheet(text: string, slot: ReviewRole, identity: string): ReviewRow[];
+  parseCsv(text: string): string[][];
+  serializeCsv(rows: string[][]): string;
   reviewStatus(
     row: ReviewRow,
     slot: ReviewRole,
