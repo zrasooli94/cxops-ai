@@ -271,7 +271,7 @@ async def test_matching_reviews_cannot_get_an_unnecessary_adjudicator(db):
 
 @pytest.mark.asyncio
 async def test_other_tenant_cannot_read_batch_or_insert_cross_tenant_fk(db):
-    org_a, batch_a, a = await _assigned(db, "tenant-a")
+    _, batch_a, a = await _assigned(db, "tenant-a")
     org_b, batch_b, _ = await _assigned(db, "tenant-b")
     assert batch_a != batch_b
     with pytest.raises(ValueError, match="not found"):
