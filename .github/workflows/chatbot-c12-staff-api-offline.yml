@@ -1,0 +1,129 @@
+# C8: staff-only synthetic review route. No backend/production deployment.
+name: Chatbot C12 — Developer Reviewer API UI Offline
+
+on:
+  pull_request:
+    branches:
+      - codex/chatbot-c11-synthetic-review-api
+    paths:
+      - '.github/workflows/chatbot-c12-staff-api-offline.yml'
+      - 'frontend/src/app/(control-center)/evaluations/**'
+      - 'frontend/src/lib/claim-review/**'
+      - 'frontend/src/app/(control-center)/evaluations/claim-review/**'
+      - 'frontend/src/lib/authorization/navigation.ts'
+      - 'frontend/src/lib/authorization/navigation.test.ts'
+      - 'docs/product/chatbot-c12-staff-api-preview.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cxops-chatbot-c12-staff-api-offline
+  cancel-in-progress: true
+
+jobs:
+  frontend-staff-preview:
+    name: Offline BFF Contract + Reviewer UI / Typecheck + Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENVIRONMENT: development
+      DATABASE_URL: ''
+      OPENAI_API_KEY: ''
+      EVALUATION_OPENAI_API_KEY: ''
+      ZENDESK_WEBHOOK_SECRET: ''
+      HANDOFF_NOTIFICATION_EMAIL_URL: ''
+      HANDOFF_NOTIFICATION_TELEGRAM_URL: ''
+      HANDOFF_NOTIFICATIONS_ENABLED: 'false'
+      PUBLIC_LEAD_CAPTURE_ENABLED: 'false'
+      PUBLIC_CHAT_ASYNC_ENABLED: 'false'
+      CXOPS_STAGING_TICKET_ACTIONS_ENABLED: 'false'
+
+    steps:
+      - name: Checkout PR merge source without saved credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Python 3.11 for synthetic C6 blank CSV only
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refuse secrets, DB, paid providers and production flags
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          test "$CI" = true
+          test "$ENVIRONMENT" = development
+          test -z "$DATABASE_URL"
+          test -z "$OPENAI_API_KEY"
+          test -z "$EVALUATION_OPENAI_API_KEY"
+          test -z "$ZENDESK_WEBHOOK_SECRET"
+          test -z "$HANDOFF_NOTIFICATION_EMAIL_URL"
+          test -z "$HANDOFF_NOTIFICATION_TELEGRAM_URL"
+          test "$HANDOFF_NOTIFICATIONS_ENABLED" = false
+          test "$PUBLIC_LEAD_CAPTURE_ENABLED" = false
+          test "$PUBLIC_CHAT_ASYNC_ENABLED" = false
+          test "$CXOPS_STAGING_TICKET_ACTIONS_ENABLED" = false
+
+      - name: Refuse a diverged or weakened C7 CSV codec
+        run: |
+          cmp \
+            tools/chatbot-claim-review/review-core.js \
+            frontend/src/lib/claim-review/review-core.js
+          node --check frontend/src/lib/claim-review/review-core.js
+
+      - name: Produce the authoritative unlabelled fictional CSV
+        run: |
+          python -m scripts.chatbot_claim_review validate
+          python -m scripts.chatbot_claim_review prepare \
+            --out "$RUNNER_TEMP/c8-blank.csv"
+
+      - name: Install exact existing frontend lockfile only
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Run entire frontend unit and role-contract test suite
+        working-directory: frontend
+        run: C8_BLANK_SHEET="$RUNNER_TEMP/c8-blank.csv" npm test
+
+      - name: Lint changed staff-route and reviewer modules
+        working-directory: frontend
+        run: |
+          npx eslint \
+            'src/app/(control-center)/evaluations/page.tsx' \
+            'src/app/(control-center)/evaluations/claim-review/layout.tsx' \
+            'src/app/(control-center)/evaluations/claim-review/page.tsx' \
+            'src/app/(control-center)/evaluations/claim-review/review-workspace.tsx' \
+            'src/app/(control-center)/evaluations/claim-review/synthetic-api-preview.tsx' \
+            'src/lib/claim-review/api.ts' \
+            'src/lib/claim-review/api.test.ts' \
+            'src/lib/claim-review/access.ts' \
+            'src/lib/claim-review/index.ts' \
+            'src/lib/claim-review/staff-review.test.ts' \
+            'src/lib/authorization/navigation.ts' \
+            'src/lib/authorization/navigation.test.ts'
+
+      - name: Generate Next.js route definitions
+        working-directory: frontend
+        run: npx next typegen
+
+      - name: Strict frontend TypeScript check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Next.js build in GitHub runner (NOT Vercel)
+        working-directory: frontend
+        run: npm run build
