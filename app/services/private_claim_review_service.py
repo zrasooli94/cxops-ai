@@ -269,7 +269,7 @@ class PrivateClaimReviewService:
         *,
         actor: AuthorizationContext,
         batch_id: int,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, str | bool]]:
         await cls._authorized(
             db, actor, organization_id=actor.organization_id, manage=True,
         )
@@ -295,11 +295,26 @@ class PrivateClaimReviewService:
                 ).order_by(ClaimReviewItem.id)
             )
         ).scalars().all()
-        # The endpoint is future work; this output has no other reviewer's
-        # identity, labels, source text or notes. The immutable snapshots
-        # correspond to exact synthetic fixture rows.
+        # Only the CURRENT reviewer's own completed judgments are included.
+        # Never materialize the other reviewer's votes/identities in a response.
+        finished_items = set(
+            (
+                await db.execute(
+                    select(ClaimReviewEvent.item_id).where(
+                        ClaimReviewEvent.organization_id == actor.organization_id,
+                        ClaimReviewEvent.batch_id == batch_id,
+                        ClaimReviewEvent.assignment_id == assignment.id,
+                        ClaimReviewEvent.event_kind == "review",
+                    )
+                )
+            ).scalars().all()
+        )
         return [
-            {"review_key": item.review_key, "fingerprint": item.fingerprint}
+            {
+                "review_key": item.review_key,
+                "fingerprint": item.fingerprint,
+                "completed": item.id in finished_items,
+            }
             for item in items
         ]
 
