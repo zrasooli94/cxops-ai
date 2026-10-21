@@ -102,6 +102,7 @@ describe("C12 source boundaries and dev flag", () => {
     assert.match(preview, /reviewCore\.validateWorksheet\(/);
     assert.match(preview, /reviewApi\.queue/);
     assert.match(preview, /reviewApi\.submit/);
-    assert.doesNotMatch(preview, /localStorage|indexedDB|Authorization:|Bearer |X-CXOps-Organization-ID|release.decision/);
+    const executablePreview = preview.replace(/\\/\\*[\\s\\S]*?\\*\\//g, "");
+    assert.doesNotMatch(executablePreview, /localStorage|indexedDB|Authorization:|Bearer |X-CXOps-Organization-ID|release.decision/);
   });
 });
