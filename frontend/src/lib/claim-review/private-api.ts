@@ -9,7 +9,7 @@
  * This library is ONLY imported into a server-gated development-only UI.
  * It does not accept freeform API paths, tenant IDs or an actor subject.
  */
-export const C12_REVIEWER_PATH = "/api/backend/evaluations/claim-reviews";
+export const C12_REVIEWER_PATH = "/api/claim-review";
 export type ClaimLabel = "supported" | "contradicted" | "unsupported" | "unclear";
 
 export interface SyntheticBatch {
