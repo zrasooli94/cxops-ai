@@ -1,4 +1,5 @@
 import AuthorizationUnavailable from "@/components/authorization-unavailable";
+import type { AuthorizationInfo } from "@/lib/authorization/types";
 import InsufficientPermission from "@/components/insufficient-permission";
 import { mayUseClaimReview } from "@/lib/claim-review/access";
 import { getActiveOrganizationId } from "@/lib/tenant/cookie";
@@ -17,17 +18,18 @@ export default async function ClaimReviewPage() {
   if (activeOrganizationId === null) {
     return <AuthorizationUnavailable />;
   }
+  let authorization: AuthorizationInfo | null = null;
   try {
     // FastAPI validates membership and organization selector. Never derive
     // a grant from the URL, a role name, an input CSV or an untrusted claim.
-    const authorization = await getMyAuthorizationReadOnly(activeOrganizationId);
-    if (!mayUseClaimReview(authorization, activeOrganizationId)) {
-      return <InsufficientPermission />;
-    }
+    authorization = await getMyAuthorizationReadOnly(activeOrganizationId);
   } catch {
     // No exception text, membership metadata, or source body is exposed.
-    return <AuthorizationUnavailable />;
+    // JSX is returned OUTSIDE try/catch per React compiler rules.
   }
-
+  if (authorization === null) return <AuthorizationUnavailable />;
+  if (!mayUseClaimReview(authorization, activeOrganizationId)) {
+    return <InsufficientPermission />;
+  }
   return <ClaimReviewWorkspace authorizedOrganizationId={activeOrganizationId} />;
 }
