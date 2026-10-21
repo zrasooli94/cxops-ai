@@ -48,7 +48,8 @@ const LABELS: readonly ClaimLabel[] = [
 ];
 
 export class C12ReviewApiError extends Error {
-  constructor(public readonly status: number) {
+  readonly status: number;
+  constructor(status: number) {
     super(
       status === 401 || status === 403
         ? "Review access has changed or expired. Reload the staff page."
@@ -61,6 +62,7 @@ export class C12ReviewApiError extends Error {
               : "Could not complete the synthetic reviewer request.",
     );
     this.name = "C12ReviewApiError";
+    this.status = status;
   }
 }
 function validBatch(batchId: number): number {
