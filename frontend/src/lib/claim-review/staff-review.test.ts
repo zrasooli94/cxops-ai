@@ -1,0 +1,147 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { CAPABILITIES } from "../authorization/capabilities.ts";
+import { mayUseClaimReview } from "./access.ts";
+import {
+  reviewCore,
+  reviewForOrganization,
+  validSyntheticReviewUpload,
+  type ScopedReview,
+} from "./index.ts";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, "..", "..", "..", "..", "..");
+const staffPage = readFileSync(
+  join(ROOT, "frontend", "src", "app", "(control-center)", "evaluations",
+    "claim-review", "page.tsx"), "utf8",
+);
+const workspace = readFileSync(
+  join(ROOT, "frontend", "src", "app", "(control-center)", "evaluations",
+    "claim-review", "review-workspace.tsx"), "utf8",
+);
+const evaluations = readFileSync(
+  join(ROOT, "frontend", "src", "app", "(control-center)", "evaluations",
+    "page.tsx"), "utf8",
+);
+const layout = readFileSync(
+  join(ROOT, "frontend", "src", "app", "(control-center)", "evaluations",
+    "claim-review", "layout.tsx"), "utf8",
+);
+const source = readFileSync(
+  join(ROOT, "tools", "chatbot-claim-review", "review-core.js"), "utf8",
+);
+const bundled = readFileSync(join(HERE, "review-core.js"), "utf8");
+
+function authorized(orgId: number, capabilities: readonly string[]) {
+  return { organization_id: orgId, capabilities };
+}
+
+describe("staff-only review route uses backend authority and exact tenant", () => {
+  it("requires BOTH evaluation.read and evaluation.manage", () => {
+    const required = [CAPABILITIES.EVALUATION_READ, CAPABILITIES.EVALUATION_MANAGE];
+    assert.equal(mayUseClaimReview(authorized(37, required), 37), true);
+    assert.equal(mayUseClaimReview(authorized(37, [CAPABILITIES.EVALUATION_READ]), 37), false);
+    assert.equal(mayUseClaimReview(authorized(37, [CAPABILITIES.EVALUATION_MANAGE]), 37), false);
+    assert.equal(mayUseClaimReview(authorized(37, []), 37), false);
+    assert.equal(mayUseClaimReview(authorized(37, [...required, "unknown"]) , 0), false);
+  });
+
+  it("fails closed for another tenant, missing tenant or forged broad capability", () => {
+    const both = [CAPABILITIES.EVALUATION_READ, CAPABILITIES.EVALUATION_MANAGE];
+    assert.equal(mayUseClaimReview(authorized(37, both), 38), false);
+    assert.equal(mayUseClaimReview(authorized(37, both), null), false);
+    assert.equal(mayUseClaimReview(authorized(37, both), NaN), false);
+    assert.equal(mayUseClaimReview(authorized(37, ["evaluation.manage.all"]), 37), false);
+  });
+
+  it("server route re-reads trusted tenant auth and denies by default", () => {
+    assert.match(staffPage, /getActiveOrganizationId\(/);
+    assert.match(staffPage, /getMyAuthorizationReadOnly\(activeOrganizationId\)/);
+    assert.match(staffPage, /mayUseClaimReview\(authorization, activeOrganizationId\)/);
+    assert.match(staffPage, /return <InsufficientPermission/);
+    assert.match(staffPage, /catch \{/);
+    assert.match(staffPage, /return <AuthorizationUnavailable/);
+    assert.match(staffPage, /force-dynamic/);
+    assert.doesNotMatch(staffPage, /create.*EvaluationRun|write.*Evidence|approve.*Release/);
+  });
+
+  it("nested route guard requires evaluation.manage, not evaluation.read alone", () => {
+    assert.match(layout, /ROUTE_REQUIREMENTS\["\/evaluations\/claim-review"\]/);
+    assert.match(layout, /CapabilityRouteGuard/);
+    assert.match(layout, /index: false/);
+    assert.match(evaluations, /\{canManage && \(/);
+    assert.match(evaluations, /href="\/evaluations\/claim-review"/);
+  });
+});
+
+describe("existing C7 offline codec is preserved for staff flow", () => {
+  it("bundles the EXACT source, rather than a weaker forked parser", () => {
+    assert.equal(bundled, source);
+  });
+
+  it("never displays a previous organization's imported review", () => {
+    const synthetic: ScopedReview = {
+      organizationId: 37,
+      reviewerId: "staff-fixture",
+      reviewerRole: 1,
+      rows: [],
+    };
+    assert.equal(reviewForOrganization(synthetic, 37), synthetic);
+    assert.equal(reviewForOrganization(synthetic, 38), null);
+    assert.equal(reviewForOrganization(null, 37), null);
+  });
+
+  it("allows only bounded local CSV files, no untyped uploads", () => {
+    assert.equal(validSyntheticReviewUpload({ name: "sheet.csv", size: 1000 }), true);
+    assert.equal(validSyntheticReviewUpload({ name: "sheet.CSV", size: 1000 }), true);
+    assert.equal(validSyntheticReviewUpload({ name: "sheet.json", size: 1000 }), false);
+    assert.equal(validSyntheticReviewUpload({ name: "sheet.csv", size: 0 }), false);
+    assert.equal(validSyntheticReviewUpload({ name: "sheet.csv", size: Infinity }), false);
+    assert.equal(validSyntheticReviewUpload({ name: "sheet.csv", size: 12000001 }), false);
+  });
+
+  it("imports the actual 12-claim synthetic Python worksheet, if generated by CI", () => {
+    const filename = process.env.C8_BLANK_SHEET;
+    if (!filename) return;
+    const rows = reviewCore.validateWorksheet(
+      readFileSync(filename, "utf8"), 1, "fixture-reviewer-A",
+    );
+    assert.equal(rows.length, 12);
+    assert.ok(rows.every((row) => row.reviewer_1_label === ""));
+    assert.ok(rows.every((row) => row.reviewer_2_label === ""));
+
+    const candidate = reviewCore.editRow(rows, 0, 1, "fixture-reviewer-A", {
+      label: "contradicted",
+      evidence: "Aster bicycle repairs are not free.",
+    });
+    assert.equal(candidate[0].reviewer_1_label, "contradicted");
+    assert.equal(candidate[0].reviewer_2_label, "");
+    const exported = reviewCore.exportReviewerCsv(
+      candidate, 1, "fixture-reviewer-A", { allowIncomplete: true },
+    );
+    assert.deepEqual(
+      reviewCore.validateWorksheet(exported, 1, "fixture-reviewer-A"),
+      candidate,
+    );
+    assert.equal(reviewCore.progress(candidate, 1, "fixture-reviewer-A").complete, false);
+  });
+
+  it("staff screen never uses network operations, HTML injection or browser storage", () => {
+    assert.doesNotMatch(
+      workspace,
+      /\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|localStorage|indexedDB|innerHTML|eval\(/,
+    );
+    assert.match(workspace, /reviewCore\.validateWorksheet\(/);
+    assert.match(workspace, /reviewCore\.exportReviewerCsv\(/);
+    assert.match(workspace, /reviewForOrganization\(/);
+    assert.match(workspace, /organizationId === authorizedOrganizationId/);
+    assert.match(workspace, /tenantRef\.current !== requestOrganizationId/);
+    assert.match(workspace, /new Blob\(/);
+    assert.match(workspace, /URL\.revokeObjectURL\(/);
+    assert.doesNotMatch(workspace, /approveEvaluation|recordReleaseDecision/);
+  });
+});
