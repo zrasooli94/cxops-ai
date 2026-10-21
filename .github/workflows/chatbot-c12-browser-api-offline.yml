@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/chatbot-c12-browser-api-offline.yml'
       - 'frontend/src/app/(control-center)/evaluations/claim-review/**'
+      - 'frontend/src/app/api/claim-review/**'
       - 'frontend/src/lib/claim-review/**'
       - 'frontend/e2e/c12-browser-real-api.mjs'
       - 'scripts/c12_*'
@@ -121,7 +122,10 @@ jobs:
             'src/app/(control-center)/evaluations/claim-review/synthetic-api-panel.tsx' \
             'src/lib/claim-review/private-api.ts' \
             'src/lib/claim-review/private-api.test.ts' \
-            'src/lib/claim-review/preview.ts'
+            'src/lib/claim-review/server-allowlist.ts' \
+            'src/lib/claim-review/server-allowlist.test.ts' \
+            'src/lib/claim-review/preview.ts' \
+            'src/app/api/claim-review/[...path]/route.ts'
           npx next typegen
           npx tsc --noEmit
           npm run build
