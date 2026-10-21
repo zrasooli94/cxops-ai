@@ -61,6 +61,15 @@ describe("fictional knowledge answerer (NOT a real LLM)", () => {
     assert.equal(demoAnswer("May I speak to a human?", null, DEFAULT_DEMO_KNOWLEDGE).kind, "handoff");
   });
 
+  it("refuses to claim bookings or free repairs can be performed", () => {
+    assert.equal(demoAnswer("Can I book a repair?", null, DEFAULT_DEMO_KNOWLEDGE).kind, "handoff");
+    assert.equal(demoAnswer("Are repairs free?", null, DEFAULT_DEMO_KNOWLEDGE).kind, "handoff");
+  });
+
+  it("recognizes common questions about products", () => {
+    assert.equal(demoAnswer("What products do you sell?", null, DEFAULT_DEMO_KNOWLEDGE).topic, "services");
+  });
+
   it("refuses empty knowledge rather than inventing a policy", () => {
     const knowledge = structuredClone(DEFAULT_DEMO_KNOWLEDGE);
     knowledge.returns.en = "";
