@@ -14,7 +14,7 @@ import {
 } from "./index.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, "..", "..", "..", "..", "..");
+const ROOT = join(HERE, "..", "..", "..", "..");
 const staffPage = readFileSync(
   join(ROOT, "frontend", "src", "app", "(control-center)", "evaluations",
     "claim-review", "page.tsx"), "utf8",
