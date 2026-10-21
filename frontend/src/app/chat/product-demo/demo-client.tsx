@@ -311,7 +311,7 @@ export function DemoClient() {
       {ready && (
         <PublicChatWidget key={revision} widgetKey={DEMO_WIDGET_KEY}
           fetcher={transport.fetcher} sessionStorageKey={DEMO_WIDGET_SESSION_KEY}
-          transparentFrame={false} />
+          transparentFrame={false} initialPollDelayMs={1000} />
       )}
     </main>
   );
