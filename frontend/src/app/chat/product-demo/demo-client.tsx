@@ -247,7 +247,7 @@ export function DemoClient() {
               <div className="cx-demo-kicker">Visitor experience · actual React widget</div>
               <h2>Live-in-browser website preview</h2>
               <p>Visit the fictional storefront and open the support bubble
-                in the bottom-right corner. No network request reaches CXOps servers.</p>
+                in the bottom-right corner. No chat message reaches a CXOps API or paid provider.</p>
             </div>
             <button type="button" className="cx-demo-primary" onClick={openVisitorChat}>
               Open visitor chat ↗
@@ -310,7 +310,8 @@ export function DemoClient() {
 
       {ready && (
         <PublicChatWidget key={revision} widgetKey={DEMO_WIDGET_KEY}
-          fetcher={transport.fetcher} sessionStorageKey={DEMO_WIDGET_SESSION_KEY} />
+          fetcher={transport.fetcher} sessionStorageKey={DEMO_WIDGET_SESSION_KEY}
+          transparentFrame={false} />
       )}
     </main>
   );
