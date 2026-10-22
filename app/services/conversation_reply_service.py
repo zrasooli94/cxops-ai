@@ -40,6 +40,7 @@ JOB_TYPE_CONVERSATION_REPLY = "conversation.reply"
 
 # Safe bounded failure categories exposed to clients.
 ERROR_REPLY_UNAVAILABLE = "reply_unavailable"
+ERROR_REPLY_IDEMPOTENCY_CONFLICT = "reply_idempotency_conflict"
 ERROR_CONVERSATION_CLOSED = "conversation_closed"
 ERROR_PROVIDER_UNSUPPORTED = "provider_unsupported"
 ERROR_MESSAGE_NOT_RETRYABLE = "message_not_retryable"
@@ -85,12 +86,25 @@ class ConversationReplyService:
                 "Conversation is closed",
                 409,
             )
-
         if conversation.provider not in {"zendesk", "cxops"}:
             raise ConversationReplyError(
                 ERROR_PROVIDER_UNSUPPORTED,
                 f"Provider '{conversation.provider}' does not support human replies",
                 422,
+            )
+
+    @staticmethod
+    def _assert_idempotency_binding(
+        message: ConversationMessage,
+        *,
+        body: str,
+        requested_by_subject: str,
+    ) -> None:
+        if message.body != body or message.requested_by_subject != requested_by_subject:
+            raise ConversationReplyError(
+                ERROR_REPLY_IDEMPOTENCY_CONFLICT,
+                "client_request_id is already bound to a different reply",
+                409,
             )
 
     @classmethod
@@ -156,6 +170,11 @@ class ConversationReplyService:
             )
         )
         if existing_message is not None:
+            cls._assert_idempotency_binding(
+                existing_message,
+                body=cleaned_body,
+                requested_by_subject=requested_by_subject,
+            )
             existing_job = await IntegrationJobRepository.get_by_dedupe_key(
                 db,
                 dedupe_key=job_dedupe_key,
@@ -235,6 +254,12 @@ class ConversationReplyService:
             if existing_message is None:
                 raise
 
+            cls._assert_idempotency_binding(
+                existing_message,
+                body=cleaned_body,
+                requested_by_subject=requested_by_subject,
+            )
+
             existing_job = await IntegrationJobRepository.get_by_dedupe_key(
                 db,
                 dedupe_key=job_dedupe_key,
@@ -279,6 +304,69 @@ class ConversationReplyService:
             "delivery_status": message.delivery_status,
             "duplicate": False,
             "job_id": job.id,
+        }
+
+    @classmethod
+    async def get_reply_status(
+        cls,
+        db: AsyncSession,
+        *,
+        conversation_id: int,
+        body: str,
+        client_request_id: str,
+        organization_id: int,
+        requested_by_subject: str,
+        authz: AuthorizationContext | None = None,
+    ) -> dict | None:
+        """Resolve one accepted request identity without creating or retrying it."""
+        if authz is not None:
+            require_capability(authz, Capability.TICKET_WRITE)
+            requested_by_subject = authz.subject
+
+        cleaned_body = cls._validate_body(body)
+        if not client_request_id:
+            raise ConversationReplyError(
+                ERROR_REPLY_UNAVAILABLE,
+                "client_request_id is required",
+                400,
+            )
+
+        conversation = await ConversationRepository.get_by_id_for_tenant(
+            db,
+            conversation_id=conversation_id,
+            organization_id=organization_id,
+        )
+        if conversation is None:
+            raise ConversationReplyError(
+                ERROR_REPLY_UNAVAILABLE,
+                "Conversation not found",
+                404,
+            )
+
+        dedupe_key = f"human_reply:{client_request_id}"
+        message = await ConversationMessageRepository.get_by_dedupe_key(
+            db,
+            conversation_id=conversation.id,
+            organization_id=organization_id,
+            dedupe_key=dedupe_key,
+        )
+        if message is None:
+            return None
+
+        cls._assert_idempotency_binding(
+            message,
+            body=cleaned_body,
+            requested_by_subject=requested_by_subject,
+        )
+        job = await IntegrationJobRepository.get_by_dedupe_key(
+            db,
+            dedupe_key=f"conversation-reply:{organization_id}:{conversation_id}:{dedupe_key}",
+        )
+        return {
+            "message_id": message.id,
+            "delivery_status": message.delivery_status,
+            "duplicate": True,
+            "job_id": job.id if job is not None else None,
         }
 
     @classmethod

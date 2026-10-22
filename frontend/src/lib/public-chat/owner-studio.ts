@@ -7,7 +7,7 @@ export type StudioEvidence = {
   coverage: "missing" | "ambiguous" | "related";
   items: unknown[];
 };
-export type StaffReplyOutcome = "saved_refresh_failed" | "send_failed" | "send_uncertain";
+export type StaffReplyOutcome = "saved_refresh_failed" | "send_failed" | "send_uncertain" | "send_not_found";
 
 export function staffReplyOutcomeCopy(outcome: StaffReplyOutcome, language: string) {
   const persian = language === "fa";
@@ -21,7 +21,13 @@ export function staffReplyOutcomeCopy(outcome: StaffReplyOutcome, language: stri
     message: persian
       ? "نتیجه ارسال نامشخص است و ارسال دوباره انجام نشد. پیش از تلاش دوباره، گفتگو را بررسی کنید."
       : "The send outcome is uncertain and was not retried. Check the conversation before sending again.",
-    action: null,
+    action: persian ? "بررسی وضعیت پاسخ" : "Check reply status",
+  };
+  if (outcome === "send_not_found") return {
+    message: persian
+      ? "هنوز پاسخ ذخیره‌شده‌ای برای این تلاش یافت نشد. پیش‌نویس حفظ شد و ارسال دوباره انجام نشد."
+      : "No saved reply was found for this attempt yet. The draft was kept and was not resent.",
+    action: persian ? "بررسی دوباره وضعیت" : "Check status again",
   };
   return {
     message: persian

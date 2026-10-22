@@ -60,12 +60,14 @@ describe("staffReplyOutcomeCopy", () => {
   it("only offers refresh-only recovery after a confirmed save", () => {
     assert.equal(staffReplyOutcomeCopy("saved_refresh_failed", "en").action, "Refresh conversation");
     assert.equal(staffReplyOutcomeCopy("send_failed", "en").action, null);
-    assert.equal(staffReplyOutcomeCopy("send_uncertain", "en").action, null);
+    assert.equal(staffReplyOutcomeCopy("send_uncertain", "en").action, "Check reply status");
+    assert.equal(staffReplyOutcomeCopy("send_not_found", "en").action, "Check status again");
   });
 
   it("distinguishes confirmed rejection and uncertain delivery in Persian", () => {
     assert.match(staffReplyOutcomeCopy("send_failed", "fa").message, /پذیرفته نشد/);
     assert.match(staffReplyOutcomeCopy("send_uncertain", "fa").message, /نامشخص/);
+    assert.match(staffReplyOutcomeCopy("send_not_found", "fa").message, /یافت نشد/);
     assert.match(staffReplyOutcomeCopy("saved_refresh_failed", "fa").message, /ذخیره شد/);
   });
 });

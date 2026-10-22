@@ -25,6 +25,7 @@ describe("local demo bridge boundary", () => {
     assert.equal(isAllowedLocalDemoPath("staff/tenant-config/offline-documents/42"), true);
     assert.equal(isAllowedLocalDemoPath("staff/tenant-config/offline-documents/not-an-id"), false);
     assert.equal(isAllowedLocalDemoPath("staff/public-chat/sessions/42/assign"), true);
+    assert.equal(isAllowedLocalDemoPath("conversations/42/replies/status"), true);
     assert.equal(isAllowedLocalDemoPath("operator/platform"), false);
     assert.equal(isAllowedLocalDemoPath("staff/public-chat/sessions/42/delete"), false);
   });

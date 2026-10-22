@@ -38,7 +38,7 @@ async function main() {
         replyPosts: 0, replyDestinations: [], releasePost: null, rejectB: null,
         serverSaved: false, aRefreshCompleted: false, delayedPost: false, delayedB: false,
         aPostRefreshFailed: false, failNextRefreshConversation: null, refreshFailures: 0,
-        postMode: 'normal', releaseFailure: null,
+        postMode: 'normal', releaseFailure: null, serverSavedAmbiguous: false,
       };
       globalThis.fetch = (input, init = {}) => {
         const url = new URL(String(input), location.origin);
@@ -61,6 +61,15 @@ async function main() {
           if (probe.postMode === 'delayed_uncertain') {
             probe.postMode = 'normal';
             return new Promise((_resolve, reject) => { probe.releaseFailure = () => reject(new TypeError('Synthetic delayed transport interruption')); });
+          }
+          if (probe.postMode === 'delayed_saved_uncertain') {
+            probe.postMode = 'normal';
+            return new Promise((_resolve, reject) => {
+              originalFetch(input, init).then(() => {
+                probe.serverSavedAmbiguous = true;
+                probe.releaseFailure = () => reject(new TypeError('Synthetic lost response after save'));
+              }, reject);
+            });
           }
           if (conversationId === probe.conversationA && !probe.delayedPost) {
             probe.delayedPost = true;
@@ -108,7 +117,7 @@ async function main() {
   const clickText = (text) => evaluate(`(()=>{const button=[...document.querySelectorAll('button')].find((item)=>item.textContent.trim()===${JSON.stringify(text)});if(!button)return false;button.click();return true})()`);
   const setValue = (selector, value) => evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selector)});if(!input)return false;const setter=Object.getOwnPropertyDescriptor(input.constructor.prototype,'value').set;setter.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
 
-  await waitFor(`document.body.innerText.includes('Aster Cycle owner studio')`);
+  await waitFor(`document.body?.innerText.includes('Aster Cycle owner studio')`);
   const seeded = await evaluate(`(async()=>{
     const origin=location.origin;
     const ownerHeaders={'x-cxops-local-origin':origin};
@@ -179,9 +188,17 @@ async function main() {
   if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT confirmed rejection stays'`)) throw new Error('confirmed rejection cleared draft');
 
   await setValue('input[placeholder="Reply as staff…"]', 'DRAFT uncertain outcome stays');
-  await evaluate(`globalThis.__cxopsReplyRace.postMode='delayed_uncertain'`);
+  await evaluate(`globalThis.__cxopsReplyRace.postMode='uncertain'`);
   await clickText("Send");
-  await waitFor(`typeof globalThis.__cxopsReplyRace.releaseFailure==='function'`);
+  await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('outcome is uncertain')`);
+  await clickText("Check reply status");
+  await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('No saved reply was found')`);
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT uncertain outcome stays'`)) throw new Error('not-found reconciliation cleared draft');
+
+  await setValue('input[placeholder="Reply as staff…"]', 'STAFF-B saved despite ambiguous response');
+  await evaluate(`globalThis.__cxopsReplyRace.postMode='delayed_saved_uncertain'`);
+  await clickText("Send");
+  await waitFor(`globalThis.__cxopsReplyRace.serverSavedAmbiguous && typeof globalThis.__cxopsReplyRace.releaseFailure==='function'`);
   await clickConversation(seeded.conversationA);
   await waitFor(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('RACE-A unique visitor question')`);
   await setValue('input[placeholder="Reply as staff…"]', 'DRAFT-A survives delayed B failure');
@@ -191,7 +208,11 @@ async function main() {
   if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT-A survives delayed B failure'`)) throw new Error('delayed B failure changed A draft');
   await clickConversation(seeded.conversationB);
   await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('outcome is uncertain')`);
-  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT uncertain outcome stays'`)) throw new Error('uncertain outcome cleared draft');
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='STAFF-B saved despite ambiguous response'`)) throw new Error('uncertain outcome cleared draft');
+  const beforeReconcilePosts = await evaluate(`globalThis.__cxopsReplyRace.replyPosts`);
+  await clickText("Check reply status");
+  await waitFor(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('STAFF-B saved despite ambiguous response') && !document.querySelector('[aria-label="Staff reply recovery"]')`);
+  if (await evaluate(`globalThis.__cxopsReplyRace.replyPosts!==${beforeReconcilePosts}`)) throw new Error('status reconciliation resent reply');
 
   const verified = await evaluate(`(async()=>{
     const headers={'x-cxops-local-origin':location.origin};
@@ -207,10 +228,11 @@ async function main() {
       bReplyCount:b.filter((message)=>message.body==='STAFF-A exactly-once reply').length,
       bSavedReplyCount:b.filter((message)=>message.body==='STAFF-B saved-before-refresh-failure').length,
       rejectedDraftCount:b.filter((message)=>message.body==='DRAFT confirmed rejection stays'||message.body==='DRAFT uncertain outcome stays').length,
+      reconciledSavedCount:b.filter((message)=>message.body==='STAFF-B saved despite ambiguous response').length,
       refreshFailures:probe.refreshFailures,
     };
   })()`);
-  if (verified.replyPosts !== 4 || verified.destinations.length !== 4 || verified.destinations[0].conversationId !== seeded.conversationA || !verified.destinations.every((item) => item.clientRequestId) || verified.aReplyCount !== 1 || verified.bReplyCount !== 0 || verified.bSavedReplyCount !== 1 || verified.rejectedDraftCount !== 0 || verified.refreshFailures !== 1) throw new Error(`reply destination/count mismatch: ${JSON.stringify(verified)}`);
+  if (verified.replyPosts !== 5 || verified.destinations.length !== 5 || verified.destinations[0].conversationId !== seeded.conversationA || !verified.destinations.every((item) => item.clientRequestId) || verified.aReplyCount !== 1 || verified.bReplyCount !== 0 || verified.bSavedReplyCount !== 1 || verified.rejectedDraftCount !== 0 || verified.reconciledSavedCount !== 1 || verified.refreshFailures !== 1) throw new Error(`reply destination/count mismatch: ${JSON.stringify(verified)}`);
   const cleanup = await evaluate(`(async()=>{const headers={'x-cxops-local-origin':location.origin};const statuses=[];for(const sessionId of ${JSON.stringify(seeded.sessionIds)}){statuses.push((await fetch('/api/local-demo/backend/staff/public-chat/sessions/'+sessionId+'/resolve',{method:'POST',headers})).status);}return statuses;})()`);
   if (cleanup.some((status) => status !== 200)) throw new Error(`handoff cleanup failed: ${JSON.stringify(cleanup)}`);
 
@@ -227,6 +249,8 @@ async function main() {
     ambiguous_send_keeps_draft_without_success: true,
     delayed_failure_is_conversation_scoped: true,
     rapid_double_click_does_not_duplicate: true,
+    unsaved_ambiguous_status_keeps_draft: true,
+    saved_ambiguous_status_reconciles_without_resend: true,
     synthetic_handoffs_resolved: true,
   }));
   chrome.kill();

@@ -189,6 +189,41 @@ async def create_conversation_reply(
 
 
 @router.post(
+    "/{conversation_id}/replies/status",
+    response_model=ConversationReplyResponse,
+)
+async def get_conversation_reply_status(
+    conversation_id: int,
+    db: DatabaseSession,
+    principal: CurrentPrincipal,
+    tenant: CurrentTenant,
+    authz: TicketWriteAuthz,
+    request: ConversationReplyRequest,
+):
+    try:
+        result = await ConversationReplyService.get_reply_status(
+            db=db,
+            conversation_id=conversation_id,
+            body=request.body,
+            client_request_id=request.client_request_id,
+            organization_id=tenant.organization_id,
+            requested_by_subject=principal.subject,
+            authz=authz,
+        )
+    except ConversationReplyError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.args[0],
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Reply request not found",
+        )
+    return ConversationReplyResponse(**result)
+
+
+@router.post(
     "/{conversation_id}/messages/{message_id}/retry",
     response_model=ConversationReplyResponse,
     status_code=status.HTTP_202_ACCEPTED,

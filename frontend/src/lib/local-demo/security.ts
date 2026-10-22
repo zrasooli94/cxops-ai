@@ -19,6 +19,7 @@ export const LOCAL_DEMO_PATHS = [
   /^conversations$/,
   /^conversations\/\d+\/messages$/,
   /^conversations\/\d+\/replies$/,
+  /^conversations\/\d+\/replies\/status$/,
 ];
 
 export function isAllowedLocalDemoPath(path: string): boolean {

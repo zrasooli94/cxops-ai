@@ -1306,7 +1306,7 @@ async def test_reply_endpoint_is_idempotent_by_client_request_id(
     second = await client.post(
         f"/conversations/{conversation.id}/replies",
         json={
-            "body": "Different body, same id.",
+            "body": "First reply.",
             "client_request_id": request_id,
         },
         headers=_auth_headers(USER_ALPHA, org.id),
@@ -1316,6 +1316,91 @@ async def test_reply_endpoint_is_idempotent_by_client_request_id(
 
     assert second_data["message_id"] == first_data["message_id"]
     assert second_data["duplicate"] is True
+
+    mismatched = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={"body": "Different body, same id.", "client_request_id": request_id},
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert mismatched.status_code == 409
+    assert mismatched.json()["detail"] == "client_request_id is already bound to a different reply"
+
+
+@pytest.mark.asyncio
+async def test_reply_status_reconciles_exact_request_without_resending(
+    db, org_scope, client
+):
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    db.add(OrganizationMembership(
+        subject=USER_BETA,
+        organization_id=org.id,
+        role=OrganizationRole.OWNER,
+    ))
+    await db.commit()
+    ticket = await _make_ticket(db, org.id, subject="Reply reconciliation", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+    request_id = str(uuid.uuid4())
+    body = "One exact reconciled reply."
+
+    missing = await client.post(
+        f"/conversations/{conversation.id}/replies/status",
+        json={"client_request_id": request_id, "body": body},
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert missing.status_code == 404
+
+    created = await client.post(
+        f"/conversations/{conversation.id}/replies",
+        json={"body": body, "client_request_id": request_id},
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert created.status_code == 202
+
+    found = await client.post(
+        f"/conversations/{conversation.id}/replies/status",
+        json={"client_request_id": request_id, "body": body},
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert found.status_code == 200
+    assert found.json()["message_id"] == created.json()["message_id"]
+    assert found.json()["duplicate"] is True
+
+    wrong_body = await client.post(
+        f"/conversations/{conversation.id}/replies/status",
+        json={"client_request_id": request_id, "body": "Different payload"},
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert wrong_body.status_code == 409
+
+    wrong_actor = await client.post(
+        f"/conversations/{conversation.id}/replies/status",
+        json={"client_request_id": request_id, "body": body},
+        headers=_auth_headers(USER_BETA, org.id),
+    )
+    assert wrong_actor.status_code == 409
+
+    other_ticket = await _make_ticket(db, org.id, subject="Other conversation", source="api")
+    other_conversation = await _link_conversation(db, other_ticket, org.id)
+    wrong_conversation = await client.post(
+        f"/conversations/{other_conversation.id}/replies/status",
+        json={"client_request_id": request_id, "body": body},
+        headers=_auth_headers(USER_ALPHA, org.id),
+    )
+    assert wrong_conversation.status_code == 404
+
+    other_org = await org_scope(subject="user-gamma", role=OrganizationRole.OWNER)
+    wrong_tenant = await client.post(
+        f"/conversations/{conversation.id}/replies/status",
+        json={"client_request_id": request_id, "body": body},
+        headers=_auth_headers("user-gamma", other_org.id),
+    )
+    assert wrong_tenant.status_code == 404
+
+    messages = await db.execute(select(ConversationMessage).where(
+        ConversationMessage.conversation_id == conversation.id,
+        ConversationMessage.dedupe_key == f"human_reply:{request_id}",
+    ))
+    assert len(list(messages.scalars())) == 1
 
 
 @pytest.mark.asyncio
@@ -1844,7 +1929,7 @@ async def test_local_reply_duplicate_creates_no_second_message_and_no_job(
     second = await ConversationReplyService.enqueue_reply(
         db=db,
         conversation_id=conversation.id,
-        body="A different body on replay.",
+        body="Sync duplicate reply.",
         client_request_id=request_id,
         organization_id=org.id,
         requested_by_subject=USER_ALPHA,
@@ -1962,6 +2047,46 @@ async def test_local_reply_concurrent_same_request_id_creates_one_message_no_job
     assert len(list(jobs.scalars())) == 0
 
     assert any(not result["duplicate"] for result in successes)
+
+
+@pytest.mark.asyncio
+async def test_local_reply_concurrent_mismatched_payload_rejects_loser(
+    db, org_scope
+):
+    org = await org_scope(subject=USER_ALPHA, role=OrganizationRole.OWNER)
+    ticket = await _make_ticket(db, org.id, subject="Concurrent payload binding", source="api")
+    conversation = await _link_conversation(db, ticket, org.id)
+    conversation_id = conversation.id
+    request_id = str(uuid.uuid4())
+
+    async def _enqueue(body: str):
+        async with AsyncSessionLocal() as session:
+            return await ConversationReplyService.enqueue_reply(
+                db=session,
+                conversation_id=conversation_id,
+                body=body,
+                client_request_id=request_id,
+                organization_id=org.id,
+                requested_by_subject=USER_ALPHA,
+            )
+
+    results = await asyncio.gather(
+        _enqueue("Concurrent payload A"),
+        _enqueue("Concurrent payload B"),
+        return_exceptions=True,
+    )
+    assert len([result for result in results if isinstance(result, dict)]) == 1
+    conflicts = [result for result in results if isinstance(result, ConversationReplyError)]
+    assert len(conflicts) == 1
+    assert conflicts[0].status_code == 409
+
+    messages = await db.execute(select(ConversationMessage).where(
+        ConversationMessage.conversation_id == conversation_id,
+        ConversationMessage.dedupe_key == f"human_reply:{request_id}",
+    ))
+    saved = list(messages.scalars())
+    assert len(saved) == 1
+    assert saved[0].body in {"Concurrent payload A", "Concurrent payload B"}
 
 
 @pytest.mark.asyncio
