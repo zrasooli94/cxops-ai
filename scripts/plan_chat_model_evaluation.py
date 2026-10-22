@@ -166,7 +166,7 @@ def mocked_mechanical_replay(turns: list[dict[str, Any]]) -> list[dict[str, Any]
             "mocked_citation_ids": citations,
             "session_state_after": states[conversation_id],
             "full_serialized_input_bytes": conservative_token_bound(serialized),
-            "exact_token_admission": "blocked_unverified_tokenizer",
+            "exact_token_admission": "blocked_unverified_full_responses_request_count",
         })
         history.append({"role": "customer", "text": turn["prompt"], "turn_id": turn["turn_id"]})
         history.append({"role": "assistant", "text": reply, "citation_ids": citations})
@@ -181,14 +181,15 @@ def main() -> None:
     worst_case = budget.validate(len(turns))
     print(json.dumps({
         "mode": "provider_disconnected_spec_with_mocked_mechanical_replay", "model": "gpt-6-luna",
-        "admission_state": "blocked_exact_model_tokenizer_unavailable",
-        "token_admission_scope": "system + all linked history + retrieved evidence + current user + response framing",
+        "admission_state": "blocked_authenticated_full_request_count_unavailable",
+        "token_admission_scope": "full structured Responses request; local text tokenization is insufficient",
         "conversations": len(CONVERSATIONS), "turns": len(turns),
         "language_distribution": {"en": 25, "fa": 25},
         "max_input_tokens_per_turn": 3000, "max_output_tokens_per_turn": 500,
         "max_retries_per_turn": 1, "max_billable_attempts_total": 100,
         "sdk_retries": 0, "cost_ceiling_usd": budget.cost_ceiling_usd,
-        "worst_case_cost_usd_at_supplied_rates": round(worst_case, 6),
+        "cache_write_rate_arithmetic_usd": round(worst_case, 6),
+        "generation_cost_note": "arithmetic only; counting-endpoint cost, taxes, and invoice effects are unverified",
         "executed_mock_assertions": ["full accumulated mock history", "expected citation ids", "handoff state and silence", "forbidden-claim absence"],
         "controller_assertions_covered_by_tests": ["usage presence and caps", "one retry maximum", "durable cost admission", "ambiguous outcome reconciliation"],
         "manual_quality_rubric": {"grounding": "claims supported by required evidence", "context": "follow-ups use only linked history", "correction": "topic changes replace old topics", "uncertainty": "missing/conflicting evidence clarifies or refuses", "handoff": "no automated answer after takeover", "language": "natural and accurate in requested language"},

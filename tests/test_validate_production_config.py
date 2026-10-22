@@ -449,6 +449,19 @@ def test_settings_model_refuses_dev_auth_in_production():
     assert "AUTH" in str(excinfo.value)
 
 
+def test_settings_refuses_model_evaluation_source_in_production():
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        _settings_with(
+            ENVIRONMENT="production",
+            AUTH_MODE="jwks",
+            AUTH_JWKS_URL="https://issuer.example.com/.well-known/jwks.json",
+            MODEL_EVAL_OPENAI_SOURCE_ENABLED=True,
+        )
+    assert "MODEL_EVAL_OPENAI_SOURCE_ENABLED" in str(excinfo.value)
+
+
 def test_open_debug_is_a_hard_fail_even_against_production_settings():
     """A production build with DEBUG on is a finding, not a warning.
 

@@ -21,6 +21,7 @@ from app.services.model_eval_openai_adapter import (
     ProviderDisconnectedResponsesAdapter,
 )
 from app.services.model_eval_openai_http_transport import (
+    DevelopmentOpenAIResponsesHttpSource,
     ProviderDisconnectedResponsesHttpTransport,
 )
 
@@ -74,6 +75,7 @@ def _payload(input_text="bounded input"):
 
 class _ExactCounter:
     model = "gpt-6-luna"
+    counts_full_request = True
 
     def count(self, _value):
         return 100
@@ -135,7 +137,8 @@ async def test_posts_once_to_fixed_endpoint_without_authorization_or_retry():
         {"max_output_tokens": 501},
         {"stream": True},
         {"store": True},
-        {"prompt_cache_options": {"ttl": "12h"}},
+        {"prompt_cache_options": {"mode": "explicit", "ttl": "12h"}},
+        {"truncation": "auto"},
     ],
 )
 async def test_policy_or_schema_mismatch_is_confirmed_before_dispatch(change):
@@ -318,3 +321,63 @@ async def test_persisted_handoff_suppresses_before_http_call(db):
     ))
     assert reservation is not None and reservation.status == "settled"
     assert client.calls == []
+
+
+def test_https_source_is_disabled_without_every_development_gate():
+    client = _Client()
+    client.provider_disconnected = False
+    cases = [
+        {"environment": "production", "feature_enabled": True, "explicitly_approved": True},
+        {"environment": "development", "feature_enabled": False, "explicitly_approved": True},
+        {"environment": "development", "feature_enabled": True, "explicitly_approved": False},
+    ]
+    for gates in cases:
+        with pytest.raises(EvaluationBlockedError):
+            DevelopmentOpenAIResponsesHttpSource(
+                client, bearer_token="synthetic-test-token", **gates
+            )
+
+
+@pytest.mark.asyncio
+async def test_https_source_counting_fails_before_http_and_generation_uses_fixed_endpoint():
+    client = _Client(response=_Response())
+    client.provider_disconnected = False
+    source = DevelopmentOpenAIResponsesHttpSource(
+        client,
+        environment="development",
+        feature_enabled=True,
+        explicitly_approved=True,
+        bearer_token="synthetic-test-token",
+    )
+    serialized_input = _serialized_input()
+    payload = _payload(serialized_input)
+
+    with pytest.raises(EvaluationBlockedError, match="cost is verified"):
+        await source.count_input_tokens(payload)
+    assert client.calls == []
+
+    body = await source.create_response(payload)
+    assert body["status"] == "completed"
+    assert len(client.calls) == 1
+    url, options = client.calls[0]
+    assert url == "https://api.openai.com/v1/responses"
+    assert options["json"] == payload
+    assert options["timeout"] == 30.0
+    assert options["headers"]["Authorization"] == "Bearer synthetic-test-token"
+
+
+@pytest.mark.asyncio
+async def test_https_source_redacts_network_diagnostics_and_never_retries():
+    client = _Client(error=TimeoutError("synthetic secret diagnostic"))
+    client.provider_disconnected = False
+    source = DevelopmentOpenAIResponsesHttpSource(
+        client,
+        environment="development",
+        feature_enabled=True,
+        explicitly_approved=True,
+        bearer_token="synthetic-test-token",
+    )
+    with pytest.raises(EvaluationBlockedError, match="ambiguous") as captured:
+        await source.create_response(_payload())
+    assert "synthetic secret" not in str(captured.value)
+    assert len(client.calls) == 1

@@ -54,8 +54,9 @@ class _InspectingTransport(_Transport):
 
 class _FakeExactCounter:
     model = "gpt-6-luna"
+    counts_full_request = True
 
-    def __init__(self, count: int | None = None) -> None:
+    def __init__(self, count: int | None = 12) -> None:
         self.fixed_count = count
 
     def count(self, value: str) -> int:
@@ -95,9 +96,19 @@ def test_controller_fails_closed_without_approval_tokenizer_or_known_policy():
             approved_organization_id=1,
             session_guard=_AllowActiveSession(),
         )
-    with pytest.raises(EvaluationBlockedError, match="tokenizer"):
+    with pytest.raises(EvaluationBlockedError, match="full Responses request"):
         ModelEvaluationController(
             policy=EvaluationPolicy(), exact_token_counter=None,
+            transport=transport, explicitly_approved=True,
+            approved_run_id="approved-eval",
+            approved_organization_id=1,
+            session_guard=_AllowActiveSession(),
+        )
+    text_only_counter = _FakeExactCounter()
+    text_only_counter.counts_full_request = False
+    with pytest.raises(EvaluationBlockedError, match="full Responses request"):
+        ModelEvaluationController(
+            policy=EvaluationPolicy(), exact_token_counter=text_only_counter,
             transport=transport, explicitly_approved=True,
             approved_run_id="approved-eval",
             approved_organization_id=1,
@@ -149,6 +160,7 @@ async def test_reservation_is_durable_before_dispatch_and_sdk_retry_is_zero(db):
         EvaluationTransportResult("zero output", 10, 0),
         EvaluationTransportResult("input overrun", 3001, 10),
         EvaluationTransportResult("output overrun", 10, 501),
+        EvaluationTransportResult("count mismatch", 11, 8),
     ],
 )
 async def test_missing_malformed_or_overrun_usage_stays_reserved(db, result):
@@ -209,7 +221,7 @@ async def test_concurrent_attempt_is_blocked_by_durable_unresolved_reservation(d
         transport.calls.append(kwargs)
         entered.set()
         await release.wait()
-        return EvaluationTransportResult("first", 10, 5)
+        return EvaluationTransportResult("first", 12, 5)
 
     transport.send = paused_send
     controller = _controller(transport, organization_id=organization.id)

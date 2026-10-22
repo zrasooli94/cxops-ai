@@ -105,4 +105,4 @@ def test_mocked_replay_uses_full_history_citations_and_handoff_silence():
         if turn["expected_behavior"] == "silence_after_handoff":
             assert result["mocked_reply"] is None
             assert result["session_state_after"] == "human_requested"
-        assert result["exact_token_admission"] == "blocked_unverified_tokenizer"
+        assert result["exact_token_admission"] == "blocked_unverified_full_responses_request_count"

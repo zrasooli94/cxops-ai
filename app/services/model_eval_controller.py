@@ -1,8 +1,9 @@
 """Provider-disconnected safety controller for a future approved model evaluation.
 
 The controller has no OpenAI client and cannot create credentials. Tests supply an
-in-memory transport and an exact token counter. A real adapter must remain absent
-until the owner separately approves the run and configures a restricted key.
+injected transport and synthetic full-request count. The HTTPS source remains
+uncomposed and disabled until the owner separately approves a run and configures
+a restricted key.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ class EvaluationTransportResult:
 
 class ExactTokenCounter(Protocol):
     model: str
+    counts_full_request: bool
 
     def count(self, serialized_input: str) -> int: ...
 
@@ -135,14 +137,26 @@ class ModelEvaluationController:
         self, *, policy: EvaluationPolicy, exact_token_counter: ExactTokenCounter | None,
         transport: EvaluationTransport, explicitly_approved: bool, approved_run_id: str,
         approved_organization_id: int, session_guard: SessionDispatchGuard,
+        development_provider_source_enabled: bool = False,
+        environment: str = "development",
     ) -> None:
         policy.validate()
         if not explicitly_approved:
             raise EvaluationBlockedError("evaluation approval is required")
-        if exact_token_counter is None or exact_token_counter.model != policy.model:
-            raise EvaluationBlockedError("an exact tokenizer is required")
-        if not transport.provider_disconnected:
-            raise EvaluationBlockedError("real provider transport is not enabled")
+        if (
+            exact_token_counter is None
+            or exact_token_counter.model != policy.model
+            or getattr(exact_token_counter, "counts_full_request", False) is not True
+        ):
+            raise EvaluationBlockedError(
+                "an exact full Responses request token count is required"
+            )
+        if not transport.provider_disconnected and not (
+            development_provider_source_enabled and environment == "development"
+        ):
+            raise EvaluationBlockedError(
+                "real provider transport requires the separate development runtime gate"
+            )
         if re.fullmatch(r"[A-Za-z0-9-]{1,64}", approved_run_id) is None:
             raise EvaluationBlockedError("invalid approved evaluation id")
         self.policy = policy
@@ -163,8 +177,9 @@ class ModelEvaluationController:
             raise EvaluationBlockedError("turn cap exceeded")
         if retry_number not in {0, 1}:
             raise EvaluationBlockedError("one retry per turn is allowed")
-        if self.count_tokens(serialized_input) > self.policy.max_input_tokens:
-            raise EvaluationBlockedError("full serialized input exceeds token cap")
+        admitted_input_tokens = self.count_tokens(serialized_input)
+        if admitted_input_tokens > self.policy.max_input_tokens:
+            raise EvaluationBlockedError("full Responses request exceeds token cap")
 
         prefix = f"{self.PREFIX}{organization_id}:{run_id}:"
         await db.execute(select(func.pg_advisory_xact_lock(AI_BUDGET_LOCK_KEY)))
@@ -244,6 +259,7 @@ class ModelEvaluationController:
             or result.output_tokens <= 0
             or result.input_tokens > self.policy.max_input_tokens
             or result.output_tokens > self.policy.max_output_tokens
+            or result.input_tokens != admitted_input_tokens
         ):
             await db.rollback()
             raise AmbiguousModelOutcome(

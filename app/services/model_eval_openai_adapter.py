@@ -2,8 +2,8 @@
 
 This module deliberately has no OpenAI client and reads no credentials.  It makes
 the future wire contract testable with an injected, provider-disconnected
-transport while failing closed when the installed tokenizer does not explicitly
-map the configured model.
+transport while failing closed because local text tokenization cannot certify
+the full structured Responses request.
 """
 
 from __future__ import annotations
@@ -47,7 +47,9 @@ class ParsedGroundedResponse:
 
 
 class TiktokenExactModelCounter:
-    """Exact only when tiktoken's installed registry names the model itself."""
+    """Text-only counter that is never valid for full-request admission."""
+
+    counts_full_request = False
 
     def __init__(self, model: str) -> None:
         import tiktoken
@@ -80,10 +82,14 @@ class ProviderDisconnectedResponsesAdapter:
         model: str = MODEL,
         service_tier: str = "default",
         cache_retention: str = "30m",
+        development_provider_source_enabled: bool = False,
+        environment: str = "development",
     ) -> None:
         if not explicitly_approved:
             raise EvaluationBlockedError("evaluation approval is required")
-        if not transport.provider_disconnected:
+        if not transport.provider_disconnected and not (
+            development_provider_source_enabled and environment == "development"
+        ):
             raise EvaluationBlockedError("real provider transport is not enabled")
         if (model, service_tier, cache_retention) != (self.MODEL, "default", "30m"):
             raise EvaluationBlockedError("unapproved provider configuration")
@@ -143,9 +149,11 @@ class ProviderDisconnectedResponsesAdapter:
             "reasoning": {"effort": "none"},
             "max_output_tokens": cls.MAX_OUTPUT_TOKENS,
             "service_tier": "default",
-            "prompt_cache_options": {"ttl": "30m"},
+            # Explicit mode with no breakpoints disables cache reads/writes.
+            "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
             "store": False,
             "stream": False,
+            "truncation": "disabled",
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -254,10 +262,9 @@ class DisconnectedResponsesEvaluationTransport:
     injected transport. No OpenAI client or credential is constructed here.
     """
 
-    provider_disconnected = True
-
     def __init__(self, adapter: ProviderDisconnectedResponsesAdapter) -> None:
         self.adapter = adapter
+        self.provider_disconnected = adapter.transport.provider_disconnected
 
     async def send(
         self,

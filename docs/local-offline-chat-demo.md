@@ -125,6 +125,13 @@ retrieval is lexical and text-only; scanned PDFs need OCR outside this demo;
 analytics are point-in-time counts; the install host is a placeholder; and the
 responder is deterministic rather than a genuine model. Paid-model evaluation
 and credentials remain disabled pending explicit approval.
+An ambiguous staff-reply request can be reconciled safely while the page remains
+open, using its opaque request id; a browser restart loses that in-memory id.
+The UI never stores reply bodies in browser storage and never automatically
+resends an uncertain request. Cross-restart recovery is intentionally deferred
+because the current system has no expiring server-backed recovery descriptor;
+adding one would require a new persistence contract rather than weakening the
+existing tenant, actor, conversation, and payload binding.
 
 ## Paid-model evaluation readiness
 
@@ -142,31 +149,62 @@ The source-only baseline is `gpt-6-luna`, which the official model page lists
 as a supported Chat Completions model for focused, high-volume work:
 https://developers.openai.com/api/docs/models/gpt-6-luna. Standard token prices
 were verified on 2026-10-21 as $0.10 input and $0.50 output per million tokens;
-the plan conservatively uses the $0.125 30-minute cache-write input rate:
+the plan also shows a conservative hypothetical using the $0.125 30-minute
+cache-write input rate:
 https://developers.openai.com/api/docs/pricing. The 50-turn plan caps input at
-3,000 tokens and output at 500 tokens per turn. Its $0.0625 worst-case treats
+3,000 counted full-request tokens for admission and requests at most 500 output
+tokens per turn; 3,000 is not a provider truncation setting. Its $0.0625
+cache-write-rate arithmetic treats
 the configured one retry as a second fully billed attempt for every turn (100
-total attempts), rather than assuming failed attempts are free. The disconnected
+total attempts), rather than assuming failed attempts are free. Standard-rate
+generation arithmetic is $0.055, or $0.0605 with a 10% regional uplift;
+all-input cache-write arithmetic is $0.0625, or $0.06875 with that uplift.
+These figures exclude unverified token-counting endpoint charges, taxes, and
+other invoice effects and therefore do not guarantee an all-inclusive total.
+The current request contract sets `prompt_cache_options.mode=explicit` with
+`ttl=30m` and no breakpoints, which the official cache guide says disables cache
+reads and writes;
+the cache-write figures are therefore a conservative scenario, not a prediction
+of this exact payload: https://developers.openai.com/api/docs/guides/prompt-caching.
+The disconnected
 `ModelEvaluationController` contract reserves a full attempt before its injected
 mock transport, retains ambiguous-timeout reservations for manual reconciliation,
-passes zero SDK retries, requires a model-matched token-counter contract, and rejects 12-hour cache
+passes zero SDK retries, requires a model-matched full-Responses-request counting
+contract, and rejects 12-hour cache
 retention under the $0.10 ceiling because it leaves no headroom. The local
 Responses contract adapter serializes retrieved business knowledge and bounded
 conversation history, validates a strict structured response, and suppresses
-generation for restored `human_requested`/`human_assigned` sessions. Its
+generation for restored `human_requested`/`human_assigned` sessions. Its default
 transport is injectable and must declare itself provider-disconnected. This
 contract does not prove factual entailment from a cited chunk, and a real
 integration must atomically re-read handoff state immediately before dispatch;
 the current restored-session test does not claim to close that race.
 
-The installed `tiktoken` registry does not map `gpt-6-luna`, so exact full-input
-token accounting deliberately fails closed. There is no real provider transport
-or credential wiring, so the controller remains unusable for a real request and
-`$0.0625` is a tested arithmetic bound at the supplied rates—not measured spend.
+The installed `tiktoken` registry does not map `gpt-6-luna`. Even if a future
+local registry did map it, text tokenization alone would not establish the full
+structured Responses request count. Exact admission therefore remains blocked
+pending an authorized result from `POST /v1/responses/input_tokens` and verified
+pricing for that request; this project does not call it. A genuine HTTPS source
+path records `/v1/responses/input_tokens` and pins `/v1/responses`, zero automatic retries,
+the fixed structured request, a 30-second timeout, and redacted errors. It is not
+composed into startup and is unreachable under checked-in defaults: its feature
+flag is false and production rejects that flag. Source construction requires
+explicit approval, an injected restricted credential, and an injected client;
+end-to-end controller admission additionally requires a payload-bound
+full-request count. The count method itself fails before HTTP until
+its request cost is verified and included within durable reservation, attempt,
+tenant/run, and handoff admission. The controller therefore remains unusable for
+a real request under current configuration, and
+the quoted figures are tested arithmetic at supplied rates—not measured spend or
+an invoice guarantee.
+The full-request counting behavior and structural-token limitation were checked
+against the official guide on 2026-10-22:
+https://developers.openai.com/api/docs/guides/token-counting.
 Before any real
 run, the owner must still approve the provider, model, credential method, and
-usage ceiling, and engineering must verify an exact tokenizer, current model and
-pricing, account access, and the real transport. The normal production OpenAI
+usage ceiling, and engineering must verify the full-request counting endpoint's
+availability and cost, current model and pricing, account access, and the real
+transport. The normal production OpenAI
 adapters (which this evaluation path does not invoke) apply `CHAT_MAX_OUTPUT_TOKENS`
 (default 500), a 30-second timeout, one retry, and `reasoning_effort=none` for
 the GPT-6 Chat Completions compatibility path.

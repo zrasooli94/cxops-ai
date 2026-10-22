@@ -2275,6 +2275,7 @@ async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
 
     class ExactCounter:
         model = "gpt-6-luna"
+        counts_full_request = True
 
         @staticmethod
         def count(_value):

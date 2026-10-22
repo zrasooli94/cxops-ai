@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     openai_request_timeout_seconds: float = 30.0
     openai_max_retries: int = 1
 
+    # Source-only evaluation path. Nothing in application composition consumes
+    # this flag yet; the live HTTPS transport also requires explicit approval,
+    # an injected credential, and an exact full-request count. It is kept false
+    # in every checked-in environment.
+    model_eval_openai_source_enabled: bool = False
+
     @field_validator("chat_max_output_tokens", mode="after")
     @classmethod
     def _bound_chat_output_tokens(cls, value: int) -> int:
@@ -119,6 +125,10 @@ class Settings(BaseSettings):
         if self.environment == "production" and self.public_chat_offline_provider_enabled:
             raise ValueError(
                 "PUBLIC_CHAT_OFFLINE_PROVIDER_ENABLED cannot be enabled in production"
+            )
+        if self.environment == "production" and self.model_eval_openai_source_enabled:
+            raise ValueError(
+                "MODEL_EVAL_OPENAI_SOURCE_ENABLED cannot be enabled in production"
             )
         if self.environment == "production" and self.auth_mode == "hs256":
             raise ValueError(

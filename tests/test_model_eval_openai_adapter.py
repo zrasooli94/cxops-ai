@@ -110,8 +110,9 @@ async def test_fixed_request_contract_and_grounded_response_parsing():
     assert payload["model"] == "gpt-6-luna"
     assert payload["reasoning"] == {"effort": "none"}
     assert payload["max_output_tokens"] == 500
-    assert payload["prompt_cache_options"] == {"ttl": "30m"}
+    assert payload["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
     assert payload["store"] is False and payload["stream"] is False
+    assert payload["truncation"] == "disabled"
     assert payload["text"]["format"]["strict"] is True
 
 

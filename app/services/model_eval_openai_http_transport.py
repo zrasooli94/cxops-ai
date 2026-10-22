@@ -1,9 +1,9 @@
-"""Disabled-by-design HTTP seam for the bounded Responses evaluation.
+"""HTTP boundaries for the bounded Responses evaluation.
 
-The seam accepts only an injected, explicitly disconnected client.  It neither
-constructs an HTTP client nor accepts credentials, headers, endpoint overrides,
-or retry configuration.  A future real transport therefore requires a separate
-source change and review rather than a configuration toggle.
+The default seam accepts only an injected disconnected client. A separate real
+HTTPS source exists for future development composition, but checked-in settings
+disable it and authenticated full-request counting remains fail-closed because
+its request cost has not been verified or included in the evaluation ceiling.
 """
 
 from __future__ import annotations
@@ -57,6 +57,7 @@ class ProviderDisconnectedResponsesHttpTransport:
         "prompt_cache_options",
         "store",
         "stream",
+        "truncation",
         "text",
     })
 
@@ -119,9 +120,10 @@ class ProviderDisconnectedResponsesHttpTransport:
             or payload.get("service_tier") != "default"
             or payload.get("max_output_tokens") != 500
             or payload.get("reasoning") != {"effort": "none"}
-            or payload.get("prompt_cache_options") != {"ttl": "30m"}
+            or payload.get("prompt_cache_options") != {"mode": "explicit", "ttl": "30m"}
             or payload.get("store") is not False
             or payload.get("stream") is not False
+            or payload.get("truncation") != "disabled"
             or not isinstance(payload.get("input"), str)
             or not payload["input"]
         ):
@@ -134,3 +136,124 @@ class ProviderDisconnectedResponsesHttpTransport:
 
         if payload != ProviderDisconnectedResponsesAdapter.request_payload(payload["input"]):
             raise ConfirmedNoDispatchError("structured JSON output contract changed")
+
+
+class DevelopmentHttpClient(Protocol):
+    """Minimal injected client contract; the transport never constructs a client."""
+
+    max_retries: int
+
+    async def post(
+        self,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> DisconnectedHttpResponse: ...
+
+
+class DevelopmentOpenAIResponsesHttpSource:
+    """Real HTTPS source path, unreachable under checked-in defaults.
+
+    The class is deliberately not wired into application startup. Construction
+    requires a development environment, a separately enabled feature flag,
+    explicit evaluation approval, an injected no-retry client, and an injected
+    bearer credential. Tests use synthetic values and never open a socket.
+    """
+
+    provider_disconnected = False
+    RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
+    INPUT_TOKENS_ENDPOINT = "https://api.openai.com/v1/responses/input_tokens"
+    TIMEOUT_SECONDS = 30.0
+    MAX_REQUEST_BYTES = 65_536
+
+    def __init__(
+        self,
+        client: DevelopmentHttpClient,
+        *,
+        environment: str,
+        feature_enabled: bool,
+        explicitly_approved: bool,
+        bearer_token: str,
+    ) -> None:
+        if environment != "development" or not feature_enabled:
+            raise EvaluationBlockedError("development provider source is disabled")
+        if not explicitly_approved:
+            raise EvaluationBlockedError("evaluation approval is required")
+        if getattr(client, "max_retries", None) != 0:
+            raise EvaluationBlockedError("provider HTTP client must disable retries")
+        if not bearer_token or any(char.isspace() for char in bearer_token):
+            raise EvaluationBlockedError("an injected restricted credential is required")
+        self._client = client
+        self._headers = {
+            "Authorization": f"Bearer {bearer_token}",
+            "Content-Type": "application/json",
+        }
+
+    @staticmethod
+    def _validate_payload(payload: dict[str, Any]) -> None:
+        ProviderDisconnectedResponsesHttpTransport._validate_payload(payload)
+
+    @staticmethod
+    def _payload_for_input(serialized_input: str) -> dict[str, Any]:
+        from app.services.model_eval_openai_adapter import (
+            ProviderDisconnectedResponsesAdapter,
+        )
+
+        return ProviderDisconnectedResponsesAdapter.request_payload(serialized_input)
+
+    async def count_input_tokens(self, payload: dict[str, Any]) -> None:
+        """Fail closed until count requests are inside durable cost admission.
+
+        The official endpoint and payload contract are recorded here, but its
+        price is unverified. Emitting even a count request outside the durable
+        reservation/attempt/handoff envelope would weaken the hard ceiling.
+        """
+        self._validate_payload(payload)
+        raise EvaluationBlockedError(
+            "authenticated full-request counting is disabled until its cost is verified "
+            "and included in durable admission"
+        )
+
+    async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._validate_payload(payload)
+        response = await self._post(self.RESPONSES_ENDPOINT, payload)
+        try:
+            body = response.json()
+        except (TypeError, ValueError):
+            raise EvaluationBlockedError("provider returned malformed JSON") from None
+        if not isinstance(body, dict):
+            raise EvaluationBlockedError("provider response envelope is not an object")
+        return body
+
+    async def _post(
+        self, endpoint: str, payload: dict[str, Any]
+    ) -> DisconnectedHttpResponse:
+        size = len(json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8"))
+        if size > self.MAX_REQUEST_BYTES:
+            raise ConfirmedNoDispatchError("request exceeds the fixed byte boundary")
+        try:
+            response = await self._client.post(
+                endpoint,
+                json=payload,
+                headers=self._headers,
+                timeout=self.TIMEOUT_SECONDS,
+            )
+        except ConfirmedNoDispatchError:
+            raise
+        except Exception:  # noqa: BLE001 - redact injected client/provider diagnostics
+            raise EvaluationBlockedError("provider outcome is ambiguous") from None
+        status = response.status_code
+        if not isinstance(status, int) or isinstance(status, bool):
+            raise EvaluationBlockedError("provider returned an invalid HTTP status")
+        if status < 200 or status >= 300:
+            raise EvaluationBlockedError(f"provider returned HTTP status {status}")
+        content_type = str(response.headers.get("content-type", "")).lower()
+        if "text/event-stream" in content_type:
+            raise EvaluationBlockedError("streamed Responses are not supported")
+        if "application/json" not in content_type:
+            raise EvaluationBlockedError("provider response is not JSON")
+        return response

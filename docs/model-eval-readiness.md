@@ -27,6 +27,8 @@ blocked for exact-token admission.
 - SDK retries are zero and only attempt numbers 1–2 are admitted per turn.
 - Missing, malformed, negative, or over-cap provider usage is ambiguous: the
   reservation stays open and the run stops for reconciliation.
+- Reported response input usage must exactly equal the payload-bound admission
+  count; a mismatch remains ambiguous and keeps the reservation open.
 - Confirmed usage within the 3,000-input/500-output caps settles the conservative
   maximum reservation. The reservation column has six-decimal precision, so it
   is intentionally not rewritten with a potentially rounded token-level value.
@@ -37,20 +39,21 @@ blocked for exact-token admission.
 
 ## Finite blockers before an owner-approved real evaluation
 
-1. Verify an exact tokenizer mapping for the final approved model. Installed
-   `tiktoken` does not currently map `gpt-6-luna`; byte/character estimates are
-   not accepted for admission.
+1. Obtain an exact full-request count from the authenticated Responses input-token
+   endpoint for each final payload. Installed `tiktoken` does not map
+   `gpt-6-luna`, and even a text-tokenizer mapping would omit request-structure
+   tokens; byte/character estimates are not accepted for admission. Pricing for
+   the count request is also unverified.
 2. Re-verify the exact model identifier, Responses schema, service tier, cache
    policy, and current official prices immediately before approval.
 3. Verify the owner's API project can access that exact model using a securely
    configured restricted credential. No credential exists in this source path.
-4. Replace the deliberately disconnected HTTP seam with a separately reviewed
-   real transport. The current seam accepts only an injected mock client, has no
-   credential/header path, makes one mock-target POST, and preserves the
-   zero-retry and ambiguous-outcome reconciliation behavior. Executable code
-   uses a non-routable `mock://provider-disconnected/...` target; the official
-   HTTPS endpoint appears only below as documentation evidence. It is contract
-   preparation, not a live provider implementation.
+4. Review and deliberately compose the new development-only HTTPS source with a
+   securely injected restricted credential. It pins the count/create endpoints,
+   zero retries and redacted failures, but is not wired into startup. The checked-in
+   feature flag is false and production rejects it; all tests inject a mock client.
+   Its input-count method deliberately fails before HTTP until count-request cost
+   can be included in the same durable reservation and handoff envelope.
 5. Obtain explicit owner approval for the provider, model, credential method,
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
@@ -64,10 +67,15 @@ The disabled seam follows the official Responses create reference at
 <https://developers.openai.com/api/reference/resources/responses/methods/create>:
 `POST https://api.openai.com/v1/responses`, nonstreaming `stream: false`,
 `store: false`, `max_output_tokens`, `service_tier`, structured JSON through
-`text.format` with `type: json_schema`, `prompt_cache_options.ttl`, and response
+`text.format` with `type: json_schema`, `prompt_cache_options.mode/ttl`, and response
 `usage.input_tokens` / `usage.output_tokens`. The reference says the cache TTL
 currently supports `30m` and deprecates `prompt_cache_retention` in favor of
-`prompt_cache_options.ttl`.
+`prompt_cache_options.mode/ttl`.
+
+The exact-count requirement follows the official token-counting guide at
+<https://developers.openai.com/api/docs/guides/token-counting>, which states that
+the input-token endpoint accepts the Responses request format and includes
+structural tokens that local text tokenizers can omit.
 
 The official model page at
 <https://developers.openai.com/api/docs/models/gpt-6-luna> listed the exact
