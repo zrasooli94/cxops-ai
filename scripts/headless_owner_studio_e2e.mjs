@@ -95,23 +95,24 @@ async function main() {
   await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('7:15 PM')`, 15000);
 
-  await setValue("#cxops-chat-input", "Do you offer synthetic snowboard waxing?");
+  await setValue("#cxops-chat-input", "آيا ضمانت Trek FX برای باتری ۲۵ ماه است؟");
   await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
   await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('needs to review')`, 15000);
 
-  const evidenceDocument = await evaluate(`(()=>{const form=new FormData();form.set('file',new File(['Synthetic snowboard waxing requires owner confirmation before Tuesday.'],'unrelated-evidence-title.txt',{type:'text/plain'}));return fetch('/api/local-demo/backend/staff/tenant-config/offline-documents',{method:'POST',headers:{'x-cxops-local-origin':location.origin},body:form}).then((response)=>response.json())})()`);
+  const evidenceDocument = await evaluate(`(()=>{const form=new FormData();form.set('file',new File(['ضمانت Trek FX برای باتری نیاز به تأیید مالک دارد.'],'unrelated-evidence-title.txt',{type:'text/plain'}));return fetch('/api/local-demo/backend/staff/tenant-config/offline-documents',{method:'POST',headers:{'x-cxops-local-origin':location.origin},body:form}).then((response)=>response.json())})()`);
   if (!evidenceDocument?.document_id) throw new Error("evidence document upload failed");
 
+  await evaluate(`localStorage.setItem('cxops.owner.language','fa')`);
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=inbox" }, sessionId);
   await waitFor(`document.body.innerText.includes('Shared inbox') && document.body.innerText.includes('Claim & take over')`);
-  await waitFor(`document.querySelector('[aria-label="Knowledge gap review"]')?.innerText.includes('Do you offer synthetic snowboard waxing?')`);
-  await waitFor(`document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('Synthetic snowboard waxing requires owner confirmation') && document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('Document')`);
+  await waitFor(`document.querySelector('[aria-label="Knowledge gap review"]')?.innerText.includes('ضمانت Trek FX')`);
+  await waitFor(`document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('ضمانت Trek FX برای باتری نیاز به تأیید مالک دارد') && document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('سند')`);
   const originalGapConversationSnapshot = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))`);
-  await clickText("Draft FAQ from question");
-  await waitFor(`document.body.innerText.includes('Business FAQs') && [...document.querySelectorAll('[data-faq-index] input')].at(-1)?.value==='Do you offer synthetic snowboard waxing?'`);
-  await evaluate(`(()=>{const e=[...document.querySelectorAll('[data-faq-index] textarea')].at(-1);if(!e)return false;const s=Object.getOwnPropertyDescriptor(e.constructor.prototype,'value').set;s.call(e,'Synthetic snowboard waxing is available Tuesday at 4:30 PM.');e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
-  await clickText("Save FAQs");
+  await clickText("ساخت پیش‌نویس پرسش متداول");
+  await waitFor(`document.body.innerText.includes('پرسش‌های متداول کسب‌وکار') && [...document.querySelectorAll('[data-faq-index] input')].at(-1)?.value.includes('ضمانت Trek FX')`);
+  await evaluate(`(()=>{const e=[...document.querySelectorAll('[data-faq-index] textarea')].at(-1);if(!e)return false;const s=Object.getOwnPropertyDescriptor(e.constructor.prototype,'value').set;s.call(e,'ضمانت Trek FX برای باتری ۲۵ ماه است.');e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
+  await clickText("ذخیره پرسش‌ها");
   await waitFor(`document.body.innerText.includes('FAQ knowledge saved')`);
   await clickText("inbox");
   await waitFor(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))===${JSON.stringify(originalGapConversationSnapshot)}`);
@@ -148,10 +149,10 @@ async function main() {
   await waitFor(`document.body.innerText.includes('Assistant setup') && !!document.querySelector('[aria-label="Open support chat"]')`);
   await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
   await waitFor(`!!document.querySelector('#cxops-chat-input')`);
-  await setValue("#cxops-chat-input", "Do you offer synthetic snowboard waxing?");
+  await setValue("#cxops-chat-input", "ضمانت Trek FX باتری چند ماه است؟");
   await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
   await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
-  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('Tuesday at 4:30 PM')`, 15000);
+  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('۲۵ ماه')`, 15000);
   const faqCleanupStatus = await evaluate(`fetch('/api/local-demo/backend/staff/tenant-config/offline-faqs',{method:'PUT',headers:{'content-type':'application/json','x-cxops-local-origin':location.origin},body:JSON.stringify({items:JSON.parse(${JSON.stringify(originalFaqs)})})}).then((response)=>response.status)`);
   if (faqCleanupStatus !== 200) throw new Error(`FAQ cleanup failed with ${faqCleanupStatus}`);
   const evidenceCleanupStatus = await evaluate(`fetch('/api/local-demo/backend/staff/tenant-config/offline-documents/${evidenceDocument.document_id}',{method:'DELETE',headers:{'x-cxops-local-origin':location.origin}}).then((response)=>response.status)`);

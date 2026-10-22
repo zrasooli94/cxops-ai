@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildKnowledgeGapReview, summarizeOwnerStudio } from "./owner-studio.ts";
+import {
+  buildKnowledgeGapReview,
+  evidenceCoverageLabel,
+  selectCurrentEvidence,
+  summarizeOwnerStudio,
+} from "./owner-studio.ts";
 
 describe("summarizeOwnerStudio", () => {
   it("derives tenant inbox metrics without counting closed handoffs as active", () => {
@@ -66,5 +71,25 @@ describe("buildKnowledgeGapReview", () => {
       true,
     );
     assert.equal(review?.relevantSources[0]?.title, "دوچرخه کودک");
+  });
+});
+
+describe("owner evidence panel states", () => {
+  const missing = { question: "پرسش قدیمی", coverage: "missing" as const, items: [] };
+
+  it("hides late evidence from the previously selected conversation", () => {
+    assert.equal(selectCurrentEvidence("پرسش تازه", missing), null);
+    assert.equal(selectCurrentEvidence(undefined, missing), null);
+    assert.equal(selectCurrentEvidence("پرسش قدیمی", null), null);
+    assert.equal(selectCurrentEvidence("پرسش قدیمی", missing), missing);
+  });
+
+  it("labels missing, ambiguous, and related results as lexical evidence in both languages", () => {
+    assert.equal(evidenceCoverageLabel("missing", "en"), "No lexical coverage");
+    assert.equal(evidenceCoverageLabel("ambiguous", "en"), "Multiple lexical matches");
+    assert.equal(evidenceCoverageLabel("related", "en"), "Lexical match found");
+    assert.equal(evidenceCoverageLabel("missing", "fa"), "پوشش واژگانی یافت نشد");
+    assert.equal(evidenceCoverageLabel("ambiguous", "fa"), "چند هم‌پوشانی واژگانی");
+    assert.equal(evidenceCoverageLabel("related", "fa"), "هم‌پوشانی واژگانی یافت شد");
   });
 });

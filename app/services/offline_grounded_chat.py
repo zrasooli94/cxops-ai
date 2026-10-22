@@ -44,7 +44,11 @@ _DOCUMENT_INSTRUCTION = re.compile(
     r"|دستور(?:العمل)?\s*(?:سیستم|قبلی)|پیام\s*سیستم",
     re.IGNORECASE,
 )
-_PERSIAN_VARIANTS = str.maketrans({"ي": "ی", "ى": "ی", "ك": "ک", "ة": "ه", "ۀ": "ه"})
+_PERSIAN_VARIANTS = str.maketrans({
+    "ي": "ی", "ى": "ی", "ك": "ک", "ة": "ه", "ۀ": "ه",
+    "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
+    "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9",
+})
 _NUMBER = re.compile(r"(?<!\w)(?:\d+(?:[.,]\d+)?|[۰-۹]+)(?!\w)")
 _NUMBER_WORDS = frozenset({
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
@@ -186,7 +190,7 @@ class OfflineGroundedChat:
                 and len(shared_context) >= 3
                 and best_numbers
                 and runner_numbers
-                and best_numbers != runner_numbers
+                and best_numbers.isdisjoint(runner_numbers)
             ):
                 return None
         authored = chunk.content.strip()

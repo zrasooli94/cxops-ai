@@ -270,6 +270,73 @@ async def test_compatible_near_tied_evidence_does_not_force_handoff(db):
 
 
 @pytest.mark.asyncio
+async def test_compatible_numeric_evidence_with_extra_detail_does_not_conflict(db):
+    suffix = uuid.uuid4().hex[:8]
+    organization = Organization(name=f"Offline compatible quantities {suffix}")
+    db.add(organization)
+    await db.flush()
+    first = KnowledgeDocument(
+        organization_id=organization.id,
+        title="Trek FX battery warranty",
+        source="local_synthetic",
+        checksum=f"compatible-quantities-a-{suffix}",
+    )
+    second = KnowledgeDocument(
+        organization_id=organization.id,
+        title="Trek FX battery coverage",
+        source="local_synthetic",
+        checksum=f"compatible-quantities-b-{suffix}",
+    )
+    db.add_all([first, second])
+    await db.flush()
+    db.add_all([
+        KnowledgeChunk(
+            organization_id=organization.id,
+            document_id=first.id,
+            chunk_index=0,
+            content="Trek FX battery warranty lasts 25 months; inspect it every 6 months.",
+            token_count=12,
+            metadata_json={},
+            embedding=[0.0] * 1536,
+        ),
+        KnowledgeChunk(
+            organization_id=organization.id,
+            document_id=second.id,
+            chunk_index=0,
+            content="Trek FX battery warranty lasts 25 months.",
+            token_count=8,
+            metadata_json={},
+            embedding=[0.0] * 1536,
+        ),
+    ])
+    await db.commit()
+
+    answer = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="How long is the Trek FX battery warranty?",
+    )
+    assert answer is not None
+    assert "25 months" in answer.text
+
+
+@pytest.mark.asyncio
+async def test_conflicting_persian_and_ascii_digits_fail_closed(db):
+    suffix = uuid.uuid4().hex
+    organization = Organization(name=f"Offline Persian numeric conflict {suffix}")
+    db.add(organization)
+    await db.commit()
+    await _knowledge(db, organization_id=organization.id, title="هزینه Trek FX", content="هزینه سرویس Trek FX برابر ۲۵ رینگیت است.")
+    await _knowledge(db, organization_id=organization.id, title="قیمت Trek FX", content="هزینه سرویس Trek FX برابر 35 رینگیت است.")
+
+    assert await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="هزينه سرويس Trek FX چقدر است؟",
+    ) is None
+
+
+@pytest.mark.asyncio
 async def test_retrieval_paginates_past_first_two_hundred_chunks(db):
     suffix = uuid.uuid4().hex
     organization = Organization(name=f"Offline pagination {suffix}")

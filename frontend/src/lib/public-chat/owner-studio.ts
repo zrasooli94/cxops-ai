@@ -2,6 +2,11 @@ export type StudioConversationMetric = { status: string; needs_response: boolean
 export type StudioHandoffMetric = { status: string };
 export type StudioMessage = { direction: string; body: string };
 export type StudioKnowledgeSource = { title: string; content?: string };
+export type StudioEvidence = {
+  question: string;
+  coverage: "missing" | "ambiguous" | "related";
+  items: unknown[];
+};
 
 const OWNER_STOP_WORDS = new Set([
   "a", "an", "and", "are", "can", "do", "for", "how", "i", "is", "it", "my", "of", "on", "or", "the", "to", "what", "when", "where", "you",
@@ -39,6 +44,23 @@ export function buildKnowledgeGapReview(
     .sort((left, right) => right.overlap - left.overlap || left.title.localeCompare(right.title))
     .slice(0, 3);
   return { question, relevantSources };
+}
+
+export function selectCurrentEvidence<T extends StudioEvidence>(
+  question: string | undefined,
+  evidence: T | null,
+) {
+  return question && evidence?.question === question ? evidence : null;
+}
+
+export function evidenceCoverageLabel(
+  coverage: StudioEvidence["coverage"],
+  language: string,
+) {
+  const persian = language === "fa";
+  if (coverage === "missing") return persian ? "پوشش واژگانی یافت نشد" : "No lexical coverage";
+  if (coverage === "ambiguous") return persian ? "چند هم‌پوشانی واژگانی" : "Multiple lexical matches";
+  return persian ? "هم‌پوشانی واژگانی یافت شد" : "Lexical match found";
 }
 
 export function summarizeOwnerStudio(

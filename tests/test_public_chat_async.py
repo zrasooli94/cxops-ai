@@ -58,16 +58,27 @@ NO_ACTION = AgentDecision(
 class SlowDecisionLLM(base._CapturingDecisionLLM):
     """The fake model, with an optional delay and a per-session concurrency probe."""
 
-    def __init__(self, decision: AgentDecision, *, delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        decision: AgentDecision,
+        *,
+        delay: float = 0.0,
+        block_until_released: bool = False,
+    ) -> None:
         super().__init__(decision)
         self.delay = delay
         self.active = 0
         self.max_active = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event() if block_until_released else None
 
     async def ainvoke(self, messages: list) -> dict:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
+        self.started.set()
         try:
+            if self.release is not None:
+                await self.release.wait()
             if self.delay:
                 await asyncio.sleep(self.delay)
             return await super().ainvoke(messages)
@@ -75,14 +86,24 @@ class SlowDecisionLLM(base._CapturingDecisionLLM):
             self.active -= 1
 
 
-def _stub(monkeypatch, *, delay: float = 0.0, decision: AgentDecision = NO_ACTION):
+def _stub(
+    monkeypatch,
+    *,
+    delay: float = 0.0,
+    decision: AgentDecision = NO_ACTION,
+    block_until_released: bool = False,
+):
     async def _no_search(*_args, **_kwargs):
         return []
 
     from app.services.knowledge_search_service import KnowledgeSearchService
 
     monkeypatch.setattr(KnowledgeSearchService, "search", _no_search)
-    fake = SlowDecisionLLM(decision, delay=delay)
+    fake = SlowDecisionLLM(
+        decision,
+        delay=delay,
+        block_until_released=block_until_released,
+    )
     # Do not evaluate LazyAttribute.__get__ just to install a deterministic
     # test double: that would construct a real OpenAI client without secrets.
     monkeypatch.setitem(agent_workflow_service.__dict__, "decision_llm", fake)
@@ -166,6 +187,35 @@ async def test_async_message_is_accepted_without_waiting_for_the_model(
     assert fake.invocation_count == 1
     (job,) = await _jobs(db, org_id)
     assert job.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_async_late_takeover_wins_before_generated_reply_persists(
+    db, client, org_scope, monkeypatch
+):
+    fake = _stub(monkeypatch, block_until_released=True)
+    _org_id, token = await _setup(db, client, org_scope)
+    accepted = await _send(client, token, "Tell me about Trek FX service")
+    assert accepted.json()["processing_state"] == "accepted"
+
+    draining = asyncio.create_task(turn_dispatcher.drain())
+    await asyncio.wait_for(fake.started.wait(), timeout=1)
+    takeover = await asyncio.wait_for(
+        client.post(
+            "/public/chat/sessions/human", headers=base._origin_headers(token)
+        ),
+        timeout=1,
+    )
+    assert takeover.status_code == 200, takeover.text
+    assert fake.active == 1, "takeover must complete while mocked generation is blocked"
+    assert fake.release is not None
+    fake.release.set()
+    await draining
+
+    state = await _updates(client, token)
+    assert state["status"] == "human_requested"
+    assert [message["direction"] for message in state["messages"]] == ["inbound"]
+    assert fake.invocation_count == 1
 
 
 @pytest.mark.asyncio
