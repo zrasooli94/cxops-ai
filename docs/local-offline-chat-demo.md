@@ -135,21 +135,39 @@ per-turn input/output token limits, and fails closed when the worst-case cost
 at explicitly supplied rates exceeds the requested ceiling. For example:
 
 ```bash
-python -m scripts.plan_chat_model_evaluation \
-  --turns 50 --cost-ceiling-usd 0.25 \
-  --input-rate 0.10 --output-rate 0.50 --max-retries 1
+python -m scripts.plan_chat_model_evaluation
 ```
 
 The source-only baseline is `gpt-6-luna`, which the official model page lists
 as a supported Chat Completions model for focused, high-volume work:
 https://developers.openai.com/api/docs/models/gpt-6-luna. Standard token prices
-were verified on 2026-10-21 as $0.10 input and $0.50 output per million tokens:
+were verified on 2026-10-21 as $0.10 input and $0.50 output per million tokens;
+the plan conservatively uses the $0.125 30-minute cache-write input rate:
 https://developers.openai.com/api/docs/pricing. The 50-turn plan caps input at
-3,000 tokens and output at 500 tokens per turn. Its $0.055 worst-case treats
+3,000 tokens and output at 500 tokens per turn. Its $0.0625 worst-case treats
 the configured one retry as a second fully billed attempt for every turn (100
-total attempts), rather than assuming failed attempts are free. Before any real
+total attempts), rather than assuming failed attempts are free. The disconnected
+`ModelEvaluationController` contract reserves a full attempt before its injected
+mock transport, retains ambiguous-timeout reservations for manual reconciliation,
+passes zero SDK retries, requires a model-matched token-counter contract, and rejects 12-hour cache
+retention under the $0.10 ceiling because it leaves no headroom. The local
+Responses contract adapter serializes retrieved business knowledge and bounded
+conversation history, validates a strict structured response, and suppresses
+generation for restored `human_requested`/`human_assigned` sessions. Its
+transport is injectable and must declare itself provider-disconnected. This
+contract does not prove factual entailment from a cited chunk, and a real
+integration must atomically re-read handoff state immediately before dispatch;
+the current restored-session test does not claim to close that race.
+
+The installed `tiktoken` registry does not map `gpt-6-luna`, so exact full-input
+token accounting deliberately fails closed. There is no real provider transport
+or credential wiring, so the controller remains unusable for a real request and
+`$0.0625` is a tested arithmetic bound at the supplied rates—not measured spend.
+Before any real
 run, the owner must still approve the provider, model, credential method, and
-usage ceiling. The normal OpenAI adapters apply `CHAT_MAX_OUTPUT_TOKENS`
+usage ceiling, and engineering must verify an exact tokenizer, current model and
+pricing, account access, and the real transport. The normal production OpenAI
+adapters (which this evaluation path does not invoke) apply `CHAT_MAX_OUTPUT_TOKENS`
 (default 500), a 30-second timeout, one retry, and `reasoning_effort=none` for
 the GPT-6 Chat Completions compatibility path.
 

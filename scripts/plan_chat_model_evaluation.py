@@ -6,9 +6,7 @@ wire execution after current provider/model pricing and credentials are approved
 
 from __future__ import annotations
 
-import argparse
 import json
-import os
 
 from app.services.model_eval_budget import ModelEvalBudget, conservative_token_bound
 
@@ -27,38 +25,44 @@ CASES = [
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--turns", type=int, default=50)
-    parser.add_argument("--cost-ceiling-usd", type=float, default=0.25)
-    parser.add_argument("--input-rate", type=float, default=0.10)
-    parser.add_argument("--output-rate", type=float, default=0.50)
-    parser.add_argument("--max-retries", type=int, default=1)
-    args = parser.parse_args()
     budget = ModelEvalBudget(
         max_turns=50,
         max_input_tokens_per_turn=3000,
         max_output_tokens_per_turn=500,
-        max_attempts_per_turn=args.max_retries + 1,
-        input_cost_per_million=args.input_rate,
-        output_cost_per_million=args.output_rate,
-        cost_ceiling_usd=args.cost_ceiling_usd,
+        max_attempts_per_turn=2,
+        input_cost_per_million=0.125,
+        output_cost_per_million=0.50,
+        cost_ceiling_usd=0.10,
     )
-    worst_case = budget.validate(args.turns)
-    expanded = [CASES[index % len(CASES)] for index in range(args.turns)]
+    worst_case = budget.validate(50)
+    expanded = [CASES[index % len(CASES)] for index in range(50)]
     if any(conservative_token_bound(prompt) > budget.max_input_tokens_per_turn for _, prompt, _ in expanded):
         raise SystemExit("case exceeds the conservative input-token bound")
     print(json.dumps({
         "mode": "plan_only_no_provider_calls",
-        "model": os.getenv("CHAT_MODEL", "gpt-6-luna"),
-        "credential_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "model": "gpt-6-luna",
+        "credential_state": "not_inspected_or_configured",
         "turns": len(expanded),
         "languages": ["en", "fa"],
         "max_input_tokens_per_turn": budget.max_input_tokens_per_turn,
         "max_output_tokens_per_turn": budget.max_output_tokens_per_turn,
-        "max_retries": args.max_retries,
+        "max_retries": 1,
         "max_billable_attempts_per_turn": budget.max_attempts_per_turn,
         "max_billable_attempts_total": len(expanded) * budget.max_attempts_per_turn,
         "retry_accounting": "worst case treats every initial request and retry as fully billed",
+        "runtime_guards": "mock_transport_contract_only_provider_disconnected",
+        "sdk_retries": 0,
+        "orchestration_retries": 1,
+        "reservation_policy": (
+            "reserve the full attempt cost before dispatch; ambiguous timeouts retain "
+            "the reservation and stop for reconciliation"
+        ),
+        "serialized_input_scope": "system + history + retrieval + user + framing",
+        "excluded_paid_services": ["embeddings", "grader", "tools", "translation"],
+        "service_tier": "default",
+        "reasoning_effort": "none",
+        "streaming": False,
+        "prompt_cache_retention": "30m_max; 12h_rejected_at_this_ceiling",
         "cost_ceiling_usd": budget.cost_ceiling_usd,
         "worst_case_cost_usd_at_supplied_rates": round(worst_case, 6),
         "pricing_requires_owner_verified_current_rates": True,

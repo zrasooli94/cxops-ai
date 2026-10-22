@@ -2590,6 +2590,7 @@ async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
         answer="Synthetic support is open on Saturdays [S1]."
     ))
     first_token = (await _create_session(client, first_key))["session"]["token"]
+    same_tenant_other_token = (await _create_session(client, first_key))["session"]["token"]
     second_token = (await _create_session(client, second_key))["session"]["token"]
 
     previous = await client.post(
@@ -2598,6 +2599,13 @@ async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
         headers=_origin_headers(token=first_token),
     )
     assert previous.status_code == 200, previous.text
+
+    same_tenant_other_session = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "c3-iso-a-other", "text": "What about weekends?"},
+        headers=_origin_headers(token=same_tenant_other_token),
+    )
+    assert same_tenant_other_session.status_code == 200, same_tenant_other_session.text
 
     # Org B has no previous answered question. Nothing from org A is eligible
     # as a previous question, even though both sessions are active.
@@ -2619,7 +2627,7 @@ async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
     )
     assert standalone.status_code == 200, standalone.text
     assert [c["organization_id"] for c in calls] == [
-        first_org.id, second_org.id, first_org.id
+        first_org.id, first_org.id, second_org.id, first_org.id
     ]
     assert all(c["previous_customer_question"] is None for c in calls)
 

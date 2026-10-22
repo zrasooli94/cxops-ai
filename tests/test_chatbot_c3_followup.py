@@ -113,6 +113,16 @@ def test_one_preceding_answered_public_customer_question_is_selected() -> None:
     assert _lookup(_thread()) == QUESTION
 
 
+def test_context_never_crosses_conversation_or_tenant_boundary() -> None:
+    cross_conversation = _thread()
+    cross_conversation[0].conversation_id = CONVERSATION + 1
+    assert _lookup(cross_conversation) is None
+
+    cross_tenant = _thread()
+    cross_tenant[1].organization_id = ORG + 1
+    assert _lookup(cross_tenant) is None
+
+
 @pytest.mark.parametrize(
     ("index", "field", "value"),
     [

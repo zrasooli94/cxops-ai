@@ -25,9 +25,10 @@ class ModelEvalBudget:
 
     def validate(self, turns: int) -> float:
         worst_case = self.worst_case_cost_usd(turns)
-        if worst_case > self.cost_ceiling_usd:
+        if worst_case >= self.cost_ceiling_usd:
             raise ValueError(
-                f"worst-case ${worst_case:.6f} exceeds ${self.cost_ceiling_usd:.6f} ceiling"
+                f"worst-case ${worst_case:.6f} leaves no headroom below "
+                f"${self.cost_ceiling_usd:.6f} ceiling"
             )
         return worst_case
 
