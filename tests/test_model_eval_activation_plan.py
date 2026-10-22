@@ -44,9 +44,15 @@ def test_billable_count_cost_is_reserved_for_all_attempts_and_must_leave_headroo
     assert rendered["budget"]["combined_reservation_usd"] == 0.0725
     assert rendered["budget"]["positive_headroom"] is True
     assert rendered["activation_manifest"]["count_policy"] == {
+        "endpoint": "https://api.openai.com/v1/responses/input_tokens",
+        "model": "gpt-6-luna",
+        "region": "standard",
         "billing_status_claim": "billable",
         "evidence_url": "https://developers.openai.com/example",
         "evidence_verification": "operator_supplied_unverified_by_dry_run",
+        "evidence_id": None,
+        "evidence_expires_at": None,
+        "explicitly_approved": False,
         "reservation_per_attempt_usd": 0.0001,
         "reservation_all_attempts_usd": 0.01,
     }

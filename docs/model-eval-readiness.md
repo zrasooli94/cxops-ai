@@ -51,7 +51,8 @@ DATABASE_URL=postgresql+asyncpg://USER@127.0.0.1:PORT/TEST_DB \
   tests/test_public_chat.py::test_disabled_model_evaluation_path_requires_durable_session_bound_approval
 ```
 
-It injects a disconnected response transport and a synthetic exact counter. Its
+It injects disconnected response and exact-count transports plus a synthetic,
+independently-verified count billing policy. Its
 Persian answer is visibly prefixed `پاسخ ساختگی` (mock response), while the local
 owner studio continues to label itself “Offline responder · no paid AI”. This
 proves route composition and safety mechanics only; it is not a genuine model
@@ -69,7 +70,7 @@ make a server-only spending and approval boundary caller-controlled.
    durable approval and reservation, session restoration context, non-target
    fall-through, cross-tenant refusal, and same-tenant foreign-conversation
    rejection. The test-only controls are Python object injection, an in-memory
-   disconnected transport, a synthetic full-request counter, and direct ORM
+   disconnected transports, a synthetic decision-bound count policy, and direct ORM
    setup of a decision-bound activation record. None is exposed by application
    startup or HTTP.
 2. The existing isolated browser harness exercises the normal owner and visitor
@@ -102,7 +103,10 @@ provider account access, or paid spend.
 
 ## Enforced offline contract
 
-- One durable maximum-cost reservation is committed before each mocked dispatch.
+- A policy-declared maximum count charge is durably reserved before each mocked
+  exact-count dispatch. Only a positive exact count at or below 3,000 can proceed.
+- The conservative generation maximum is then reserved separately before the
+  mocked generation dispatch. Both charges contribute to the same US$0.10 cap.
 - Duplicate attempts are rejected explicitly; concurrent attempts stop while an
   unresolved reservation exists.
 - SDK retries are zero and only attempt numbers 1–2 are admitted per turn.
@@ -120,8 +124,9 @@ provider account access, or paid spend.
 
 ## Finite blockers before an owner-approved real evaluation
 
-1. Obtain an exact full-request count from the authenticated Responses input-token
-   endpoint for each final payload. Installed `tiktoken` does not map
+1. Obtain authoritative billing terms for the authenticated Responses input-token
+   endpoint, then bind a verified, expiring endpoint/model/region policy and its
+   maximum per-attempt charge into the approval snapshot. Installed `tiktoken` does not map
    `gpt-6-luna`, and even a text-tokenizer mapping would omit request-structure
    tokens; byte/character estimates are not accepted for admission. Pricing for
    the count request is also unverified.
@@ -134,8 +139,10 @@ provider account access, or paid spend.
    now wired to an injection seam, but checked-in startup intentionally leaves it
    uncomposed. The source pins the count/create endpoints, zero retries and
    redacted failures; all tests inject a mock client.
-   Its input-count method deliberately fails before HTTP until count-request cost
-   can be included in the same durable reservation and handoff envelope.
+   Its checked-in input-count method deliberately fails before HTTP. The generic
+   controller now validates and reserves a decision-bound count policy before an
+   injected count invocation, but a live count transport remains intentionally
+   uncomposed until authoritative billing evidence and separate authorization exist.
 5. Obtain explicit owner approval for the provider, model, credential method,
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
@@ -179,8 +186,14 @@ the authenticated `POST /v1/responses/input_tokens` operation but do not state
 whether it is billed or identify a charge unit/rate. The current decision is
 therefore **NO-GO**. The smallest unresolved evidence step is written OpenAI
 billing/support confirmation that names the endpoint, model, region, charge
-unit/rate, and failure/retry treatment. No support contact or authenticated
-count request has been authorized or performed.
+unit/rate, and failure/retry treatment. No authenticated count request has been
+authorized or performed; only the narrow billing inquiry was authorized.
+
+OpenAI's Help Center assistant could not certify the endpoint's price, failure
+charges, model-budget treatment, or endpoint-specific usage reporting and
+escalated the question to a support specialist on 2026-10-22. That automated
+response is not billing evidence. The specialist response is pending, so count
+billing remains unknown and all authenticated provider requests remain blocked.
 
 Restricted credential procedure: create a dedicated provider-project key with
 only the minimum Responses permissions and a project-side spend limit, store it

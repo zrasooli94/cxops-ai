@@ -26,7 +26,8 @@ from app.repositories.conversation_message_repository import (
 from app.services.model_eval_controller import (
     EvaluationBlockedError,
     EvaluationPolicy,
-    ExactTokenCounter,
+    ExactInputTokenCountTransport,
+    InputTokenCountPolicy,
     ModelEvaluationController,
 )
 from app.services.model_eval_openai_adapter import (
@@ -71,7 +72,9 @@ class PersistedEvaluationActivationGuard:
     async def require(
         db: AsyncSession, *, organization_id: int, run_id: str,
         public_chat_session_id: int,
+        runtime_count_policy: InputTokenCountPolicy,
     ) -> ApprovedEvaluationActivation:
+        runtime_count_policy.validate(expected_model=EvaluationPolicy().model)
         row = (
             await db.execute(
                 select(AIEvaluationRun, AIEvaluationReleaseDecision)
@@ -100,6 +103,10 @@ class PersistedEvaluationActivationGuard:
         manifest = run.input.get("provider_activation") if isinstance(run.input, dict) else None
         try:
             expires_at = datetime.fromisoformat(str(manifest["expires_at"]).replace("Z", "+00:00"))
+            count_policy = manifest["count_policy"]
+            count_evidence_expires_at = datetime.fromisoformat(
+                str(count_policy["evidence_expires_at"]).replace("Z", "+00:00")
+            )
         except (KeyError, TypeError, ValueError):
             raise EvaluationBlockedError("evaluation activation manifest is invalid") from None
         if (
@@ -117,7 +124,50 @@ class PersistedEvaluationActivationGuard:
             or manifest.get("max_turns") != 50
             or manifest.get("max_attempts") != 100
             or manifest.get("cost_ceiling_usd") != 0.10
+            or manifest.get("model") != "gpt-6-luna"
+            or manifest.get("service_tier") != "default"
+            or manifest.get("max_input_tokens") != 3000
+            or manifest.get("max_output_tokens") != 500
             or manifest.get("public_chat_session_id") != public_chat_session_id
+            or not isinstance(count_policy, dict)
+            or count_policy.get("endpoint")
+            != "https://api.openai.com/v1/responses/input_tokens"
+            or count_policy.get("model") != "gpt-6-luna"
+            or count_policy.get("region") != "standard"
+            or count_policy.get("billing_status_claim") != "billable"
+            or count_policy.get("evidence_verification") != "independently_verified"
+            or count_policy.get("explicitly_approved") is not True
+            or not str(count_policy.get("evidence_id", "")).strip()
+            or not isinstance(count_policy.get("reservation_per_attempt_usd"), (int, float))
+            or isinstance(count_policy.get("reservation_per_attempt_usd"), bool)
+            or count_policy["reservation_per_attempt_usd"] <= 0
+            or count_policy.get("reservation_all_attempts_usd")
+            != round(
+                count_policy["reservation_per_attempt_usd"]
+                * EvaluationPolicy().max_attempts,
+                6,
+            )
+            or manifest.get("combined_reservation_usd")
+            != round(
+                EvaluationPolicy().max_attempts
+                * (
+                    EvaluationPolicy().reserved_cost_per_attempt
+                    + count_policy["reservation_per_attempt_usd"]
+                ),
+                6,
+            )
+            or runtime_count_policy.endpoint != count_policy["endpoint"]
+            or runtime_count_policy.model != count_policy["model"]
+            or runtime_count_policy.region != count_policy["region"]
+            or runtime_count_policy.reservation_per_attempt_usd
+            != count_policy["reservation_per_attempt_usd"]
+            or runtime_count_policy.evidence_id != count_policy["evidence_id"]
+            or runtime_count_policy.evidence_expires_at.astimezone(UTC)
+            != count_evidence_expires_at.astimezone(UTC)
+            or runtime_count_policy.independently_verified is not True
+            or runtime_count_policy.explicitly_approved is not True
+            or count_evidence_expires_at.tzinfo is None
+            or count_evidence_expires_at <= datetime.now(UTC)
             or expires_at.tzinfo is None
             or expires_at <= datetime.now(UTC)
         ):
@@ -143,13 +193,15 @@ class PublicChatModelEvaluationProvider:
         self,
         *,
         run_id: str,
-        exact_token_counter: ExactTokenCounter,
+        count_policy: InputTokenCountPolicy,
+        count_transport: ExactInputTokenCountTransport,
         adapter: ProviderDisconnectedResponsesAdapter,
     ) -> None:
         if not run_id:
             raise EvaluationBlockedError("an approved evaluation run id is required")
         self.run_id = run_id
-        self.counter = exact_token_counter
+        self.count_policy = count_policy
+        self.count_transport = count_transport
         self.adapter = adapter
 
     async def targets(
@@ -162,6 +214,7 @@ class PublicChatModelEvaluationProvider:
                 organization_id=organization_id,
                 run_id=self.run_id,
                 public_chat_session_id=session_id,
+                runtime_count_policy=self.count_policy,
             )
         except EvaluationBlockedError:
             return False
@@ -184,6 +237,7 @@ class PublicChatModelEvaluationProvider:
             organization_id=organization_id,
             run_id=self.run_id,
             public_chat_session_id=session_id,
+            runtime_count_policy=self.count_policy,
         )
         bound_message = await db.scalar(
             select(ConversationMessage.id)
@@ -279,9 +333,12 @@ class PublicChatModelEvaluationProvider:
             knowledge=[(evidence.source_id, knowledge_row.content)],
             customer_message=question,
         )
+        request_payload = self.adapter.request_payload(serialized_input)
         controller = ModelEvaluationController(
             policy=EvaluationPolicy(),
-            exact_token_counter=self.counter,
+            exact_token_counter=None,
+            count_policy=self.count_policy,
+            count_transport=self.count_transport,
             transport=DisconnectedResponsesEvaluationTransport(self.adapter),
             explicitly_approved=True,
             approved_run_id=approval.run_id,
@@ -298,6 +355,7 @@ class PublicChatModelEvaluationProvider:
             retry_number=0,
             serialized_input=serialized_input,
             public_chat_session_id=session_id,
+            canonical_request_payload=request_payload,
         )
         parsed = json.loads(raw)
         if parsed.get("refused") is True:

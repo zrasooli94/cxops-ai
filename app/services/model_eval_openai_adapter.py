@@ -275,6 +275,7 @@ class DisconnectedResponsesEvaluationTransport:
         service_tier: str,
         cache_retention: str,
         sdk_max_retries: int,
+        request_payload: dict[str, Any] | None = None,
     ) -> EvaluationTransportResult:
         if (
             model != self.adapter.MODEL
@@ -282,6 +283,10 @@ class DisconnectedResponsesEvaluationTransport:
             or service_tier != "default"
             or cache_retention != "30m"
             or sdk_max_retries != 0
+            or (
+                request_payload is not None
+                and request_payload != self.adapter.request_payload(serialized_input)
+            )
         ):
             raise EvaluationBlockedError("controller and Responses policy do not match")
         result = await self.adapter.generate(serialized_input)

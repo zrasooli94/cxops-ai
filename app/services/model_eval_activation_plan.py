@@ -99,9 +99,15 @@ class OperatorActivationPlan:
         combined = generation_total + count_total
         headroom_ok = combined < policy.cost_ceiling_usd
         count_policy = {
+            "endpoint": "https://api.openai.com/v1/responses/input_tokens",
+            "model": policy.model,
+            "region": "standard",
             "billing_status_claim": self.count_billing_status,
             "evidence_url": self.count_billing_evidence_url,
             "evidence_verification": "operator_supplied_unverified_by_dry_run",
+            "evidence_id": None,
+            "evidence_expires_at": None,
+            "explicitly_approved": False,
             "reservation_per_attempt_usd": self.count_cost_reservation_per_attempt_usd,
             "reservation_all_attempts_usd": round(count_total, 6),
         }

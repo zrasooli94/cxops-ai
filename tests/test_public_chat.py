@@ -35,6 +35,7 @@ no auto-queued execution job, and never reaches "approved".
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -94,6 +95,8 @@ from app.services.model_eval_controller import (
     EvaluationBlockedError,
     EvaluationPolicy,
     EvaluationTransportResult,
+    ExactInputTokenCountResult,
+    InputTokenCountPolicy,
     ModelEvaluationController,
     PersistedPublicChatSessionGuard,
 )
@@ -203,11 +206,16 @@ _PURGE_TABLES = [
 
 
 class _SyntheticFullRequestCounter:
-    model = "gpt-6-luna"
-    counts_full_request = True
+    provider_disconnected = True
 
-    def count(self, _serialized_input: str) -> int:
-        return 120
+    async def count(self, **kwargs) -> ExactInputTokenCountResult:
+        digest = hashlib.sha256(json.dumps(
+            kwargs["request_payload"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")).hexdigest()
+        return ExactInputTokenCountResult(120, digest)
 
 
 class _SyntheticResponsesTransport:
@@ -2767,13 +2775,31 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         PublicChatSession.token_hash == hash_digest(token),
         PublicChatSession.organization_id == org.id,
     ))
+    count_evidence_expires_at = datetime.now(UTC) + timedelta(minutes=30)
     activation = {
         "purpose": "controlled_public_chat_model_evaluation",
         "max_turns": 50,
         "max_attempts": 100,
         "cost_ceiling_usd": 0.10,
+        "model": "gpt-6-luna",
+        "service_tier": "default",
+        "max_input_tokens": 3000,
+        "max_output_tokens": 500,
+        "combined_reservation_usd": 0.0635,
         "public_chat_session_id": session.id,
         "expires_at": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+        "count_policy": {
+            "endpoint": "https://api.openai.com/v1/responses/input_tokens",
+            "model": "gpt-6-luna",
+            "region": "standard",
+            "billing_status_claim": "billable",
+            "evidence_verification": "independently_verified",
+            "explicitly_approved": True,
+            "evidence_id": "synthetic-test-evidence",
+            "evidence_expires_at": count_evidence_expires_at.isoformat(),
+            "reservation_per_attempt_usd": 0.00001,
+            "reservation_all_attempts_usd": 0.001,
+        },
     }
     run = AIEvaluationRun(
         run_id=f"controlled-{uuid.uuid4().hex[:12]}",
@@ -2816,9 +2842,37 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         transport=transport,
         explicitly_approved=True,
     )
+    mismatched_provider = PublicChatModelEvaluationProvider(
+        run_id=run.run_id,
+        count_policy=InputTokenCountPolicy(
+            endpoint="https://api.openai.com/v1/responses/input_tokens",
+            model="gpt-6-luna",
+            region="standard",
+            reservation_per_attempt_usd=0.00002,
+            evidence_id="synthetic-test-evidence",
+            evidence_expires_at=count_evidence_expires_at,
+            independently_verified=True,
+            explicitly_approved=True,
+        ),
+        count_transport=_SyntheticFullRequestCounter(),
+        adapter=adapter,
+    )
+    assert not await mismatched_provider.targets(
+        db, organization_id=org.id, session_id=session.id,
+    )
     provider = PublicChatModelEvaluationProvider(
         run_id=run.run_id,
-        exact_token_counter=_SyntheticFullRequestCounter(),
+        count_policy=InputTokenCountPolicy(
+            endpoint="https://api.openai.com/v1/responses/input_tokens",
+            model="gpt-6-luna",
+            region="standard",
+            reservation_per_attempt_usd=0.00001,
+            evidence_id="synthetic-test-evidence",
+            evidence_expires_at=count_evidence_expires_at,
+            independently_verified=True,
+            explicitly_approved=True,
+        ),
+        count_transport=_SyntheticFullRequestCounter(),
         adapter=adapter,
     )
     monkeypatch.setattr(settings, "public_chat_model_eval_enabled", True)

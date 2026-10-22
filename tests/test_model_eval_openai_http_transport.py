@@ -319,7 +319,7 @@ async def test_persisted_handoff_suppresses_before_http_call(db):
     reservation = await db.scalar(select(AIUsageReservation).where(
         AIUsageReservation.organization_id == organization.id
     ))
-    assert reservation is not None and reservation.status == "settled"
+    assert reservation is None
     assert client.calls == []
 
 
