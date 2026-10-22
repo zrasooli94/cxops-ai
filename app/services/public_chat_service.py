@@ -588,6 +588,64 @@ class PublicChatService:
                 )
             )
 
+    @staticmethod
+    async def _lock_session_before_ai_reply(
+        db: AsyncSession,
+        *,
+        session_id: int,
+        organization_id: int,
+    ) -> PublicChatSession:
+        """Re-read handoff state under a short reply-persistence row lock.
+
+        Retrieval/model work happens before this lock. Once acquired, the
+        caller either discards a stale automated answer or persists it in the
+        same transaction. Staff/customer handoff that committed during
+        generation therefore wins without holding a database lock across model
+        I/O. A handoff arriving after this point is ordered after the reply.
+        """
+        locked = await PublicChatRepository.get_session_for_update_for_tenant(
+            db,
+            session_id=session_id,
+            organization_id=organization_id,
+        )
+        if locked is None:
+            raise PublicChatSessionNotFoundError("Session not found.")
+        return locked
+
+    @classmethod
+    async def _stale_ai_reply_result_or_none(
+        cls,
+        db: AsyncSession,
+        *,
+        session: PublicChatSession,
+        inbound_id: int,
+        allowance_key: str,
+    ) -> tuple[dict | None, PublicChatSession]:
+        locked = await cls._lock_session_before_ai_reply(
+            db,
+            session_id=session.id,
+            organization_id=session.organization_id,
+        )
+        if locked.status == "ai_active":
+            return None, locked
+        await TenantAIAllowanceService.settle(db, key=allowance_key)
+        record_public_chat_answer_decision(outcome="stale_handoff_suppressed")
+        log.info(
+            "public_chat_stale_ai_reply_suppressed",
+            organization_id=locked.organization_id,
+            session_id=locked.id,
+            status=locked.status,
+        )
+        return ({
+            "message_id": inbound_id,
+            "reply": None,
+            "status": locked.status,
+            "handoff": locked.status == "human_requested",
+            "processing_state": "handoff",
+            "_organization_id": locked.organization_id,
+            "_session_id": locked.id,
+        }, locked)
+
     @classmethod
     async def _mirror_first_message_to_ticket(
         cls,
@@ -1176,6 +1234,15 @@ class PublicChatService:
                     session=session,
                     organization_id=organization_id,
                 )
+            if not handoff:
+                stale_result, session = await cls._stale_ai_reply_result_or_none(
+                    db,
+                    session=session,
+                    inbound_id=inbound.id,
+                    allowance_key=allowance_key,
+                )
+                if stale_result is not None:
+                    return stale_result
             await cls._insert_reply_message(
                 db,
                 conversation=conversation,
@@ -1290,7 +1357,6 @@ class PublicChatService:
 
         if grounded_reply is not None:
             reply_text = grounded_reply.text
-            record_public_chat_answer_decision(outcome="grounded_reply")
         elif run_action is None or run_action not in SAFE_AUTOREPLY_ACTIONS:
             handoff = True
             reply_text = await cls.handoff_reply_for(db, organization_id)
@@ -1301,6 +1367,18 @@ class PublicChatService:
                 session=session,
                 organization_id=session.organization_id,
             )
+
+        if not handoff:
+            stale_result, session = await cls._stale_ai_reply_result_or_none(
+                db,
+                session=session,
+                inbound_id=inbound.id,
+                allowance_key=allowance_key,
+            )
+            if stale_result is not None:
+                return stale_result
+            if grounded_reply is not None:
+                record_public_chat_answer_decision(outcome="grounded_reply")
 
         timer.mark("rag")
         await cls._insert_reply_message(

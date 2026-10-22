@@ -532,6 +532,7 @@ EMBEDDING_QUERY_CACHE_TOTAL = Counter(
 PUBLIC_CHAT_ANSWER_OUTCOMES = frozenset(
     {
         "grounded_reply",
+        "stale_handoff_suppressed",
         "skip_flag_off",
         "skip_no_run",
         "skip_action_not_respond",

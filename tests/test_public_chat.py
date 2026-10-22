@@ -59,10 +59,14 @@ os.environ["ENVIRONMENT"] = "development"
 import app.services.public_chat_resolution as public_chat_resolution_module
 from app.core.config import reset_settings_cache, settings
 from app.core.database import AsyncSessionLocal
-from app.core.metrics import PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL
+from app.core.metrics import (
+    PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL,
+    PUBLIC_CHAT_SESSIONS_CLOSED_TOTAL,
+)
 from app.main import app
 from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
+from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.base import Base
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
@@ -99,6 +103,7 @@ from app.services.public_chat_service import (
     public_chat_service,
 )
 from app.services.rag_service import rag_service
+from app.services.tenant_ai_allowance_service import reservation_key
 from app.services.ticket_sla_service import TicketSLAService
 
 ALLOWED_ORIGIN = "https://widget.example.test"
@@ -2607,6 +2612,96 @@ async def test_handed_off_followup_preserves_tenant_isolation(
 # ---------------------------------------------------------------------------
 # Chatbot C3 — previously answered customer topic, not full public history
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handoff_during_grounded_generation_discards_stale_reply(
+    db, client, org_scope, monkeypatch,
+):
+    """A committed customer takeover during RAG wins at reply persistence."""
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision())
+    started = asyncio.Event()
+    release = asyncio.Event()
+    suppressed_before = PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
+        outcome="stale_handoff_suppressed"
+    )._value.get()
+    grounded_before = PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
+        outcome="grounded_reply"
+    )._value.get()
+
+    async def paused_answer(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return _rag_result(answer="A stale generated answer [S1].")
+
+    monkeypatch.setattr(rag_service, "answer", paused_answer)
+    token = (await _create_session(client, key))["session"]["token"]
+    headers = _origin_headers(token=token)
+    pending = asyncio.create_task(client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "late-handoff", "text": "When are you open?"},
+        headers=headers,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    handoff = await client.post(
+        "/public/chat/sessions/human",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert handoff.status_code == 200, handoff.text
+    assert handoff.json()["status"] == "human_requested"
+    release.set()
+    response = await asyncio.wait_for(pending, timeout=2)
+    assert response.status_code == 200, response.text
+    assert response.json()["reply"] is None
+    assert response.json()["status"] == "human_requested"
+
+    # A duplicate visitor retry resolves to the persisted inbound only and
+    # cannot revive the discarded model result.
+    retry = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "late-handoff", "text": "When are you open?"},
+        headers=headers,
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["reply"] is None
+
+    conversation = (
+        await db.execute(select(Conversation).where(
+            Conversation.organization_id == org.id,
+            Conversation.channel == "web",
+        ))
+    ).scalar_one()
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db, conversation_id=conversation.id, organization_id=org.id,
+    )
+    assert [message.body for message in messages if message.direction == "outbound"] == []
+    assert PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
+        outcome="stale_handoff_suppressed"
+    )._value.get() == suppressed_before + 1
+    assert PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
+        outcome="grounded_reply"
+    )._value.get() == grounded_before
+
+    session_row = (
+        await db.execute(select(PublicChatSession).where(
+            PublicChatSession.token_hash == hash_digest(token)
+        ))
+    ).scalar_one()
+    allowance = await db.scalar(select(AIUsageReservation).where(
+        AIUsageReservation.reservation_key == reservation_key(
+            organization_id=org.id,
+            session_id=session_row.id,
+            client_message_id="late-handoff",
+        )
+    ))
+    assert allowance is not None and allowance.status == "settled"
+    audit_events = (await db.execute(select(AgentActionEvent).where(
+        AgentActionEvent.event_type == "public_grounded_auto_reply",
+    ))).scalars().all()
+    assert audit_events == []
 
 
 @pytest.mark.asyncio
