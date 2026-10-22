@@ -3,9 +3,43 @@ import { describe, it } from "node:test";
 import {
   buildKnowledgeGapReview,
   evidenceCoverageLabel,
+  refreshSelectedConversation,
   selectCurrentEvidence,
   summarizeOwnerStudio,
 } from "./owner-studio.ts";
+
+describe("refreshSelectedConversation", () => {
+  it("drops a late reply refresh after the operator switches conversations", async () => {
+    let release!: (messages: string[]) => void;
+    let selected: number | null = 11;
+    const applied: Array<{ messages: string[]; conversationId: number }> = [];
+    const pending = refreshSelectedConversation(
+      11,
+      () => new Promise<string[]>((resolve) => { release = resolve; }),
+      () => selected,
+      (messages, conversationId) => applied.push({ messages, conversationId }),
+    );
+
+    selected = 22;
+    release(["late conversation 11 reply"]);
+
+    assert.equal(await pending, false);
+    assert.deepEqual(applied, []);
+  });
+
+  it("applies a reply refresh to the conversation that is still selected", async () => {
+    const applied: Array<{ messages: string[]; conversationId: number }> = [];
+    const refreshed = await refreshSelectedConversation(
+      11,
+      async () => ["current conversation reply"],
+      () => 11,
+      (messages, conversationId) => applied.push({ messages, conversationId }),
+    );
+
+    assert.equal(refreshed, true);
+    assert.deepEqual(applied, [{ messages: ["current conversation reply"], conversationId: 11 }]);
+  });
+});
 
 describe("summarizeOwnerStudio", () => {
   it("derives tenant inbox metrics without counting closed handoffs as active", () => {

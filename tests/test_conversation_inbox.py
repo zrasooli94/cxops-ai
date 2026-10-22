@@ -1102,7 +1102,11 @@ async def test_agent_analysis_fingerprint_invalidated_by_new_conversation_messag
         response_draft="Drafting a customer reply.",
     )
     fake_llm = _CapturingDecisionLLM(decision)
-    monkeypatch.setattr(agent_workflow_service, "decision_llm", fake_llm)
+    # LazyAttribute is a non-data descriptor. ``setattr`` asks monkeypatch to
+    # read the previous value first, which would construct a real provider
+    # client before installing this offline fake. Seed the instance cache
+    # directly, matching the public-chat test harness.
+    monkeypatch.setitem(agent_workflow_service.__dict__, "decision_llm", fake_llm)
 
     first = await _analyze_ticket_directly(ticket.id, org.id)
     assert first["reused"] is False

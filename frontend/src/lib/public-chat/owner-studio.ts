@@ -8,6 +8,18 @@ export type StudioEvidence = {
   items: unknown[];
 };
 
+export async function refreshSelectedConversation<T>(
+  targetConversationId: number,
+  load: (conversationId: number) => Promise<T>,
+  currentConversationId: () => number | null,
+  apply: (messages: T, conversationId: number) => void,
+) {
+  const messages = await load(targetConversationId);
+  if (currentConversationId() !== targetConversationId) return false;
+  apply(messages, targetConversationId);
+  return true;
+}
+
 const OWNER_STOP_WORDS = new Set([
   "a", "an", "and", "are", "can", "do", "for", "how", "i", "is", "it", "my", "of", "on", "or", "the", "to", "what", "when", "where", "you",
   "آیا", "از", "است", "با", "برای", "به", "در", "را", "و", "چه", "کجا", "کی", "من",
