@@ -140,6 +140,73 @@ provider account access, or paid spend.
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
 
+## Operator dry run and go/no-go
+
+No activation record or credential should be created while the count-endpoint
+billing evidence is unresolved. An operator can render the exact proposed
+binding without network access, database writes, or reading a credential:
+
+```sh
+python -m scripts.plan_public_chat_model_activation \
+  --organization-id 17 \
+  --session-id 29 \
+  --run-id controlled-eval-01 \
+  --expires-at <FUTURE_ISO_8601_UTC_WITHIN_2_HOURS>
+```
+
+Use real local identifiers and an expiry between five minutes and two hours in
+the future. The output is always `ready_to_activate: false`; it shows the exact
+tenant/session/run/model/limits/expiry manifest and the identical snapshot that
+a future immutable-by-application release decision must contain. There is no
+`--apply` option and no public route for provisioning it.
+
+If authoritative evidence later establishes a billable maximum count-request
+cost, supply its per-attempt reservation with `--count-billing-status billable`,
+`--count-cost-reservation-per-attempt-usd`, and the supporting official URL via
+`--count-billing-evidence-url`. The planner reserves it across all 100 maximum
+attempts and requires positive headroom below US$0.10. Use `no_charge` only with
+an official OpenAI developer URL that explicitly establishes that status;
+absence of published pricing is `unresolved`, never free.
+
+The URL and billing status remain operator-supplied, unverified inputs: this
+offline tool cannot certify their contents. It therefore always retains an
+independent-authoritative-verification blocker. The complete count policy,
+evidence identity, per-attempt reservation and combined reservation are included
+in the same proposed decision snapshot as the generation limits.
+
+As of 2026-10-22, the official token-counting guide and API reference document
+the authenticated `POST /v1/responses/input_tokens` operation but do not state
+whether it is billed or identify a charge unit/rate. The current decision is
+therefore **NO-GO**. The smallest unresolved evidence step is written OpenAI
+billing/support confirmation that names the endpoint, model, region, charge
+unit/rate, and failure/retry treatment. No support contact or authenticated
+count request has been authorized or performed.
+
+Restricted credential procedure: create a dedicated provider-project key with
+only the minimum Responses permissions and a project-side spend limit, store it
+in the approved secret manager, and inject it as `OPENAI_API_KEY` only into the
+local development process. Never put the value in chat, shell history, CLI
+arguments, source, `.env` committed files, screenshots, or logs. The planner
+does not inspect whether the variable exists and never reads its value.
+
+Go only when every item is true:
+
+- authoritative count-endpoint billing and fresh generation pricing are known,
+  and count plus generation reservations retain positive budget headroom;
+- the exact `gpt-6-luna` model, Responses schema, account access and restricted
+  credential have been verified without exposing the key;
+- the existing 50-turn EN/FA specification, strict citation membership,
+  3,000 full-request input cap, 500 output cap, zero SDK retries, one explicit
+  retry, durable ambiguous-outcome reconciliation and US$0.10 ceiling remain
+  unchanged;
+- the decision snapshot exactly matches the expiring tenant/session/run
+  activation manifest, and the final persisted handoff recheck remains enabled;
+- the owner gives one explicit approval to execute the controlled evaluation.
+
+Otherwise the decision is **NO-GO**. Run `python -m
+scripts.plan_chat_model_evaluation` for the exact 50-turn fixture/replay output;
+it remains offline and produces no model-quality score.
+
 Mocks verify contracts and failure handling only. They do not demonstrate model
 quality, factual entailment, account access, pricing accuracy, or paid spend.
 
