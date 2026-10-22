@@ -92,11 +92,14 @@ class Settings(BaseSettings):
     openai_request_timeout_seconds: float = 30.0
     openai_max_retries: int = 1
 
-    # Source-only evaluation path. Nothing in application composition consumes
-    # this flag yet; the live HTTPS transport also requires explicit approval,
-    # an injected credential, and an exact full-request count. It is kept false
-    # in every checked-in environment.
+    # Source-only evaluation path. The public-chat service has a deliberately
+    # injectable composition seam, but checked-in startup never constructs a
+    # provider. Exact full-request counting, durable tenant approval and the
+    # second server-only gate are also required before transport dispatch.
     model_eval_openai_source_enabled: bool = False
+    # Server-only controlled public-chat evaluation. The injected run must have
+    # a tenant-owned release decision whose snapshot matches its activation manifest.
+    public_chat_model_eval_enabled: bool = False
 
     @field_validator("chat_max_output_tokens", mode="after")
     @classmethod
@@ -129,6 +132,10 @@ class Settings(BaseSettings):
         if self.environment == "production" and self.model_eval_openai_source_enabled:
             raise ValueError(
                 "MODEL_EVAL_OPENAI_SOURCE_ENABLED cannot be enabled in production"
+            )
+        if self.environment == "production" and self.public_chat_model_eval_enabled:
+            raise ValueError(
+                "PUBLIC_CHAT_MODEL_EVAL_ENABLED cannot be enabled in production"
             )
         if self.environment == "production" and self.auth_mode == "hs256":
             raise ValueError(

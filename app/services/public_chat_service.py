@@ -79,6 +79,7 @@ from app.services.conversation_ingestion_service import ConversationIngestionSer
 from app.services.delivery_lease import chat_turn_lease_connection
 from app.services.integration_job_service import JobDeferredError, PermanentJobError
 from app.services.offline_grounded_chat import offline_grounded_chat
+from app.services.public_chat_model_eval import PublicChatModelEvaluationProvider
 from app.services.public_chat_rate_limiter import public_chat_rate_limiter_db
 from app.services.public_chat_resolution import PublicChatResolutionService
 from app.services.rag_reliability import public_answer_eligible
@@ -259,6 +260,9 @@ _last_bucket_prune = float("-inf")
 
 
 class PublicChatService:
+    # Deliberate server-side composition seam. Startup leaves this unset. Tests
+    # may inject the complete provider; no HTTP request can select or construct it.
+    model_evaluation_provider: PublicChatModelEvaluationProvider | None = None
     @staticmethod
     async def _maybe_prune_rate_buckets(db: AsyncSession) -> None:
         """Opportunistically prune stale rate-limit buckets; never blocks.
@@ -1188,6 +1192,112 @@ class PublicChatService:
                 "_organization_id": organization_id,
                 "_session_id": session.id,
             }
+
+        # Controlled real-model application path. It is unreachable under
+        # checked-in defaults and requires both a server-only feature flag and
+        # an injected provider that revalidates immutable tenant approval.
+        if (
+            settings.public_chat_model_eval_enabled
+            and configuration.grounded_auto_reply_enabled
+            and cls.model_evaluation_provider is not None
+            and await cls.model_evaluation_provider.targets(
+                db,
+                organization_id=organization_id,
+                session_id=session.id,
+            )
+        ):
+            provider = cls.model_evaluation_provider
+            try:
+                assert provider is not None  # narrowed by the exact target gate above
+                model_answer = await provider.answer(
+                    db,
+                    organization_id=organization_id,
+                    session_id=session.id,
+                    conversation_id=conversation.id,
+                    current_message_id=inbound.id,
+                    question=text,
+                    assistant_name=configuration.display_name,
+                    language="fa" if any("\u0600" <= char <= "\u06ff" for char in text) else "en",
+                )
+                sources = [
+                    {"source_id": source_id, "title": "tenant knowledge"}
+                    for source_id in model_answer.source_ids
+                ]
+                for source_id in model_answer.source_ids:
+                    if not await offline_grounded_chat.source_is_current(
+                        db, organization_id=organization_id, source_id=source_id
+                    ):
+                        raise RuntimeError("model evidence changed before persistence")
+                stale_result, session = await cls._stale_ai_reply_result_or_none(
+                    db,
+                    session=session,
+                    inbound_id=inbound.id,
+                    allowance_key=allowance_key,
+                )
+                if stale_result is not None:
+                    return stale_result
+                await cls._insert_reply_message(
+                    db,
+                    conversation=conversation,
+                    body=model_answer.text,
+                    client_message_id=client_message_id,
+                )
+                db.add(AIRequestLog(
+                    organization_id=organization_id,
+                    request_id=uuid4().hex,
+                    feature="public_chat_model_eval",
+                    model=(
+                        "mocked-gpt-6-luna-contract"
+                        if model_answer.mocked else settings.chat_model
+                    ),
+                    status="success",
+                    question=text,
+                    answer=model_answer.text,
+                    grounded=True,
+                    llm_called=not model_answer.mocked,
+                    retrieval_count=len(model_answer.source_ids),
+                    best_similarity=None,
+                    sources=sources,
+                    latency_ms=0.0,
+                ))
+                await TenantAIAllowanceService.settle(db, key=allowance_key)
+                timer.mark("model_evaluation_provider")
+                return {
+                    "message_id": inbound.id,
+                    "reply": model_answer.text,
+                    "status": session.status,
+                    "handoff": False,
+                    "processing_state": "completed",
+                    "_organization_id": organization_id,
+                    "_session_id": session.id,
+                }
+            except Exception:
+                log.exception(
+                    "public_chat_model_evaluation_blocked",
+                    organization_id=organization_id,
+                    session_id=session.id,
+                )
+                reply_text = await cls.handoff_reply_for(db, organization_id)
+                if session.status == "ai_active":
+                    session = await PublicChatRepository.handoff_to_human(
+                        db, session=session, organization_id=organization_id
+                    )
+                await cls._insert_reply_message(
+                    db,
+                    conversation=conversation,
+                    body=reply_text,
+                    client_message_id=client_message_id,
+                )
+                await TenantAIAllowanceService.settle(db, key=allowance_key)
+                return {
+                    "message_id": inbound.id,
+                    "reply": reply_text,
+                    "status": session.status,
+                    "handoff": True,
+                    "processing_state": "handoff",
+                    "_organization_id": organization_id,
+                    "_session_id": session.id,
+                }
 
         # Explicit development-only adapter: exercise the real tenant/session/
         # conversation path without a paid model or embeddings call. Production

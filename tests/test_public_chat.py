@@ -35,6 +35,7 @@ no auto-queued execution job, and never reaches "approved".
 """
 
 import asyncio
+import json
 import os
 import secrets
 import types
@@ -66,6 +67,9 @@ from app.core.metrics import (
 from app.main import app
 from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
+from app.models.ai_evaluation_baseline import AIEvaluationBaseline
+from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
+from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.base import Base
 from app.models.conversation import Conversation
@@ -93,7 +97,9 @@ from app.services.model_eval_controller import (
     ModelEvaluationController,
     PersistedPublicChatSessionGuard,
 )
+from app.services.model_eval_openai_adapter import ProviderDisconnectedResponsesAdapter
 from app.services.offline_grounded_chat import offline_grounded_chat
+from app.services.public_chat_model_eval import PublicChatModelEvaluationProvider
 from app.services.public_chat_service import (
     DEDUPE_INBOUND_PREFIX,
     DEDUPE_REPLY_PREFIX,
@@ -170,6 +176,9 @@ async def db():
 PUBLIC_CHAT_ORG_PREFIX = "public-chat-test-"
 
 _PURGE_TABLES = [
+    "ai_evaluation_release_decisions",
+    "ai_evaluation_baselines",
+    "ai_evaluation_runs",
     "public_chat_sessions",
     "public_chat_configurations",
     "ticket_events",
@@ -191,6 +200,37 @@ _PURGE_TABLES = [
     "organization_memberships",
     "organizations",
 ]
+
+
+class _SyntheticFullRequestCounter:
+    model = "gpt-6-luna"
+    counts_full_request = True
+
+    def count(self, _serialized_input: str) -> int:
+        return 120
+
+
+class _SyntheticResponsesTransport:
+    provider_disconnected = True
+
+    def __init__(self, citation_id: str) -> None:
+        self.citation_id = citation_id
+        self.payloads: list[dict] = []
+
+    async def create_response(self, payload):
+        self.payloads.append(payload)
+        return {
+            "status": "completed",
+            "usage": {"input_tokens": 120, "output_tokens": 30},
+            "output": [{"content": [{
+                "type": "output_text",
+                "text": json.dumps({
+                    "answer": "پاسخ ساختگی: تعمیرگاه جمعه تا ۱۹:۱۵ باز است.",
+                    "citation_ids": [self.citation_id],
+                    "refused": False,
+                }),
+            }]}],
+        }
 
 
 async def _purge_public_chat_namespace(session) -> list[int]:
@@ -2700,6 +2740,155 @@ async def test_removed_knowledge_is_not_reused_by_restored_session_but_history_r
     assert any(
         "[Source: Synthetic restoration policy]" in body for body in bodies
     ), "historical answer must retain its delivered source label"
+
+
+@pytest.mark.asyncio
+async def test_disabled_model_evaluation_path_requires_durable_session_bound_approval(
+    db, client, org_scope, monkeypatch,
+):
+    """The real route is composable with a fake wire, but never caller-enabled."""
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _, chunk_id = await _seed_offline_knowledge(
+        db,
+        org.id,
+        content="Friday bicycle workshop hours are 10:00 to 19:15.",
+    )
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+    session = await db.scalar(select(PublicChatSession).where(
+        PublicChatSession.token_hash == hash_digest(token),
+        PublicChatSession.organization_id == org.id,
+    ))
+    activation = {
+        "purpose": "controlled_public_chat_model_evaluation",
+        "max_turns": 50,
+        "max_attempts": 100,
+        "cost_ceiling_usd": 0.10,
+        "public_chat_session_id": session.id,
+        "expires_at": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+    }
+    run = AIEvaluationRun(
+        run_id=f"controlled-{uuid.uuid4().hex[:12]}",
+        organization_id=org.id,
+        target_type="rag",
+        status="succeeded",
+        model="gpt-6-luna",
+        trigger_source="manual",
+        requested_by_subject="owner:test",
+        input={"provider_activation": activation},
+        metrics={},
+    )
+    db.add(run)
+    await db.flush()
+    baseline = AIEvaluationBaseline(
+        organization_id=org.id,
+        target_type="rag",
+        version="controlled-v1",
+        model="gpt-6-luna",
+        pass_rate=1.0,
+        metrics={},
+        cases_count=50,
+        created_by_subject="owner:test",
+        promoted=False,
+    )
+    db.add(baseline)
+    await db.flush()
+    db.add(AIEvaluationReleaseDecision(
+        organization_id=org.id,
+        candidate_run_id=run.id,
+        baseline_id=baseline.id,
+        decision="approved",
+        decided_by_subject="owner:test",
+        comparison_snapshot={"synthetic": True, "provider_activation": activation},
+    ))
+    await db.commit()
+
+    transport = _SyntheticResponsesTransport(f"offline:{chunk_id}")
+    adapter = ProviderDisconnectedResponsesAdapter(
+        transport=transport,
+        explicitly_approved=True,
+    )
+    provider = PublicChatModelEvaluationProvider(
+        run_id=run.run_id,
+        exact_token_counter=_SyntheticFullRequestCounter(),
+        adapter=adapter,
+    )
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", True)
+    monkeypatch.setattr(type(public_chat_service), "model_evaluation_provider", provider)
+
+    response = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "controlled-model-1", "text": "What are the Friday bicycle workshop hours?"},
+        headers=_origin_headers(token=token),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["handoff"] is False
+    assert response.json()["reply"].startswith("پاسخ ساختگی:")
+    assert len(transport.payloads) == 1
+    grounded = json.loads(transport.payloads[0]["input"])
+    assert grounded["customer_message"].startswith("What are")
+    assert grounded["business_knowledge"] == [{
+        "citation_id": f"offline:{chunk_id}",
+        "text": "Friday bicycle workshop hours are 10:00 to 19:15.",
+    }]
+
+    follow_up = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "controlled-model-follow-up", "text": "And on Friday?"},
+        headers=_origin_headers(token=token),
+    )
+    assert follow_up.status_code == 200
+    assert follow_up.json()["handoff"] is False
+    assert len(transport.payloads) == 2
+    follow_up_input = json.loads(transport.payloads[1]["input"])
+    assert [turn["role"] for turn in follow_up_input["conversation_history"]] == [
+        "customer", "assistant",
+    ]
+    assert follow_up_input["conversation_history"][0]["text"].startswith("What are")
+    assert follow_up_input["conversation_history"][1]["text"].startswith("پاسخ ساختگی")
+
+    # A caller cannot reuse the durable run for another session.
+    monkeypatch.setattr(settings, "public_chat_offline_provider_enabled", True)
+    second = await _create_session(client, key)
+    blocked = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "controlled-model-2", "text": "Friday workshop hours?"},
+        headers=_origin_headers(token=second["session"]["token"]),
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["handoff"] is False
+    assert blocked.json()["reply"].startswith("Friday bicycle workshop")
+    assert len(transport.payloads) == 2
+
+    second_session = await db.scalar(select(PublicChatSession).where(
+        PublicChatSession.token_hash == hash_digest(second["session"]["token"]),
+        PublicChatSession.organization_id == org.id,
+    ))
+    foreign_inbound = await db.scalar(
+        select(ConversationMessage)
+        .where(
+            ConversationMessage.organization_id == org.id,
+            ConversationMessage.conversation_id == second_session.conversation_id,
+            ConversationMessage.direction == "inbound",
+        )
+        .order_by(ConversationMessage.id.desc())
+    )
+    with pytest.raises(EvaluationBlockedError, match="not bound"):
+        await provider.answer(
+            db,
+            organization_id=org.id,
+            session_id=session.id,
+            conversation_id=second_session.conversation_id,
+            current_message_id=foreign_inbound.id,
+            question=foreign_inbound.body,
+            assistant_name="Acme Support",
+            language="en",
+        )
+    foreign_org = await org_scope()
+    assert not await provider.targets(
+        db, organization_id=foreign_org.id, session_id=session.id,
+    )
 
 
 @pytest.mark.asyncio

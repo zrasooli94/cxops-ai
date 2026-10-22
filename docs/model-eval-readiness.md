@@ -19,6 +19,44 @@ forward, verifies expected citation IDs, and enforces silence after mocked
 handoff. Serialized byte counts are diagnostics only; every turn remains marked
 blocked for exact-token admission.
 
+## Disabled application composition
+
+`app/services/public_chat_model_eval.py` composes tenant-scoped lexical
+retrieval, the last twelve ordered public conversation turns, the complete
+structured Responses input, exact-count admission, durable maximum-cost
+reservation, response/citation validation, the existing late-handoff recheck,
+and normal reply persistence. `PublicChatService` calls that composition through
+the actual `/public/chat/messages` lifecycle only when a server-side setting is
+enabled and a provider object has deliberately been injected. Checked-in
+startup injects no provider, the setting defaults false, and production config
+rejects true.
+
+The durable approval is not a widget or owner-studio request field. It is the
+latest immutable-by-application tenant-owned `AIEvaluationReleaseDecision` for
+the configured run. That decision snapshot must contain an exact copy of the
+bounded activation manifest stored on the run, so later run-input mutation
+invalidates activation. The manifest binds the exact synthetic public-chat
+session, expires, and retains the 50-turn/100-attempt/US$0.10 limits. A second
+session or tenant falls through to the existing responder instead of being
+disrupted. This reuses existing records and adds no migration or public approval
+endpoint. There is intentionally no supported HTTP/UI flow that provisions this
+special activation snapshot today; controlled operator provisioning remains a
+pre-evaluation blocker.
+
+The route-level test is reproducible with:
+
+```sh
+DATABASE_URL=postgresql+asyncpg://USER@127.0.0.1:PORT/TEST_DB \
+  uv run pytest -q \
+  tests/test_public_chat.py::test_disabled_model_evaluation_path_requires_durable_session_bound_approval
+```
+
+It injects a disconnected response transport and a synthetic exact counter. Its
+Persian answer is visibly prefixed `پاسخ ساختگی` (mock response), while the local
+owner studio continues to label itself “Offline responder · no paid AI”. This
+proves route composition and safety mechanics only; it is not a genuine model
+quality result.
+
 ## Enforced offline contract
 
 - One durable maximum-cost reservation is committed before each mocked dispatch.
@@ -48,10 +86,11 @@ blocked for exact-token admission.
    policy, and current official prices immediately before approval.
 3. Verify the owner's API project can access that exact model using a securely
    configured restricted credential. No credential exists in this source path.
-4. Review and deliberately compose the new development-only HTTPS source with a
-   securely injected restricted credential. It pins the count/create endpoints,
-   zero retries and redacted failures, but is not wired into startup. The checked-in
-   feature flag is false and production rejects it; all tests inject a mock client.
+4. Deliberately construct the reviewed development-only HTTPS source at startup
+   with a securely injected restricted credential. The application lifecycle is
+   now wired to an injection seam, but checked-in startup intentionally leaves it
+   uncomposed. The source pins the count/create endpoints, zero retries and
+   redacted failures; all tests inject a mock client.
    Its input-count method deliberately fails before HTTP until count-request cost
    can be included in the same durable reservation and handoff envelope.
 5. Obtain explicit owner approval for the provider, model, credential method,

@@ -593,3 +593,15 @@ def test_offline_provider_cannot_be_enabled_in_production():
             encryption_keys="",
             public_chat_offline_provider_enabled=True,
         )
+
+
+def test_public_chat_model_evaluation_cannot_be_enabled_in_production():
+    with pytest.raises(ValidationError, match="PUBLIC_CHAT_MODEL_EVAL_ENABLED"):
+        Settings(
+            environment="production",
+            debug=False,
+            auth_mode="jwks",
+            auth_jwks_url="https://auth.example/.well-known/jwks.json",
+            encryption_keys="",
+            public_chat_model_eval_enabled=True,
+        )
