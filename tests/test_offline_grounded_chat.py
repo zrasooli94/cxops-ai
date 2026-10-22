@@ -10,7 +10,11 @@ from app.core.config import Settings
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
-from app.services.offline_grounded_chat import offline_grounded_chat
+from app.services.offline_grounded_chat import (
+    _has_numeric_conflict,
+    _quantity_facts,
+    offline_grounded_chat,
+)
 
 
 async def _knowledge(db, *, organization_id: int, title: str, content: str) -> None:
@@ -333,6 +337,57 @@ async def test_conflicting_persian_and_ascii_digits_fail_closed(db):
         db,
         organization_id=organization.id,
         question="هزينه سرويس Trek FX چقدر است؟",
+    ) is None
+
+
+def test_quantity_facts_normalize_persian_decimals_grouping_and_context():
+    assert _quantity_facts("نرخ خدمات ۲٫۵ درصد است") == {("2.5", "percent")}
+    assert _quantity_facts("The service rate is 2.50%") == {("2.5", "percent")}
+    assert _quantity_facts("هزینه ۱٬۲۰۰ رینگیت است") == {("1200", "currency")}
+    assert _quantity_facts("The cost is RM 1,200") == {("1200", "currency")}
+    assert _quantity_facts("هزینه ۱٬۲۰۰٫۵۰ رینگیت است") == {("1200.5", "currency")}
+    assert _quantity_facts("The cost is RM 1,200.50") == {("1200.5", "currency")}
+    assert _quantity_facts("نرخ خدمات ٢٫٥ درصد است") == {("2.5", "percent")}
+    assert _quantity_facts("The malformed fee is RM 1,20,0") == set()
+
+
+def test_quantity_conflicts_compare_only_shared_explicit_units():
+    assert not _has_numeric_conflict(
+        "ضمانت ۲۵ ماه است و بررسی هر ۶ ماه انجام می‌شود.",
+        "ضمانت 25 ماه است.",
+    )
+    assert not _has_numeric_conflict("The fee is RM 25.", "The discount is 25%.")
+    assert _has_numeric_conflict("نرخ خدمات ۲٫۵ درصد است.", "The service rate is 3.5%.")
+    assert _has_numeric_conflict("هزینه ۱٬۲۰۰ رینگیت است.", "The cost is RM 1,500.")
+    assert not _has_numeric_conflict(
+        "The warranty is 25 months and inspection is every 6 months.",
+        "The warranty is 30 months and inspection is every 6 months.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_conflicting_persian_decimal_percentages_require_clarification(db):
+    suffix = uuid.uuid4().hex
+    organization = Organization(name=f"Offline Persian decimal conflict {suffix}")
+    db.add(organization)
+    await db.commit()
+    await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="نرخ سرویس Trek FX نسخه شرق",
+        content="نرخ سرویس Trek FX برابر ۲٫۵ درصد است.",
+    )
+    await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="نرخ سرویس Trek FX نسخه غرب",
+        content="نرخ سرویس Trek FX برابر 3.5 درصد است.",
+    )
+
+    assert await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="نرخ service برای Trek FX چند درصد است؟",
     ) is None
 
 

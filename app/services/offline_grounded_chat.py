@@ -48,12 +48,31 @@ _PERSIAN_VARIANTS = str.maketrans({
     "ي": "ی", "ى": "ی", "ك": "ک", "ة": "ه", "ۀ": "ه",
     "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
     "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9",
+    "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
+    "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
 })
-_NUMBER = re.compile(r"(?<!\w)(?:\d+(?:[.,]\d+)?|[۰-۹]+)(?!\w)")
+_NUMBER = re.compile(r"(?<!\w)\d+(?:[.,٫٬]\d+)*(?!\w)")
+_QUANTITY_PART = re.compile(r"\d+(?:[.,٫٬]\d+)*|[\w\u0600-\u06ff]+|[%$€£]", re.UNICODE)
+_QUANTITY_CONTEXT = {
+    "%": "percent", "percent": "percent", "percentage": "percent", "درصد": "percent",
+    "rm": "currency", "رینگیت": "currency", "تومان": "currency", "ریال": "currency",
+    "$": "currency", "€": "currency", "£": "currency",
+    "month": "month", "months": "month", "ماه": "month",
+    "day": "day", "days": "day", "روز": "day",
+    "year": "year", "years": "year", "سال": "year",
+    "hour": "hour", "hours": "hour", "ساعت": "hour",
+    "kg": "weight", "kilogram": "weight", "kilograms": "weight", "کیلوگرم": "weight",
+}
 _NUMBER_WORDS = frozenset({
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
     "nine", "ten", "یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده",
 })
+_NUMBER_WORD_VALUES = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "ten": "10", "یک": "1", "دو": "2", "سه": "3", "چهار": "4",
+    "پنج": "5", "شش": "6", "هفت": "7", "هشت": "8", "نه": "9", "ده": "10",
+}
 _PAGE_SIZE = 200
 _MAX_CHUNKS = 5000
 
@@ -69,9 +88,59 @@ def _normalize(value: str) -> str:
     ).casefold()
 
 
-def _quantities(value: str) -> set[str]:
-    normalized = _normalize(value)
-    return set(_NUMBER.findall(normalized)) | (_raw_tokens(normalized) & _NUMBER_WORDS)
+def _canonical_number(value: str) -> str | None:
+    value = value.translate(_PERSIAN_VARIANTS).replace("٬", ",").replace("٫", ".")
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", value):
+        return None
+    if "," in value and "." in value:
+        if not re.fullmatch(r"\d{1,3}(?:,\d{3})+\.\d+", value):
+            return None
+        value = value.replace(",", "")
+    elif "," in value:
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", value):
+            value = value.replace(",", "")
+        elif value.count(",") == 1:
+            value = value.replace(",", ".")
+        else:
+            return None
+    elif value.count(".") > 1:
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):
+            value = value.replace(".", "")
+        else:
+            return None
+    if "." in value:
+        whole, fraction = value.split(".", 1)
+        return f"{int(whole)}.{fraction.rstrip('0') or '0'}"
+    return str(int(value))
+
+
+def _quantity_facts(value: str) -> set[tuple[str, str]]:
+    """Extract conservative numeric value/unit pairs for contradiction checks only."""
+    normalized = unicodedata.normalize("NFKC", value).translate(_PERSIAN_VARIANTS).casefold()
+    parts = _QUANTITY_PART.findall(normalized)
+    facts: set[tuple[str, str]] = set()
+    for index, part in enumerate(parts):
+        if not _NUMBER.fullmatch(part) and part not in _NUMBER_WORDS:
+            continue
+        nearby = parts[max(0, index - 2):index] + parts[index + 1:index + 3]
+        contexts = {_QUANTITY_CONTEXT[token] for token in nearby if token in _QUANTITY_CONTEXT}
+        if len(contexts) == 1:
+            number = _NUMBER_WORD_VALUES[part] if part in _NUMBER_WORD_VALUES else _canonical_number(part)
+            if number is not None:
+                facts.add((number, contexts.pop()))
+    return facts
+
+
+def _has_numeric_conflict(left: str, right: str) -> bool:
+    left_facts = _quantity_facts(left)
+    right_facts = _quantity_facts(right)
+    shared_contexts = {context for _, context in left_facts} & {context for _, context in right_facts}
+    for context in shared_contexts:
+        left_values = {number for number, fact_context in left_facts if fact_context == context}
+        right_values = {number for number, fact_context in right_facts if fact_context == context}
+        if len(left_values) == len(right_values) == 1 and left_values.isdisjoint(right_values):
+            return True
+    return False
 
 
 def _tokens(value: str) -> set[str]:
@@ -181,16 +250,12 @@ class OfflineGroundedChat:
         # different or complementary near-tied prose is not enough to force handoff.
         if len(candidates) > 1:
             runner_score, runner_overlap, runner, _ = candidates[1]
-            best_numbers = _quantities(chunk.content)
-            runner_numbers = _quantities(runner.content)
             shared_context = _tokens(chunk.content) & _tokens(runner.content)
             if (
                 runner_overlap == overlap_count
                 and score - runner_score < 0.08
                 and len(shared_context) >= 3
-                and best_numbers
-                and runner_numbers
-                and best_numbers.isdisjoint(runner_numbers)
+                and _has_numeric_conflict(chunk.content, runner.content)
             ):
                 return None
         authored = chunk.content.strip()

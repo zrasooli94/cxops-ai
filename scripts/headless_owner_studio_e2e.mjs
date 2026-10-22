@@ -34,6 +34,36 @@ async function main() {
   const { sessionId } = await command("Target.attachToTarget", { targetId, flatten: true });
   await command("Runtime.enable", {}, sessionId);
   await command("Page.enable", {}, sessionId);
+  await command("Page.addScriptToEvaluateOnNewDocument", { source: `
+    (() => {
+      const originalFetch = globalThis.fetch.bind(globalThis);
+      let evidenceCalls = 0;
+      globalThis.__cxopsEvidenceProbe = { calls: 0, resolveStale: null };
+      globalThis.fetch = (input, init) => {
+        const url = String(input);
+        if (!url.includes('/staff/tenant-config/offline-evidence')) return originalFetch(input, init);
+        evidenceCalls += 1;
+        globalThis.__cxopsEvidenceProbe.calls = evidenceCalls;
+        const question = new URL(url, location.origin).searchParams.get('question') || '';
+        if (evidenceCalls === 1) {
+          return new Promise((resolve) => {
+            globalThis.__cxopsEvidenceProbe.resolveStale = () => resolve(new Response(JSON.stringify({
+              question,
+              coverage: 'related',
+              items: [{ source_id: 'stale-probe', title: 'STALE EVIDENCE MUST NOT RENDER', provenance: 'document', excerpt: 'STALE EVIDENCE MUST NOT RENDER', lexical_score: 1 }],
+            }), { status: 200, headers: { 'content-type': 'application/json' } }));
+          });
+        }
+        if (evidenceCalls === 2) {
+          return Promise.resolve(new Response(JSON.stringify({ detail: 'Synthetic evidence outage' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return originalFetch(input, init);
+      };
+    })();
+  ` }, sessionId);
   await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
   async function evaluate(expression) {
     let result;
@@ -99,6 +129,13 @@ async function main() {
   await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
   await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('needs to review')`, 15000);
+  const firstGapSession = await evaluate(`sessionStorage.getItem('cxops.chat.owner-studio.preview.v1')`);
+  const firstGapConversationId = await evaluate(`fetch('/api/local-demo/backend/conversations',{headers:{'x-cxops-local-origin':location.origin}}).then((response)=>response.json()).then((body)=>body.items[0].id)`);
+
+  // Create a second synthetic gap so a delayed evidence response can race a
+  // genuine owner conversation switch without touching the first transcript.
+  const secondGap = await evaluate(`(async()=>{const origin=location.origin;const created=await fetch('/api/public/chat/sessions',{method:'POST',headers:{'content-type':'application/json','X-Embedding-Origin':origin},body:JSON.stringify({public_widget_key:'pk_local_aster_cycle_offline_demo'})}).then((response)=>response.json());const token=created.session.token;const sent=await fetch('/api/public/chat/messages',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+token,'X-Embedding-Origin':origin},body:JSON.stringify({client_message_id:crypto.randomUUID(),text:'آيا سرويس Nova Bike شامل ۷۷ درصد تخفيف است؟'})}).then((response)=>response.json());const inbox=await fetch('/api/local-demo/backend/conversations',{headers:{'x-cxops-local-origin':origin}}).then((response)=>response.json());return {token,reply:sent.reply,conversationId:Math.max(...inbox.items.map((item)=>item.id))};})()`);
+  if (!secondGap?.token || !secondGap?.conversationId || !secondGap?.reply?.includes("needs to review")) throw new Error("second synthetic gap creation failed");
 
   const evidenceDocument = await evaluate(`(()=>{const form=new FormData();form.set('file',new File(['ضمانت Trek FX برای باتری نیاز به تأیید مالک دارد.'],'unrelated-evidence-title.txt',{type:'text/plain'}));return fetch('/api/local-demo/backend/staff/tenant-config/offline-documents',{method:'POST',headers:{'x-cxops-local-origin':location.origin},body:form}).then((response)=>response.json())})()`);
   if (!evidenceDocument?.document_id) throw new Error("evidence document upload failed");
@@ -106,9 +143,26 @@ async function main() {
   await evaluate(`localStorage.setItem('cxops.owner.language','fa')`);
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=inbox" }, sessionId);
   await waitFor(`document.body.innerText.includes('Shared inbox') && document.body.innerText.includes('Claim & take over')`);
+  await waitFor(`globalThis.__cxopsEvidenceProbe?.calls===1 && typeof globalThis.__cxopsEvidenceProbe.resolveStale==='function'`);
+  await evaluate(`(()=>{const e=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('Conversation #${secondGap.conversationId}'));if(!e)return false;e.click();return true})()`);
+  await waitFor(`!!document.querySelector('[aria-label="Retrieved knowledge evidence"] [role="alert"]')`);
+  const transcriptBeforeEvidenceRetry = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))`);
+  await clickText("Claim & take over");
+  await waitFor(`document.body.innerText.includes('Release')`);
+  await setValue(`input[placeholder="Reply as staff…"]`, "پیش‌نویس پاسخ کارشناس");
+  await evaluate(`globalThis.__cxopsEvidenceProbe.resolveStale()`);
+  await sleep(200);
+  if (await evaluate(`document.body.innerText.includes('STALE EVIDENCE MUST NOT RENDER')`)) throw new Error("stale evidence rendered after conversation switch");
+  const retryLabel = await evaluate(`document.body.innerText.includes('تلاش دوباره')?'تلاش دوباره':'Retry evidence'`);
+  await clickText(retryLabel);
+  await waitFor(`globalThis.__cxopsEvidenceProbe?.calls>=3 && !document.querySelector('[aria-label="Retrieved knowledge evidence"] [role="alert"]')`);
+  if (await evaluate(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))!==${JSON.stringify(transcriptBeforeEvidenceRetry)}`)) throw new Error("evidence retry changed the transcript");
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='پیش‌نویس پاسخ کارشناس'`)) throw new Error("evidence retry discarded the staff draft");
+  await evaluate(`(()=>{const e=[...document.querySelectorAll('button')].find(x=>x.textContent.includes('Conversation #${firstGapConversationId}'));if(!e)return false;e.click();return true})()`);
   await waitFor(`document.querySelector('[aria-label="Knowledge gap review"]')?.innerText.includes('ضمانت Trek FX')`);
   await waitFor(`document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('ضمانت Trek FX برای باتری نیاز به تأیید مالک دارد') && document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('سند')`);
   const originalGapConversationSnapshot = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))`);
+  await clickText("Claim & take over"); await waitFor(`document.body.innerText.includes('Release')`);
   await clickText("ساخت پیش‌نویس پرسش متداول");
   await waitFor(`document.body.innerText.includes('پرسش‌های متداول کسب‌وکار') && [...document.querySelectorAll('[data-faq-index] input')].at(-1)?.value.includes('ضمانت Trek FX')`);
   await evaluate(`(()=>{const e=[...document.querySelectorAll('[data-faq-index] textarea')].at(-1);if(!e)return false;const s=Object.getOwnPropertyDescriptor(e.constructor.prototype,'value').set;s.call(e,'ضمانت Trek FX برای باتری ۲۵ ماه است.');e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
@@ -116,10 +170,11 @@ async function main() {
   await waitFor(`document.body.innerText.includes('FAQ knowledge saved')`);
   await clickText("inbox");
   await waitFor(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))===${JSON.stringify(originalGapConversationSnapshot)}`);
-  await clickText("Claim & take over"); await waitFor(`document.body.innerText.includes('Release')`);
+  await waitFor(`document.body.innerText.includes('Release')`);
 
   // Exercise the visitor UI after staff takeover. The message must persist, but
   // no additional automated assistant message may be appended.
+  await evaluate(`sessionStorage.setItem('cxops.chat.owner-studio.preview.v1',${JSON.stringify(firstGapSession)})`);
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio" }, sessionId);
   await waitFor(`document.body.innerText.includes('Assistant setup') && !!document.querySelector('[aria-label="Open support chat"]')`); await sleep(500); await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
   await waitFor(`!!document.querySelector('#cxops-chat-input')`);
@@ -188,7 +243,7 @@ async function main() {
   writeFileSync("artifacts/owner-studio-mobile-rtl.png", Buffer.from(mobileShot.data, "base64"));
   await evaluate(`localStorage.setItem('cxops.owner.language','auto')`);
 
-  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, content_based_document_evidence: true, visitor_send_poll_restore: true, knowledge_gap_review_correction: true, original_gap_conversation_unchanged: true, corrected_fresh_preview_grounded: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
+  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, content_based_document_evidence: true, evidence_error_retry: true, stale_evidence_suppressed: true, evidence_retry_preserves_draft_and_transcript: true, visitor_send_poll_restore: true, knowledge_gap_review_correction: true, original_gap_conversation_unchanged: true, corrected_fresh_preview_grounded: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
   chrome.kill();
 }
 
