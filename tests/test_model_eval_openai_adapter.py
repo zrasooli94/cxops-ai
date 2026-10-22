@@ -6,6 +6,7 @@ import pytest
 
 from app.services.model_eval_controller import EvaluationBlockedError
 from app.services.model_eval_openai_adapter import (
+    DisconnectedResponsesEvaluationTransport,
     GenerationSuppressed,
     GroundedTurn,
     ProviderDisconnectedResponsesAdapter,
@@ -165,3 +166,29 @@ async def test_timeout_is_treated_as_ambiguous_not_retried():
     )
     with pytest.raises(EvaluationBlockedError, match="outcome is ambiguous"):
         await adapter.generate(_serialize())
+
+
+@pytest.mark.asyncio
+async def test_disconnected_controller_transport_bridge_enforces_same_policy():
+    adapter = ProviderDisconnectedResponsesAdapter(
+        transport=_DisconnectedTransport(), explicitly_approved=True,
+    )
+    bridge = DisconnectedResponsesEvaluationTransport(adapter)
+    result = json.loads(await bridge.send(
+        model="gpt-6-luna",
+        serialized_input=_serialize(),
+        max_output_tokens=500,
+        service_tier="default",
+        cache_retention="30m",
+        sdk_max_retries=0,
+    ))
+    assert result["citation_ids"] == ["shop-hours"]
+    with pytest.raises(EvaluationBlockedError, match="do not match"):
+        await bridge.send(
+            model="gpt-6-luna",
+            serialized_input=_serialize(),
+            max_output_tokens=500,
+            service_tier="default",
+            cache_retention="12h",
+            sdk_max_retries=0,
+        )

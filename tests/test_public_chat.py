@@ -45,7 +45,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from prometheus_client import generate_latest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 os.environ["AUTH_MODE"] = "hs256"
@@ -80,6 +80,12 @@ from app.repositories.conversation_message_repository import (
 from app.schemas.agent import AgentDecision
 from app.services.agent_workflow_service import agent_workflow_service
 from app.services.knowledge_search_service import KnowledgeSearchService
+from app.services.model_eval_controller import (
+    EvaluationBlockedError,
+    EvaluationPolicy,
+    ModelEvaluationController,
+    PersistedPublicChatSessionGuard,
+)
 from app.services.public_chat_service import (
     DEDUPE_INBOUND_PREFIX,
     DEDUPE_REPLY_PREFIX,
@@ -2219,6 +2225,86 @@ def _guard_analyze_never_runs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
+    db, client, org_scope,
+):
+    """The real row guard keeps staff takeover ordered after bounded dispatch."""
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org)
+    created = await _create_session(client, key)
+    token = created["session"]["token"]
+    session_row = (
+        await db.execute(select(PublicChatSession).where(
+            PublicChatSession.token_hash == hash_digest(token)
+        ))
+    ).scalar_one()
+    session_id = session_row.id
+
+    class ExactCounter:
+        model = "gpt-6-luna"
+
+        @staticmethod
+        def count(_value):
+            return 10
+
+    class PausedTransport:
+        provider_disconnected = True
+
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def send(self, **_kwargs):
+            self.calls += 1
+            self.entered.set()
+            await self.release.wait()
+            return "mocked grounded response"
+
+    transport = PausedTransport()
+    controller = ModelEvaluationController(
+        policy=EvaluationPolicy(), exact_token_counter=ExactCounter(),
+        transport=transport, explicitly_approved=True,
+        approved_run_id=f"race-{uuid.uuid4().hex}",
+        approved_organization_id=org.id,
+        session_guard=PersistedPublicChatSessionGuard(),
+    )
+    run_id = controller.approved_run_id
+    dispatch = asyncio.create_task(controller.attempt(
+        db, organization_id=org.id, run_id=run_id,
+        turn_number=1, retry_number=0, serialized_input="bounded request",
+        public_chat_session_id=session_id,
+    ))
+    await asyncio.wait_for(transport.entered.wait(), timeout=2)
+
+    async def handoff():
+        async with AsyncSessionLocal() as staff_db:
+            await staff_db.execute(update(PublicChatSession).where(
+                PublicChatSession.id == session_id,
+                PublicChatSession.organization_id == org.id,
+                PublicChatSession.status == "ai_active",
+            ).values(status="human_requested"))
+            await staff_db.commit()
+
+    takeover = asyncio.create_task(handoff())
+    await asyncio.sleep(0.05)
+    assert takeover.done() is False, "handoff must wait on the dispatch row lock"
+    transport.release.set()
+    assert await dispatch == "mocked grounded response"
+    await asyncio.wait_for(takeover, timeout=2)
+    await db.refresh(session_row)
+    assert session_row.status == "human_requested"
+    assert transport.calls == 1
+    with pytest.raises(EvaluationBlockedError, match="persisted session state"):
+        await controller.attempt(
+            db, organization_id=org.id, run_id=run_id,
+            turn_number=2, retry_number=0, serialized_input="must remain silent",
+            public_chat_session_id=session_id,
+        )
+    assert transport.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_handed_off_followup_human_requested_is_recorded_without_ai(
     db, client, org_scope, monkeypatch
 ):
@@ -2243,6 +2329,16 @@ async def test_handed_off_followup_human_requested_is_recorded_without_ai(
     assert body["reply"] is None
     assert body["handoff"] is True
     assert body["status"] == "human_requested"
+
+    session_row = (
+        await db.execute(select(PublicChatSession).where(
+            PublicChatSession.token_hash == hash_digest(token)
+        ))
+    ).scalar_one()
+    with pytest.raises(EvaluationBlockedError, match="persisted session state"):
+        await PersistedPublicChatSessionGuard().assert_generation_allowed(
+            db, organization_id=org.id, session_id=session_row.id,
+        )
     assert rag_calls == []
 
     conversation = (

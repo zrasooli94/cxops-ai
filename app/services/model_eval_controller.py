@@ -7,6 +7,7 @@ until the owner separately approves the run and configures a restricted key.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,6 +17,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ai_usage_reservation import AIUsageReservation
+from app.models.public_chat import PublicChatSession
 from app.services.tenant_ai_allowance_service import (
     AI_BUDGET_LOCK_KEY,
     STATUS_RESERVED,
@@ -49,6 +51,35 @@ class ExactTokenCounter(Protocol):
     model: str
 
     def count(self, serialized_input: str) -> int: ...
+
+
+class SessionDispatchGuard(Protocol):
+    async def assert_generation_allowed(
+        self, db: AsyncSession, *, organization_id: int, session_id: int,
+    ) -> None: ...
+
+
+class PersistedPublicChatSessionGuard:
+    """Linearize mocked dispatch against staff handoff on the session row.
+
+    The row lock remains owned by the caller's transaction until the controller
+    settles or rolls back after transport. A handoff that wins first is observed;
+    a handoff that starts later waits until this bounded dispatch completes.
+    """
+
+    async def assert_generation_allowed(
+        self, db: AsyncSession, *, organization_id: int, session_id: int,
+    ) -> None:
+        status = await db.scalar(
+            select(PublicChatSession.status).where(
+                PublicChatSession.id == session_id,
+                PublicChatSession.organization_id == organization_id,
+            ).with_for_update()
+        )
+        if status != "ai_active":
+            raise EvaluationBlockedError(
+                "persisted session state suppresses autonomous generation"
+            )
 
 
 @dataclass(frozen=True)
@@ -91,11 +122,12 @@ class EvaluationPolicy:
 
 class ModelEvaluationController:
     PREFIX = "model-eval:"
+    DISCONNECTED_TRANSPORT_TIMEOUT_SECONDS = 30
 
     def __init__(
         self, *, policy: EvaluationPolicy, exact_token_counter: ExactTokenCounter | None,
         transport: EvaluationTransport, explicitly_approved: bool, approved_run_id: str,
-        approved_organization_id: int,
+        approved_organization_id: int, session_guard: SessionDispatchGuard,
     ) -> None:
         policy.validate()
         if not explicitly_approved:
@@ -111,10 +143,12 @@ class ModelEvaluationController:
         self.transport = transport
         self.approved_run_id = approved_run_id
         self.approved_organization_id = approved_organization_id
+        self.session_guard = session_guard
 
     async def attempt(
         self, db: AsyncSession, *, organization_id: int, run_id: str,
         turn_number: int, retry_number: int, serialized_input: str,
+        public_chat_session_id: int,
     ) -> str:
         if run_id != self.approved_run_id or organization_id != self.approved_organization_id:
             raise EvaluationBlockedError("evaluation run is not approved")
@@ -156,14 +190,28 @@ class ModelEvaluationController:
         ))
         await db.commit()  # durable before transport dispatch
         try:
-            result = await self.transport.send(
-                model=self.policy.model,
-                serialized_input=serialized_input,
-                max_output_tokens=self.policy.max_output_tokens,
-                service_tier=self.policy.service_tier,
-                cache_retention=self.policy.cache_retention,
-                sdk_max_retries=0,
+            await self.session_guard.assert_generation_allowed(
+                db,
+                organization_id=organization_id,
+                session_id=public_chat_session_id,
             )
+        except EvaluationBlockedError:
+            await db.execute(update(AIUsageReservation).where(
+                AIUsageReservation.reservation_key == key
+            ).values(status=STATUS_SETTLED, settled_at=datetime.now(UTC)))
+            await db.commit()
+            raise
+
+        try:
+            async with asyncio.timeout(self.DISCONNECTED_TRANSPORT_TIMEOUT_SECONDS):
+                result = await self.transport.send(
+                    model=self.policy.model,
+                    serialized_input=serialized_input,
+                    max_output_tokens=self.policy.max_output_tokens,
+                    service_tier=self.policy.service_tier,
+                    cache_retention=self.policy.cache_retention,
+                    sdk_max_retries=0,
+                )
         except ConfirmedNoDispatchError:
             await db.execute(update(AIUsageReservation).where(
                 AIUsageReservation.reservation_key == key
@@ -171,6 +219,7 @@ class ModelEvaluationController:
             await db.commit()
             raise
         except Exception as exc:
+            await db.rollback()  # release the session row lock; reservation stays durable
             raise AmbiguousModelOutcome(
                 "unconfirmed provider outcome retained for reconciliation"
             ) from exc

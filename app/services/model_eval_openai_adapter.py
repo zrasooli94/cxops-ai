@@ -215,3 +215,41 @@ class ProviderDisconnectedResponsesAdapter:
         if not refused and (not answer.strip() or not citations):
             raise EvaluationBlockedError("grounded answer requires text and citations")
         return ParsedGroundedResponse(answer.strip(), tuple(citations), refused)
+
+
+class DisconnectedResponsesEvaluationTransport:
+    """Bridge the parsed Responses contract into ``ModelEvaluationController``.
+
+    It remains disconnected because the wrapped adapter enforces a disconnected
+    injected transport. No OpenAI client or credential is constructed here.
+    """
+
+    provider_disconnected = True
+
+    def __init__(self, adapter: ProviderDisconnectedResponsesAdapter) -> None:
+        self.adapter = adapter
+
+    async def send(
+        self,
+        *,
+        model: str,
+        serialized_input: str,
+        max_output_tokens: int,
+        service_tier: str,
+        cache_retention: str,
+        sdk_max_retries: int,
+    ) -> str:
+        if (
+            model != self.adapter.MODEL
+            or max_output_tokens != self.adapter.MAX_OUTPUT_TOKENS
+            or service_tier != "default"
+            or cache_retention != "30m"
+            or sdk_max_retries != 0
+        ):
+            raise EvaluationBlockedError("controller and Responses policy do not match")
+        result = await self.adapter.generate(serialized_input)
+        return json.dumps({
+            "answer": result.text,
+            "citation_ids": list(result.citations),
+            "refused": result.refused,
+        }, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
