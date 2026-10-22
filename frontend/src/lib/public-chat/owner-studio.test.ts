@@ -39,6 +39,20 @@ describe("refreshSelectedConversation", () => {
     assert.equal(refreshed, true);
     assert.deepEqual(applied, [{ messages: ["current conversation reply"], conversationId: 11 }]);
   });
+
+  it("does not apply a failed refresh to either conversation", async () => {
+    const applied: Array<{ messages: string[]; conversationId: number }> = [];
+    await assert.rejects(
+      refreshSelectedConversation(
+        11,
+        async () => { throw new Error("synthetic refresh failure"); },
+        () => 22,
+        (messages, conversationId) => applied.push({ messages, conversationId }),
+      ),
+      /synthetic refresh failure/,
+    );
+    assert.deepEqual(applied, []);
+  });
 });
 
 describe("summarizeOwnerStudio", () => {
