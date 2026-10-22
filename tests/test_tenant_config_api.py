@@ -822,6 +822,36 @@ async def test_local_document_upload_list_duplicate_and_delete(
     )
     assert listed_again.json()["items"] == []
 
+    removed_evidence = await client.get(
+        "/staff/tenant-config/offline-evidence",
+        params={"question": "When can repairs booked before noon be collected?"},
+        headers=headers,
+    )
+    assert removed_evidence.status_code == 200
+    assert removed_evidence.json()["items"] == []
+
+    replacement = await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={
+            "file": (
+                "collection-policy.md",
+                b"Repairs booked before noon can now be collected after 6 PM.",
+                "text/markdown",
+            )
+        },
+        headers=headers,
+    )
+    assert replacement.status_code == 201
+    assert replacement.json()["duplicate"] is False
+    assert replacement.json()["document_id"] != body["document_id"]
+    current_evidence = await client.get(
+        "/staff/tenant-config/offline-evidence",
+        params={"question": "When can repairs booked before noon be collected?"},
+        headers=headers,
+    )
+    assert "after 6 PM" in current_evidence.text
+    assert "after 4 PM" not in current_evidence.text
+
 
 @pytest.mark.asyncio
 async def test_local_evidence_matches_document_content_and_stays_tenant_scoped(

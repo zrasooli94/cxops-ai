@@ -1211,6 +1211,25 @@ class PublicChatService:
                 question=text,
                 previous_customer_question=previous_question,
             )
+            if offline_answer is not None and not await offline_grounded_chat.source_is_current(
+                db,
+                organization_id=organization_id,
+                source_id=offline_answer.source_id,
+            ):
+                # The owner changed knowledge after retrieval. Retry once using
+                # the current tenant snapshot; never publish the removed chunk.
+                offline_answer = await offline_grounded_chat.answer(
+                    db,
+                    organization_id=organization_id,
+                    question=text,
+                    previous_customer_question=previous_question,
+                )
+                if offline_answer is not None and not await offline_grounded_chat.source_is_current(
+                    db,
+                    organization_id=organization_id,
+                    source_id=offline_answer.source_id,
+                ):
+                    offline_answer = None
             if offline_answer is None:
                 handoff = True
                 reply_text = await cls.handoff_reply_for(db, organization_id)

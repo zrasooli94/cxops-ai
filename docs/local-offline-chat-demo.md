@@ -178,3 +178,20 @@ embeddings. Uploaded documents remain tenant-scoped in the disposable database
 and can be removed from the same screen. The setup screen shows a copyable
 installation template containing a placeholder host; it does not publish or
 activate a hosted widget.
+
+### Knowledge freshness contract
+
+FAQ replacement and document removal affect new answers and owner evidence
+queries after the change commits. The offline visitor path revalidates its
+tenant-owned source immediately before publishing; if knowledge changed after
+retrieval, it retries once against the current snapshot and otherwise hands off
+instead of publishing removed content. The final check takes a short shared row
+lock through reply persistence, so an overlapping delete either commits first
+and suppresses the stale answer, or waits until the already-validated reply
+commits. No database lock is held during retrieval or generation.
+
+Previously delivered conversation messages and their recorded source metadata
+are historical facts and are not rewritten when knowledge changes. They must
+not be presented as current knowledge. This local contract does not version or
+archive deleted document bodies, and it does not yet provide a general
+production RAG snapshot/version mechanism.

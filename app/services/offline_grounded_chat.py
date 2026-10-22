@@ -173,6 +173,45 @@ class OfflineGroundedChat:
     """Tenant-safe lexical retrieval with a strict authored-text response."""
 
     @staticmethod
+    async def source_is_current(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        source_id: str,
+    ) -> bool:
+        """Check that a citation still belongs to current tenant knowledge.
+
+        Retrieval and reply persistence are separate statements. An owner can
+        replace or remove knowledge between them, so public chat checks this
+        immediately before publishing. Historical messages and logs are never
+        rewritten by this current-knowledge check.
+        """
+        if not source_id.startswith("offline:"):
+            return False
+        try:
+            chunk_id = int(source_id.removeprefix("offline:"))
+        except ValueError:
+            return False
+        current = await db.scalar(
+            select(KnowledgeChunk.id)
+            .join(
+                KnowledgeDocument,
+                (KnowledgeDocument.id == KnowledgeChunk.document_id)
+                & (KnowledgeDocument.organization_id == KnowledgeChunk.organization_id),
+            )
+            .where(
+                KnowledgeChunk.id == chunk_id,
+                KnowledgeChunk.organization_id == organization_id,
+                KnowledgeDocument.organization_id == organization_id,
+            )
+            # Hold a shared row lock through reply persistence. A concurrent
+            # delete/replacement that starts after this check waits, giving a
+            # clear commit order without locking during retrieval/generation.
+            .with_for_update(read=True)
+        )
+        return current is not None
+
+    @staticmethod
     async def answer(
         db: AsyncSession,
         *,

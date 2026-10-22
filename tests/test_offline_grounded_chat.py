@@ -17,7 +17,7 @@ from app.services.offline_grounded_chat import (
 )
 
 
-async def _knowledge(db, *, organization_id: int, title: str, content: str) -> None:
+async def _knowledge(db, *, organization_id: int, title: str, content: str):
     document = KnowledgeDocument(
         organization_id=organization_id,
         title=title,
@@ -27,8 +27,7 @@ async def _knowledge(db, *, organization_id: int, title: str, content: str) -> N
     )
     db.add(document)
     await db.flush()
-    db.add(
-        KnowledgeChunk(
+    chunk = KnowledgeChunk(
             organization_id=organization_id,
             document_id=document.id,
             chunk_index=0,
@@ -37,8 +36,82 @@ async def _knowledge(db, *, organization_id: int, title: str, content: str) -> N
             metadata_json={},
             embedding=[0.0] * 1536,
         )
-    )
+    db.add(chunk)
     await db.commit()
+    return document, chunk
+
+
+@pytest.mark.asyncio
+async def test_current_source_check_is_tenant_scoped_and_invalidates_deleted_chunks(db):
+    suffix = uuid.uuid4().hex
+    owner = Organization(name=f"Freshness owner {suffix}")
+    other = Organization(name=f"Freshness other {suffix}")
+    db.add_all([owner, other])
+    await db.commit()
+    document, chunk = await _knowledge(
+        db,
+        organization_id=owner.id,
+        title="Synthetic pickup policy",
+        content="Synthetic pickups are available after 16:00.",
+    )
+    source_id = f"offline:{chunk.id}"
+
+    assert await offline_grounded_chat.source_is_current(
+        db, organization_id=owner.id, source_id=source_id
+    )
+    assert not await offline_grounded_chat.source_is_current(
+        db, organization_id=other.id, source_id=source_id
+    )
+    assert not await offline_grounded_chat.source_is_current(
+        db, organization_id=owner.id, source_id="offline:not-an-id"
+    )
+
+    await db.delete(document)
+    await db.commit()
+    assert not await offline_grounded_chat.source_is_current(
+        db, organization_id=owner.id, source_id=source_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_replaced_knowledge_never_reuses_old_chunk(db):
+    suffix = uuid.uuid4().hex
+    organization = Organization(name=f"Freshness replacement {suffix}")
+    db.add(organization)
+    await db.commit()
+    old_document, old_chunk = await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="Synthetic collection window",
+        content="Synthetic bicycle collection is available after 16:00.",
+    )
+    old_answer = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="When is synthetic bicycle collection available?",
+    )
+    assert old_answer is not None and "16:00" in old_answer.text
+
+    await db.delete(old_document)
+    await db.commit()
+    await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="Synthetic collection window revised",
+        content="Synthetic bicycle collection is available after 18:30.",
+    )
+    new_answer = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="When is synthetic bicycle collection available?",
+    )
+
+    assert new_answer is not None and "18:30" in new_answer.text
+    assert "16:00" not in new_answer.text
+    assert new_answer.source_id != f"offline:{old_chunk.id}"
+    assert not await offline_grounded_chat.source_is_current(
+        db, organization_id=organization.id, source_id=f"offline:{old_chunk.id}"
+    )
 
 
 @pytest.mark.asyncio

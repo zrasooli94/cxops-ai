@@ -71,6 +71,8 @@ from app.models.base import Base
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.integration_job import IntegrationJob
+from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
 from app.models.organization_membership import OrganizationMembership
 from app.models.public_chat import (
@@ -91,6 +93,7 @@ from app.services.model_eval_controller import (
     ModelEvaluationController,
     PersistedPublicChatSessionGuard,
 )
+from app.services.offline_grounded_chat import offline_grounded_chat
 from app.services.public_chat_service import (
     DEDUPE_INBOUND_PREFIX,
     DEDUPE_REPLY_PREFIX,
@@ -109,6 +112,30 @@ from app.services.ticket_sla_service import TicketSLAService
 
 ALLOWED_ORIGIN = "https://widget.example.test"
 X_ORIGIN = "X-Embedding-Origin"
+
+
+async def _seed_offline_knowledge(db, organization_id: int, *, content: str):
+    document = KnowledgeDocument(
+        organization_id=organization_id,
+        title="Synthetic restoration policy",
+        source="local_synthetic",
+        checksum=secrets.token_hex(32),
+        metadata_json={"synthetic": True},
+    )
+    db.add(document)
+    await db.flush()
+    chunk = KnowledgeChunk(
+        organization_id=organization_id,
+        document_id=document.id,
+        chunk_index=0,
+        content=content,
+        token_count=len(content.split()),
+        metadata_json={"synthetic": True},
+        embedding=[0.0] * 1536,
+    )
+    db.add(chunk)
+    await db.commit()
+    return document.id, chunk.id
 
 
 @pytest.fixture(autouse=True)
@@ -2615,6 +2642,197 @@ async def test_handed_off_followup_preserves_tenant_isolation(
 # ---------------------------------------------------------------------------
 # Chatbot C3 — previously answered customer topic, not full public history
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_removed_knowledge_is_not_reused_by_restored_session_but_history_remains(
+    db, client, org_scope, monkeypatch,
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    monkeypatch.setattr(settings, "public_chat_offline_provider_enabled", True)
+    document_id, _chunk_id = await _seed_offline_knowledge(
+        db,
+        org.id,
+        content="Synthetic restoration pickup is available after 16:00.",
+    )
+    token = (await _create_session(client, key))["session"]["token"]
+    headers = _origin_headers(token=token)
+
+    first = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "freshness-old", "text": "When is synthetic restoration pickup available?"},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert "16:00" in first.json()["reply"]
+
+    await db.execute(delete(KnowledgeChunk).where(
+        KnowledgeChunk.organization_id == org.id,
+        KnowledgeChunk.document_id == document_id,
+    ))
+    await db.execute(delete(KnowledgeDocument).where(
+        KnowledgeDocument.organization_id == org.id,
+        KnowledgeDocument.id == document_id,
+    ))
+    await db.commit()
+
+    # The same persisted visitor token represents a restored widget session.
+    fresh = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "freshness-new", "text": "When is synthetic restoration pickup available?"},
+        headers=headers,
+    )
+    assert fresh.status_code == 200
+    assert fresh.json()["handoff"] is True
+    assert "16:00" not in (fresh.json()["reply"] or "")
+
+    conversation = await db.scalar(select(Conversation).where(
+        Conversation.organization_id == org.id,
+        Conversation.channel == "web",
+    ))
+    messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
+        db, conversation_id=conversation.id, organization_id=org.id,
+    )
+    bodies = [message.body for message in messages]
+    assert any("16:00" in body for body in bodies), "historical answer must remain unchanged"
+    assert any(
+        "[Source: Synthetic restoration policy]" in body for body in bodies
+    ), "historical answer must retain its delivered source label"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_removal_during_offline_retrieval_discards_stale_answer(
+    db, client, org_scope, monkeypatch,
+):
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    monkeypatch.setattr(settings, "public_chat_offline_provider_enabled", True)
+    document_id, _chunk_id = await _seed_offline_knowledge(
+        db,
+        org.id,
+        content="Synthetic overlap pickup is available after 17:45.",
+    )
+    original_answer = offline_grounded_chat.answer
+    retrieved = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def paused_answer(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        answer = await original_answer(*args, **kwargs)
+        if calls == 1:
+            retrieved.set()
+            await release.wait()
+        return answer
+
+    monkeypatch.setattr(offline_grounded_chat, "answer", paused_answer)
+    token = (await _create_session(client, key))["session"]["token"]
+    pending = asyncio.create_task(client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "freshness-race", "text": "When is synthetic overlap pickup available?"},
+        headers=_origin_headers(token=token),
+    ))
+    await asyncio.wait_for(retrieved.wait(), timeout=2)
+    async with AsyncSessionLocal() as owner_db:
+        await owner_db.execute(delete(KnowledgeChunk).where(
+            KnowledgeChunk.organization_id == org.id,
+            KnowledgeChunk.document_id == document_id,
+        ))
+        await owner_db.execute(delete(KnowledgeDocument).where(
+            KnowledgeDocument.organization_id == org.id,
+            KnowledgeDocument.id == document_id,
+        ))
+        await owner_db.commit()
+    release.set()
+    response = await asyncio.wait_for(pending, timeout=2)
+
+    assert response.status_code == 200
+    assert response.json()["handoff"] is True
+    assert "17:45" not in (response.json()["reply"] or "")
+    assert calls == 2, "stale retrieval must be retried once against current knowledge"
+
+
+@pytest.mark.asyncio
+async def test_delete_after_final_source_check_waits_for_reply_commit(
+    db, client, org_scope, monkeypatch,
+):
+    """The final source check and reply persistence have one database order.
+
+    Retrieval remains lock-free. Once the final check has acquired its shared
+    row lock, a removal waits until the already-validated reply commits. A
+    removal that commits before that check instead makes the visitor path retry
+    or hand off (covered by the preceding race test).
+    """
+    org = await org_scope()
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    monkeypatch.setattr(settings, "public_chat_offline_provider_enabled", True)
+    document_id, _chunk_id = await _seed_offline_knowledge(
+        db,
+        org.id,
+        content="Synthetic ordered pickup is available after 19:10.",
+    )
+    original_check = offline_grounded_chat.source_is_current
+    checked = asyncio.Event()
+    release = asyncio.Event()
+    delete_started = asyncio.Event()
+
+    async def paused_final_check(*args, **kwargs):
+        current = await original_check(*args, **kwargs)
+        checked.set()
+        await release.wait()
+        return current
+
+    monkeypatch.setattr(offline_grounded_chat, "source_is_current", paused_final_check)
+    token = (await _create_session(client, key))["session"]["token"]
+    pending_reply = asyncio.create_task(client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "freshness-final-check-order",
+            "text": "When is synthetic ordered pickup available?",
+        },
+        headers=_origin_headers(token=token),
+    ))
+    await asyncio.wait_for(checked.wait(), timeout=2)
+
+    async def remove_knowledge():
+        async with AsyncSessionLocal() as owner_db:
+            delete_started.set()
+            await owner_db.execute(delete(KnowledgeChunk).where(
+                KnowledgeChunk.organization_id == org.id,
+                KnowledgeChunk.document_id == document_id,
+            ))
+            await owner_db.execute(delete(KnowledgeDocument).where(
+                KnowledgeDocument.organization_id == org.id,
+                KnowledgeDocument.id == document_id,
+            ))
+            await owner_db.commit()
+
+    pending_delete = asyncio.create_task(remove_knowledge())
+    await asyncio.wait_for(delete_started.wait(), timeout=2)
+    await asyncio.sleep(0.05)
+    assert not pending_delete.done(), "delete must wait for the validated reply transaction"
+
+    release.set()
+    response = await asyncio.wait_for(pending_reply, timeout=2)
+    assert response.status_code == 200
+    assert "19:10" in response.json()["reply"]
+    await asyncio.wait_for(pending_delete, timeout=2)
+
+    # A later session observes the committed removal and cannot reuse the text.
+    fresh_token = (await _create_session(client, key))["session"]["token"]
+    fresh = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "freshness-after-ordered-delete",
+            "text": "When is synthetic ordered pickup available?",
+        },
+        headers=_origin_headers(token=fresh_token),
+    )
+    assert fresh.status_code == 200
+    assert fresh.json()["handoff"] is True
+    assert "19:10" not in (fresh.json()["reply"] or "")
 
 
 @pytest.mark.asyncio
