@@ -194,6 +194,13 @@ async function main() {
   await clickText("Check reply status");
   await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('No saved reply was found')`);
   if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT uncertain outcome stays'`)) throw new Error('not-found reconciliation cleared draft');
+  const beforeBlockedResendPosts = await evaluate(`globalThis.__cxopsReplyRace.replyPosts`);
+  await clickText("Send");
+  await sleep(100);
+  if (await evaluate(`globalThis.__cxopsReplyRace.replyPosts!==${beforeBlockedResendPosts}`)) throw new Error('pending ambiguous request was resent under a new identity');
+  await evaluate(`(async()=>{const pending=globalThis.__cxopsReplyRace.replyDestinations.at(-1);const response=await fetch('/api/local-demo/backend/conversations/'+pending.conversationId+'/replies',{method:'POST',headers:{'content-type':'application/json','x-cxops-local-origin':location.origin},body:JSON.stringify({body:pending.body,client_request_id:pending.clientRequestId})});if(!response.ok)throw new Error('late original request failed');})()`);
+  await clickText("Check status again");
+  await waitFor(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('DRAFT uncertain outcome stays') && !document.querySelector('[aria-label="Staff reply recovery"]')`);
 
   await setValue('input[placeholder="Reply as staff…"]', 'STAFF-B saved despite ambiguous response');
   await evaluate(`globalThis.__cxopsReplyRace.postMode='delayed_saved_uncertain'`);
@@ -232,7 +239,7 @@ async function main() {
       refreshFailures:probe.refreshFailures,
     };
   })()`);
-  if (verified.replyPosts !== 5 || verified.destinations.length !== 5 || verified.destinations[0].conversationId !== seeded.conversationA || !verified.destinations.every((item) => item.clientRequestId) || verified.aReplyCount !== 1 || verified.bReplyCount !== 0 || verified.bSavedReplyCount !== 1 || verified.rejectedDraftCount !== 0 || verified.reconciledSavedCount !== 1 || verified.refreshFailures !== 1) throw new Error(`reply destination/count mismatch: ${JSON.stringify(verified)}`);
+  if (verified.replyPosts !== 6 || verified.destinations.length !== 6 || verified.destinations[0].conversationId !== seeded.conversationA || !verified.destinations.every((item) => item.clientRequestId) || verified.aReplyCount !== 1 || verified.bReplyCount !== 0 || verified.bSavedReplyCount !== 1 || verified.rejectedDraftCount !== 1 || verified.reconciledSavedCount !== 1 || verified.refreshFailures !== 1) throw new Error(`reply destination/count mismatch: ${JSON.stringify(verified)}`);
   const cleanup = await evaluate(`(async()=>{const headers={'x-cxops-local-origin':location.origin};const statuses=[];for(const sessionId of ${JSON.stringify(seeded.sessionIds)}){statuses.push((await fetch('/api/local-demo/backend/staff/public-chat/sessions/'+sessionId+'/resolve',{method:'POST',headers})).status);}return statuses;})()`);
   if (cleanup.some((status) => status !== 200)) throw new Error(`handoff cleanup failed: ${JSON.stringify(cleanup)}`);
 
@@ -250,6 +257,7 @@ async function main() {
     delayed_failure_is_conversation_scoped: true,
     rapid_double_click_does_not_duplicate: true,
     unsaved_ambiguous_status_keeps_draft: true,
+    pending_status_blocks_new_identity_until_late_commit: true,
     saved_ambiguous_status_reconciles_without_resend: true,
     synthetic_handoffs_resolved: true,
   }));

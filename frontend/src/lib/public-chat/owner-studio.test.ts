@@ -4,6 +4,8 @@ import {
   buildKnowledgeGapReview,
   evidenceCoverageLabel,
   refreshSelectedConversation,
+  replyAttemptBlocksSend,
+  replyDraftMatchesAttempt,
   selectCurrentEvidence,
   staffReplyOutcomeCopy,
   summarizeOwnerStudio,
@@ -57,6 +59,20 @@ describe("refreshSelectedConversation", () => {
 });
 
 describe("staffReplyOutcomeCopy", () => {
+  it("blocks a new send while an ambiguous request can still commit", () => {
+    assert.equal(replyAttemptBlocksSend("send_uncertain"), true);
+    assert.equal(replyAttemptBlocksSend("send_not_found"), true);
+    assert.equal(replyAttemptBlocksSend("send_failed"), false);
+    assert.equal(replyAttemptBlocksSend("saved_refresh_failed"), false);
+    assert.equal(replyAttemptBlocksSend(undefined), false);
+  });
+
+  it("matches the canonical submitted body without preserving resendable whitespace", () => {
+    assert.equal(replyDraftMatchesAttempt("  hello  ", "hello"), true);
+    assert.equal(replyDraftMatchesAttempt("hello again", "hello"), false);
+    assert.equal(replyDraftMatchesAttempt(undefined, "hello"), false);
+  });
+
   it("only offers refresh-only recovery after a confirmed save", () => {
     assert.equal(staffReplyOutcomeCopy("saved_refresh_failed", "en").action, "Refresh conversation");
     assert.equal(staffReplyOutcomeCopy("send_failed", "en").action, null);

@@ -9,6 +9,14 @@ export type StudioEvidence = {
 };
 export type StaffReplyOutcome = "saved_refresh_failed" | "send_failed" | "send_uncertain" | "send_not_found";
 
+export function replyAttemptBlocksSend(outcome: StaffReplyOutcome | undefined) {
+  return outcome === "send_uncertain" || outcome === "send_not_found";
+}
+
+export function replyDraftMatchesAttempt(draft: string | undefined, canonicalBody: string) {
+  return draft?.trim() === canonicalBody;
+}
+
 export function staffReplyOutcomeCopy(outcome: StaffReplyOutcome, language: string) {
   const persian = language === "fa";
   if (outcome === "saved_refresh_failed") return {
@@ -25,8 +33,8 @@ export function staffReplyOutcomeCopy(outcome: StaffReplyOutcome, language: stri
   };
   if (outcome === "send_not_found") return {
     message: persian
-      ? "هنوز پاسخ ذخیره‌شده‌ای برای این تلاش یافت نشد. پیش‌نویس حفظ شد و ارسال دوباره انجام نشد."
-      : "No saved reply was found for this attempt yet. The draft was kept and was not resent.",
+      ? "هنوز پاسخ ذخیره‌شده‌ای برای این تلاش یافت نشد. درخواست اصلی ممکن است همچنان در حال تکمیل باشد؛ پیش‌نویس حفظ شد و ارسال دوباره تا روشن‌شدن وضعیت غیرفعال است."
+      : "No saved reply was found for this attempt yet. The original request may still be completing, so the draft is kept and sending stays disabled until its status is known.",
     action: persian ? "بررسی دوباره وضعیت" : "Check status again",
   };
   return {
