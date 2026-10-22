@@ -37,6 +37,8 @@ async function main() {
         armed: false, conversationA: null, conversationB: null,
         replyPosts: 0, replyDestinations: [], releasePost: null, rejectB: null,
         serverSaved: false, aRefreshCompleted: false, delayedPost: false, delayedB: false,
+        aPostRefreshFailed: false, failNextRefreshConversation: null, refreshFailures: 0,
+        postMode: 'normal', releaseFailure: null,
       };
       globalThis.fetch = (input, init = {}) => {
         const url = new URL(String(input), location.origin);
@@ -48,6 +50,18 @@ async function main() {
           probe.replyPosts += 1;
           const body = JSON.parse(String(init.body || '{}'));
           probe.replyDestinations.push({ conversationId, body: body.body, clientRequestId: body.client_request_id });
+          if (probe.postMode === 'reject') {
+            probe.postMode = 'normal';
+            return Promise.resolve(new Response(JSON.stringify({ detail: 'Synthetic confirmed rejection' }), { status: 409, headers: { 'content-type': 'application/json' } }));
+          }
+          if (probe.postMode === 'uncertain') {
+            probe.postMode = 'normal';
+            return Promise.reject(new TypeError('Synthetic transport interruption'));
+          }
+          if (probe.postMode === 'delayed_uncertain') {
+            probe.postMode = 'normal';
+            return new Promise((_resolve, reject) => { probe.releaseFailure = () => reject(new TypeError('Synthetic delayed transport interruption')); });
+          }
           if (conversationId === probe.conversationA && !probe.delayedPost) {
             probe.delayedPost = true;
             return new Promise((resolve, reject) => {
@@ -64,7 +78,16 @@ async function main() {
           return new Promise((resolve) => { probe.rejectB = () => resolve(new Response(JSON.stringify({ detail: 'Synthetic B refresh failure' }), { status: 503, headers: { 'content-type': 'application/json' } })); });
         }
         if (method === 'GET' && match[2] === 'messages' && conversationId === probe.conversationA && probe.delayedPost) {
-          return originalFetch(input, init).then((response) => { probe.aRefreshCompleted = true; return response; });
+          if (!probe.aPostRefreshFailed) {
+            probe.aPostRefreshFailed = true;
+            probe.aRefreshCompleted = true;
+            return Promise.resolve(new Response(JSON.stringify({ detail: 'Synthetic A post-save refresh failure' }), { status: 503, headers: { 'content-type': 'application/json' } }));
+          }
+        }
+        if (method === 'GET' && match[2] === 'messages' && conversationId === probe.failNextRefreshConversation) {
+          probe.failNextRefreshConversation = null;
+          probe.refreshFailures += 1;
+          return Promise.resolve(new Response(JSON.stringify({ detail: 'Synthetic post-save refresh failure' }), { status: 503, headers: { 'content-type': 'application/json' } }));
         }
         return originalFetch(input, init);
       };
@@ -139,6 +162,37 @@ async function main() {
   await waitFor(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('RACE-B unique visitor question') && !document.querySelector('[role="alert"]')`);
   if (await evaluate(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('STAFF-A exactly-once reply')`)) throw new Error('A reply rendered in B');
 
+  await setValue('input[placeholder="Reply as staff…"]', 'STAFF-B saved-before-refresh-failure');
+  await evaluate(`globalThis.__cxopsReplyRace.failNextRefreshConversation=${seeded.conversationB}`);
+  await evaluate(`(()=>{const button=[...document.querySelectorAll('button')].find((item)=>item.textContent.trim()==='Send');button.click();button.click();return true})()`);
+  await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('Reply saved, but the conversation could not be refreshed')`);
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!==''`)) throw new Error('confirmed saved reply draft was not cleared');
+  const beforeRecoveryPosts = await evaluate(`globalThis.__cxopsReplyRace.replyPosts`);
+  await clickText("Refresh conversation");
+  await waitFor(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('STAFF-B saved-before-refresh-failure') && !document.querySelector('[aria-label="Staff reply recovery"]')`);
+  if (await evaluate(`globalThis.__cxopsReplyRace.replyPosts!==${beforeRecoveryPosts}`)) throw new Error('refresh-only recovery issued another POST');
+
+  await setValue('input[placeholder="Reply as staff…"]', 'DRAFT confirmed rejection stays');
+  await evaluate(`globalThis.__cxopsReplyRace.postMode='reject'`);
+  await clickText("Send");
+  await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('reply was not accepted')`);
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT confirmed rejection stays'`)) throw new Error('confirmed rejection cleared draft');
+
+  await setValue('input[placeholder="Reply as staff…"]', 'DRAFT uncertain outcome stays');
+  await evaluate(`globalThis.__cxopsReplyRace.postMode='delayed_uncertain'`);
+  await clickText("Send");
+  await waitFor(`typeof globalThis.__cxopsReplyRace.releaseFailure==='function'`);
+  await clickConversation(seeded.conversationA);
+  await waitFor(`document.querySelector('[data-conversation-message-count]')?.innerText.includes('RACE-A unique visitor question')`);
+  await setValue('input[placeholder="Reply as staff…"]', 'DRAFT-A survives delayed B failure');
+  await evaluate(`globalThis.__cxopsReplyRace.releaseFailure()`);
+  await sleep(100);
+  if (await evaluate(`document.querySelector('[aria-label="Staff reply recovery"]')!==null`)) throw new Error('delayed B failure leaked into A');
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT-A survives delayed B failure'`)) throw new Error('delayed B failure changed A draft');
+  await clickConversation(seeded.conversationB);
+  await waitFor(`document.querySelector('[aria-label="Staff reply recovery"]')?.textContent.includes('outcome is uncertain')`);
+  if (await evaluate(`document.querySelector('input[placeholder="Reply as staff…"]')?.value!=='DRAFT uncertain outcome stays'`)) throw new Error('uncertain outcome cleared draft');
+
   const verified = await evaluate(`(async()=>{
     const headers={'x-cxops-local-origin':location.origin};
     const [a,b]=await Promise.all([
@@ -151,9 +205,12 @@ async function main() {
       destinations:probe.replyDestinations,
       aReplyCount:a.filter((message)=>message.body==='STAFF-A exactly-once reply').length,
       bReplyCount:b.filter((message)=>message.body==='STAFF-A exactly-once reply').length,
+      bSavedReplyCount:b.filter((message)=>message.body==='STAFF-B saved-before-refresh-failure').length,
+      rejectedDraftCount:b.filter((message)=>message.body==='DRAFT confirmed rejection stays'||message.body==='DRAFT uncertain outcome stays').length,
+      refreshFailures:probe.refreshFailures,
     };
   })()`);
-  if (verified.replyPosts !== 1 || verified.destinations.length !== 1 || verified.destinations[0].conversationId !== seeded.conversationA || !verified.destinations[0].clientRequestId || verified.aReplyCount !== 1 || verified.bReplyCount !== 0) throw new Error(`reply destination/count mismatch: ${JSON.stringify(verified)}`);
+  if (verified.replyPosts !== 4 || verified.destinations.length !== 4 || verified.destinations[0].conversationId !== seeded.conversationA || !verified.destinations.every((item) => item.clientRequestId) || verified.aReplyCount !== 1 || verified.bReplyCount !== 0 || verified.bSavedReplyCount !== 1 || verified.rejectedDraftCount !== 0 || verified.refreshFailures !== 1) throw new Error(`reply destination/count mismatch: ${JSON.stringify(verified)}`);
   const cleanup = await evaluate(`(async()=>{const headers={'x-cxops-local-origin':location.origin};const statuses=[];for(const sessionId of ${JSON.stringify(seeded.sessionIds)}){statuses.push((await fetch('/api/local-demo/backend/staff/public-chat/sessions/'+sessionId+'/resolve',{method:'POST',headers})).status);}return statuses;})()`);
   if (cleanup.some((status) => status !== 200)) throw new Error(`handoff cleanup failed: ${JSON.stringify(cleanup)}`);
 
@@ -164,6 +221,12 @@ async function main() {
     repeated_switch_transcripts_scoped: true,
     reply_saved_once_to_intended_conversation: true,
     no_switch_resend: true,
+    saved_refresh_failure_scoped: true,
+    refresh_only_recovery_no_resend: true,
+    confirmed_rejection_keeps_draft: true,
+    ambiguous_send_keeps_draft_without_success: true,
+    delayed_failure_is_conversation_scoped: true,
+    rapid_double_click_does_not_duplicate: true,
     synthetic_handoffs_resolved: true,
   }));
   chrome.kill();

@@ -5,6 +5,7 @@ import {
   evidenceCoverageLabel,
   refreshSelectedConversation,
   selectCurrentEvidence,
+  staffReplyOutcomeCopy,
   summarizeOwnerStudio,
 } from "./owner-studio.ts";
 
@@ -52,6 +53,20 @@ describe("refreshSelectedConversation", () => {
       /synthetic refresh failure/,
     );
     assert.deepEqual(applied, []);
+  });
+});
+
+describe("staffReplyOutcomeCopy", () => {
+  it("only offers refresh-only recovery after a confirmed save", () => {
+    assert.equal(staffReplyOutcomeCopy("saved_refresh_failed", "en").action, "Refresh conversation");
+    assert.equal(staffReplyOutcomeCopy("send_failed", "en").action, null);
+    assert.equal(staffReplyOutcomeCopy("send_uncertain", "en").action, null);
+  });
+
+  it("distinguishes confirmed rejection and uncertain delivery in Persian", () => {
+    assert.match(staffReplyOutcomeCopy("send_failed", "fa").message, /پذیرفته نشد/);
+    assert.match(staffReplyOutcomeCopy("send_uncertain", "fa").message, /نامشخص/);
+    assert.match(staffReplyOutcomeCopy("saved_refresh_failed", "fa").message, /ذخیره شد/);
   });
 });
 

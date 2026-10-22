@@ -7,6 +7,29 @@ export type StudioEvidence = {
   coverage: "missing" | "ambiguous" | "related";
   items: unknown[];
 };
+export type StaffReplyOutcome = "saved_refresh_failed" | "send_failed" | "send_uncertain";
+
+export function staffReplyOutcomeCopy(outcome: StaffReplyOutcome, language: string) {
+  const persian = language === "fa";
+  if (outcome === "saved_refresh_failed") return {
+    message: persian
+      ? "پاسخ ذخیره شد، اما گفتگو تازه‌سازی نشد. برای دیدن پیام ذخیره‌شده، فقط گفتگو را تازه‌سازی کنید."
+      : "Reply saved, but the conversation could not be refreshed. Refresh the conversation to see the saved message.",
+    action: persian ? "تازه‌سازی گفتگو" : "Refresh conversation",
+  };
+  if (outcome === "send_uncertain") return {
+    message: persian
+      ? "نتیجه ارسال نامشخص است و ارسال دوباره انجام نشد. پیش از تلاش دوباره، گفتگو را بررسی کنید."
+      : "The send outcome is uncertain and was not retried. Check the conversation before sending again.",
+    action: null,
+  };
+  return {
+    message: persian
+      ? "پاسخ پذیرفته نشد. پیش‌نویس شما حفظ شده است."
+      : "The reply was not accepted. Your draft was kept.",
+    action: null,
+  };
+}
 
 export async function refreshSelectedConversation<T>(
   targetConversationId: number,
