@@ -1,6 +1,7 @@
 import pytest
 
 from app.services.model_eval_budget import ModelEvalBudget, conservative_token_bound
+from scripts.plan_chat_model_evaluation import CASES
 
 
 def _budget(**changes):
@@ -38,3 +39,14 @@ def test_turn_and_cost_limits_fail_closed():
 def test_utf8_bound_handles_persian_without_under_counting_bytes():
     assert conservative_token_bound("ساعات کاری") == len("ساعات کاری".encode())
     assert conservative_token_bound("ساعات کاری") > len("ساعات کاری")
+
+
+def test_offline_replay_cases_have_explicit_bilingual_expected_outcomes():
+    assert len(CASES) == 10
+    assert {case["id"].split("-", 1)[0] for case in CASES} == {"en", "fa"}
+    assert all(
+        set(case) == {"id", "prompt", "outcome", "source", "required", "forbidden"}
+        and case["outcome"] in {"grounded", "refuse_or_handoff", "handoff"}
+        and case["forbidden"]
+        for case in CASES
+    )

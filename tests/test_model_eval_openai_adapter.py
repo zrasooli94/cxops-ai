@@ -4,7 +4,10 @@ import json
 
 import pytest
 
-from app.services.model_eval_controller import EvaluationBlockedError
+from app.services.model_eval_controller import (
+    ConfirmedNoDispatchError,
+    EvaluationBlockedError,
+)
 from app.services.model_eval_openai_adapter import (
     DisconnectedResponsesEvaluationTransport,
     GenerationSuppressed,
@@ -20,6 +23,7 @@ class _DisconnectedTransport:
     def __init__(self, response: dict | None = None) -> None:
         self.response = response or {
             "status": "completed",
+            "usage": {"input_tokens": 120, "output_tokens": 30},
             "output": [{"content": [{
                 "type": "output_text",
                 "text": json.dumps({
@@ -115,6 +119,7 @@ async def test_fixed_request_contract_and_grounded_response_parsing():
 async def test_refusal_incomplete_truncation_and_bad_citations_fail_safely():
     refusal = _DisconnectedTransport({
         "status": "completed",
+        "usage": {"input_tokens": 100, "output_tokens": 12},
         "output": [{"content": [{"type": "refusal", "refusal": "Cannot answer safely."}]}],
     })
     result = await ProviderDisconnectedResponsesAdapter(
@@ -123,7 +128,8 @@ async def test_refusal_incomplete_truncation_and_bad_citations_fail_safely():
     assert result.refused is True and result.citations == ()
 
     incomplete = _DisconnectedTransport({
-        "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}
+        "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+        "usage": {"input_tokens": 100, "output_tokens": 500},
     })
     with pytest.raises(EvaluationBlockedError, match="max_output_tokens"):
         await ProviderDisconnectedResponsesAdapter(
@@ -132,6 +138,7 @@ async def test_refusal_incomplete_truncation_and_bad_citations_fail_safely():
 
     bad = _DisconnectedTransport({
         "status": "completed",
+        "usage": {"input_tokens": 100, "output_tokens": 5},
         "output": [{"content": [{"type": "output_text", "text": json.dumps({
             "answer": "Unsupported", "citation_ids": [], "refused": False,
         })}]}],
@@ -143,6 +150,7 @@ async def test_refusal_incomplete_truncation_and_bad_citations_fail_safely():
 
     unknown_citation = _DisconnectedTransport({
         "status": "completed",
+        "usage": {"input_tokens": 100, "output_tokens": 5},
         "output": [{"content": [{"type": "output_text", "text": json.dumps({
             "answer": "Invented", "citation_ids": ["not-retrieved"], "refused": False,
         })}]}],
@@ -174,15 +182,18 @@ async def test_disconnected_controller_transport_bridge_enforces_same_policy():
         transport=_DisconnectedTransport(), explicitly_approved=True,
     )
     bridge = DisconnectedResponsesEvaluationTransport(adapter)
-    result = json.loads(await bridge.send(
+    transported = await bridge.send(
         model="gpt-6-luna",
         serialized_input=_serialize(),
         max_output_tokens=500,
         service_tier="default",
         cache_retention="30m",
         sdk_max_retries=0,
-    ))
+    )
+    result = json.loads(transported.text)
     assert result["citation_ids"] == ["shop-hours"]
+    assert transported.input_tokens == 120
+    assert transported.output_tokens == 30
     with pytest.raises(EvaluationBlockedError, match="do not match"):
         await bridge.send(
             model="gpt-6-luna",
@@ -191,4 +202,51 @@ async def test_disconnected_controller_transport_bridge_enforces_same_policy():
             service_tier="default",
             cache_retention="12h",
             sdk_max_retries=0,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage, message",
+    [
+        (None, "missing"),
+        ({"input_tokens": "120", "output_tokens": 30}, "malformed"),
+        ({"input_tokens": 120, "output_tokens": -1}, "malformed"),
+        ({"input_tokens": 0, "output_tokens": 30}, "malformed"),
+        ({"input_tokens": 120, "output_tokens": 0}, "malformed"),
+    ],
+)
+async def test_missing_or_malformed_usage_fails_after_mocked_dispatch(usage, message):
+    response = {
+        "status": "completed",
+        "output": [{"content": [{"type": "output_text", "text": json.dumps({
+            "answer": "Grounded", "citation_ids": ["shop-hours"], "refused": False,
+        })}]}],
+    }
+    if usage is not None:
+        response["usage"] = usage
+    adapter = ProviderDisconnectedResponsesAdapter(
+        transport=_DisconnectedTransport(response), explicitly_approved=True,
+    )
+    with pytest.raises(EvaluationBlockedError, match=message):
+        await adapter.generate(_serialize())
+
+
+@pytest.mark.asyncio
+async def test_confirmed_no_dispatch_sentinel_is_preserved_for_controller_settlement():
+    transport = _DisconnectedTransport()
+
+    async def rejected_before_dispatch(_payload):
+        raise ConfirmedNoDispatchError("synthetic pre-dispatch rejection")
+
+    transport.create_response = rejected_before_dispatch
+    adapter = ProviderDisconnectedResponsesAdapter(
+        transport=transport, explicitly_approved=True,
+    )
+    bridge = DisconnectedResponsesEvaluationTransport(adapter)
+    with pytest.raises(ConfirmedNoDispatchError, match="pre-dispatch"):
+        await bridge.send(
+            model="gpt-6-luna", serialized_input=_serialize(),
+            max_output_tokens=500, service_tier="default",
+            cache_retention="30m", sdk_max_retries=0,
         )

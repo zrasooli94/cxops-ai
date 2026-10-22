@@ -12,7 +12,11 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.services.model_eval_controller import EvaluationBlockedError
+from app.services.model_eval_controller import (
+    ConfirmedNoDispatchError,
+    EvaluationBlockedError,
+    EvaluationTransportResult,
+)
 
 HANDED_OFF_STATUSES = frozenset({"human_requested", "human_assigned"})
 
@@ -38,6 +42,8 @@ class ParsedGroundedResponse:
     text: str
     citations: tuple[str, ...]
     refused: bool
+    input_tokens: int
+    output_tokens: int
 
 
 class TiktokenExactModelCounter:
@@ -165,6 +171,8 @@ class ProviderDisconnectedResponsesAdapter:
     async def generate(self, serialized_input: str) -> ParsedGroundedResponse:
         try:
             raw = await self.transport.create_response(self.request_payload(serialized_input))
+        except ConfirmedNoDispatchError:
+            raise
         except Exception as exc:
             raise EvaluationBlockedError(
                 "provider transport outcome is ambiguous and requires reconciliation"
@@ -196,7 +204,8 @@ class ProviderDisconnectedResponsesAdapter:
             refusal = item.get("refusal")
             if not isinstance(refusal, str) or not refusal.strip():
                 raise EvaluationBlockedError("empty provider refusal")
-            return ParsedGroundedResponse(refusal.strip(), (), True)
+            input_tokens, output_tokens = ProviderDisconnectedResponsesAdapter._parse_usage(raw)
+            return ParsedGroundedResponse(refusal.strip(), (), True, input_tokens, output_tokens)
         if item.get("type") != "output_text" or not isinstance(item.get("text"), str):
             raise EvaluationBlockedError("unexpected provider content type")
         try:
@@ -214,7 +223,28 @@ class ProviderDisconnectedResponsesAdapter:
             raise EvaluationBlockedError("refusal cannot claim supporting citations")
         if not refused and (not answer.strip() or not citations):
             raise EvaluationBlockedError("grounded answer requires text and citations")
-        return ParsedGroundedResponse(answer.strip(), tuple(citations), refused)
+        input_tokens, output_tokens = ProviderDisconnectedResponsesAdapter._parse_usage(raw)
+        return ParsedGroundedResponse(
+            answer.strip(), tuple(citations), refused, input_tokens, output_tokens
+        )
+
+    @staticmethod
+    def _parse_usage(raw: dict[str, Any]) -> tuple[int, int]:
+        usage = raw.get("usage")
+        if not isinstance(usage, dict):
+            raise EvaluationBlockedError("provider usage is missing")
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        if (
+            not isinstance(input_tokens, int)
+            or isinstance(input_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or isinstance(output_tokens, bool)
+            or input_tokens <= 0
+            or output_tokens <= 0
+        ):
+            raise EvaluationBlockedError("provider usage is malformed")
+        return input_tokens, output_tokens
 
 
 class DisconnectedResponsesEvaluationTransport:
@@ -238,7 +268,7 @@ class DisconnectedResponsesEvaluationTransport:
         service_tier: str,
         cache_retention: str,
         sdk_max_retries: int,
-    ) -> str:
+    ) -> EvaluationTransportResult:
         if (
             model != self.adapter.MODEL
             or max_output_tokens != self.adapter.MAX_OUTPUT_TOKENS
@@ -248,8 +278,11 @@ class DisconnectedResponsesEvaluationTransport:
         ):
             raise EvaluationBlockedError("controller and Responses policy do not match")
         result = await self.adapter.generate(serialized_input)
-        return json.dumps({
+        return EvaluationTransportResult(text=json.dumps({
             "answer": result.text,
             "citation_ids": list(result.citations),
             "refused": result.refused,
-        }, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        }, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )

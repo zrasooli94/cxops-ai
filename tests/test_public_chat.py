@@ -87,6 +87,7 @@ from app.services.knowledge_search_service import KnowledgeSearchService
 from app.services.model_eval_controller import (
     EvaluationBlockedError,
     EvaluationPolicy,
+    EvaluationTransportResult,
     ModelEvaluationController,
     PersistedPublicChatSessionGuard,
 )
@@ -2264,7 +2265,9 @@ async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
             self.calls += 1
             self.entered.set()
             await self.release.wait()
-            return "mocked grounded response"
+            return EvaluationTransportResult(
+                text="mocked grounded response", input_tokens=10, output_tokens=4
+            )
 
     transport = PausedTransport()
     controller = ModelEvaluationController(

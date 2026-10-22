@@ -1,5 +1,6 @@
 """Provider-disconnected evaluation controls; no model client or network."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -11,8 +12,10 @@ from app.models.ai_usage_reservation import AIUsageReservation
 from app.models.organization import Organization
 from app.services.model_eval_controller import (
     AmbiguousModelOutcome,
+    ConfirmedNoDispatchError,
     EvaluationBlockedError,
     EvaluationPolicy,
+    EvaluationTransportResult,
     ModelEvaluationController,
 )
 
@@ -28,7 +31,9 @@ class _Transport:
         self.calls.append(kwargs)
         if self.error:
             raise self.error
-        return "mocked response"
+        return EvaluationTransportResult(
+            text="mocked response", input_tokens=12, output_tokens=8
+        )
 
 
 class _InspectingTransport(_Transport):
@@ -129,6 +134,101 @@ async def test_reservation_is_durable_before_dispatch_and_sdk_retry_is_zero(db):
         AIUsageReservation.organization_id == organization.id
     ))).scalar_one()
     assert reservation.status == "settled"
+    # Keep the conservative full reservation: this table's six-decimal money
+    # precision cannot faithfully store every token-level sub-cent estimate.
+    assert float(reservation.estimated_cost_usd) == pytest.approx(0.000625)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        "missing usage",
+        EvaluationTransportResult("bad input", -1, 10),
+        EvaluationTransportResult("zero input", 0, 10),
+        EvaluationTransportResult("zero output", 10, 0),
+        EvaluationTransportResult("input overrun", 3001, 10),
+        EvaluationTransportResult("output overrun", 10, 501),
+    ],
+)
+async def test_missing_malformed_or_overrun_usage_stays_reserved(db, result):
+    organization = Organization(name=f"Eval usage {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    transport = _Transport()
+
+    async def send(**kwargs):
+        transport.calls.append(kwargs)
+        return result
+
+    transport.send = send
+    controller = _controller(transport, organization_id=organization.id)
+    with pytest.raises(AmbiguousModelOutcome, match="usage"):
+        await controller.attempt(
+            db, organization_id=organization.id, run_id="approved-eval",
+            turn_number=1, retry_number=0, serialized_input="bounded prompt",
+            public_chat_session_id=101,
+        )
+    reservation = (await db.execute(select(AIUsageReservation).where(
+        AIUsageReservation.organization_id == organization.id
+    ))).scalar_one()
+    assert reservation.status == "reserved"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_attempt_is_explicitly_blocked_without_dispatch(db):
+    organization = Organization(name=f"Eval duplicate {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    transport = _Transport()
+    controller = _controller(transport, organization_id=organization.id)
+    arguments = {
+        "organization_id": organization.id,
+        "run_id": "approved-eval",
+        "turn_number": 1,
+        "retry_number": 0,
+        "serialized_input": "bounded prompt",
+        "public_chat_session_id": 101,
+    }
+    assert await controller.attempt(db, **arguments) == "mocked response"
+    with pytest.raises(EvaluationBlockedError, match="already exists"):
+        await controller.attempt(db, **arguments)
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_attempt_is_blocked_by_durable_unresolved_reservation(db):
+    organization = Organization(name=f"Eval concurrent {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport = _Transport()
+
+    async def paused_send(**kwargs):
+        transport.calls.append(kwargs)
+        entered.set()
+        await release.wait()
+        return EvaluationTransportResult("first", 10, 5)
+
+    transport.send = paused_send
+    controller = _controller(transport, organization_id=organization.id)
+    first = asyncio.create_task(controller.attempt(
+        db, organization_id=organization.id, run_id="approved-eval",
+        turn_number=1, retry_number=0, serialized_input="first prompt",
+        public_chat_session_id=101,
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    async with AsyncSessionLocal() as other_db:
+        with pytest.raises(EvaluationBlockedError, match="reconciliation"):
+            await controller.attempt(
+                other_db, organization_id=organization.id, run_id="approved-eval",
+                turn_number=2, retry_number=0, serialized_input="second prompt",
+                public_chat_session_id=102,
+            )
+    release.set()
+    assert await first == "first"
+    assert len(transport.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -158,6 +258,25 @@ async def test_ambiguous_timeout_keeps_reservation_and_stops_run(db):
             turn_number=1, retry_number=1, serialized_input="retry must not dispatch",
             public_chat_session_id=101,
         )
+
+
+@pytest.mark.asyncio
+async def test_confirmed_no_dispatch_settles_reservation_without_retry(db):
+    organization = Organization(name=f"Eval rejected {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    transport = _Transport(ConfirmedNoDispatchError("rejected before dispatch"))
+    controller = _controller(transport, organization_id=organization.id)
+    with pytest.raises(ConfirmedNoDispatchError, match="before dispatch"):
+        await controller.attempt(
+            db, organization_id=organization.id, run_id="approved-eval",
+            turn_number=1, retry_number=0, serialized_input="bounded prompt",
+            public_chat_session_id=101,
+        )
+    reservation = (await db.execute(select(AIUsageReservation).where(
+        AIUsageReservation.organization_id == organization.id
+    ))).scalar_one()
+    assert reservation.status == "settled"
 
 
 @pytest.mark.asyncio

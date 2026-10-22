@@ -44,7 +44,14 @@ class EvaluationTransport(Protocol):
     async def send(
         self, *, model: str, serialized_input: str, max_output_tokens: int,
         service_tier: str, cache_retention: str, sdk_max_retries: int,
-    ) -> str: ...
+    ) -> EvaluationTransportResult: ...
+
+
+@dataclass(frozen=True)
+class EvaluationTransportResult:
+    text: str
+    input_tokens: int
+    output_tokens: int
 
 
 class ExactTokenCounter(Protocol):
@@ -180,6 +187,12 @@ class ModelEvaluationController:
             raise EvaluationBlockedError("cost ceiling requires positive headroom")
 
         key = f"{prefix}turn-{turn_number}:attempt-{retry_number + 1}"
+        duplicate = await db.scalar(select(AIUsageReservation.id).where(
+            AIUsageReservation.reservation_key == key
+        ))
+        if duplicate is not None:
+            await db.rollback()
+            raise EvaluationBlockedError("evaluation attempt already exists")
         db.add(AIUsageReservation(
             organization_id=organization_id,
             reservation_key=key,
@@ -223,8 +236,24 @@ class ModelEvaluationController:
             raise AmbiguousModelOutcome(
                 "unconfirmed provider outcome retained for reconciliation"
             ) from exc
+        if (
+            not isinstance(result, EvaluationTransportResult)
+            or isinstance(result.input_tokens, bool)
+            or isinstance(result.output_tokens, bool)
+            or result.input_tokens <= 0
+            or result.output_tokens <= 0
+            or result.input_tokens > self.policy.max_input_tokens
+            or result.output_tokens > self.policy.max_output_tokens
+        ):
+            await db.rollback()
+            raise AmbiguousModelOutcome(
+                "provider usage is missing, malformed, or exceeds the approved caps"
+            )
         await db.execute(update(AIUsageReservation).where(
             AIUsageReservation.reservation_key == key
-        ).values(status=STATUS_SETTLED, settled_at=datetime.now(UTC)))
+        ).values(
+            status=STATUS_SETTLED,
+            settled_at=datetime.now(UTC),
+        ))
         await db.commit()
-        return result
+        return result.text
