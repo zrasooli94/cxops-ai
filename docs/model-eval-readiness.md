@@ -44,12 +44,38 @@ blocked for exact-token admission.
    policy, and current official prices immediately before approval.
 3. Verify the owner's API project can access that exact model using a securely
    configured restricted credential. No credential exists in this source path.
-4. Implement and review a real transport that returns provider usage without
-   weakening the disconnected adapter, zero-SDK-retry rule, or ambiguous-outcome
-   reconciliation behavior.
+4. Replace the deliberately disconnected HTTP seam with a separately reviewed
+   real transport. The current seam accepts only an injected mock client, has no
+   credential/header path, makes one mock-target POST, and preserves the
+   zero-retry and ambiguous-outcome reconciliation behavior. Executable code
+   uses a non-routable `mock://provider-disconnected/...` target; the official
+   HTTPS endpoint appears only below as documentation evidence. It is contract
+   preparation, not a live provider implementation.
 5. Obtain explicit owner approval for the provider, model, credential method,
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
 
 Mocks verify contracts and failure handling only. They do not demonstrate model
 quality, factual entailment, account access, pricing accuracy, or paid spend.
+
+## Public schema evidence (checked 2026-10-22)
+
+The disabled seam follows the official Responses create reference at
+<https://developers.openai.com/api/reference/resources/responses/methods/create>:
+`POST https://api.openai.com/v1/responses`, nonstreaming `stream: false`,
+`store: false`, `max_output_tokens`, `service_tier`, structured JSON through
+`text.format` with `type: json_schema`, `prompt_cache_options.ttl`, and response
+`usage.input_tokens` / `usage.output_tokens`. The reference says the cache TTL
+currently supports `30m` and deprecates `prompt_cache_retention` in favor of
+`prompt_cache_options.ttl`.
+
+The official model page at
+<https://developers.openai.com/api/docs/models/gpt-6-luna> listed the exact
+model ID `gpt-6-luna` and Responses `v1/responses` support on the same check
+date. This is public documentation evidence only, not evidence that the owner's
+API project is entitled to use the model.
+
+This source check does **not** prove project access to `gpt-6-luna`, exact
+tokenizer support, actual response compatibility, or future schema stability.
+Those remain fresh-verification gates immediately before any separately approved
+real evaluation.

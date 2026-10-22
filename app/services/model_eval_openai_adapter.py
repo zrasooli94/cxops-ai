@@ -173,10 +173,10 @@ class ProviderDisconnectedResponsesAdapter:
             raw = await self.transport.create_response(self.request_payload(serialized_input))
         except ConfirmedNoDispatchError:
             raise
-        except Exception as exc:
+        except Exception:  # noqa: BLE001 - every post-dispatch failure is ambiguous
             raise EvaluationBlockedError(
                 "provider transport outcome is ambiguous and requires reconciliation"
-            ) from exc
+            ) from None
         parsed = self.parse_response(raw)
         allowed = {
             item["citation_id"]

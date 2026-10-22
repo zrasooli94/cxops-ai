@@ -231,11 +231,11 @@ class ModelEvaluationController:
             ).values(status=STATUS_SETTLED, settled_at=datetime.now(UTC)))
             await db.commit()
             raise
-        except Exception as exc:
+        except Exception:  # noqa: BLE001 - preserve reservation for every unknown outcome
             await db.rollback()  # release the session row lock; reservation stays durable
             raise AmbiguousModelOutcome(
                 "unconfirmed provider outcome retained for reconciliation"
-            ) from exc
+            ) from None
         if (
             not isinstance(result, EvaluationTransportResult)
             or isinstance(result.input_tokens, bool)
