@@ -100,9 +100,13 @@ async function main() {
   await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('needs to review')`, 15000);
 
+  const evidenceDocument = await evaluate(`(()=>{const form=new FormData();form.set('file',new File(['Synthetic snowboard waxing requires owner confirmation before Tuesday.'],'unrelated-evidence-title.txt',{type:'text/plain'}));return fetch('/api/local-demo/backend/staff/tenant-config/offline-documents',{method:'POST',headers:{'x-cxops-local-origin':location.origin},body:form}).then((response)=>response.json())})()`);
+  if (!evidenceDocument?.document_id) throw new Error("evidence document upload failed");
+
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=inbox" }, sessionId);
   await waitFor(`document.body.innerText.includes('Shared inbox') && document.body.innerText.includes('Claim & take over')`);
   await waitFor(`document.querySelector('[aria-label="Knowledge gap review"]')?.innerText.includes('Do you offer synthetic snowboard waxing?')`);
+  await waitFor(`document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('Synthetic snowboard waxing requires owner confirmation') && document.querySelector('[aria-label="Retrieved knowledge evidence"]')?.innerText.includes('Document')`);
   const originalGapConversationSnapshot = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))`);
   await clickText("Draft FAQ from question");
   await waitFor(`document.body.innerText.includes('Business FAQs') && [...document.querySelectorAll('[data-faq-index] input')].at(-1)?.value==='Do you offer synthetic snowboard waxing?'`);
@@ -150,6 +154,8 @@ async function main() {
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('Tuesday at 4:30 PM')`, 15000);
   const faqCleanupStatus = await evaluate(`fetch('/api/local-demo/backend/staff/tenant-config/offline-faqs',{method:'PUT',headers:{'content-type':'application/json','x-cxops-local-origin':location.origin},body:JSON.stringify({items:JSON.parse(${JSON.stringify(originalFaqs)})})}).then((response)=>response.status)`);
   if (faqCleanupStatus !== 200) throw new Error(`FAQ cleanup failed with ${faqCleanupStatus}`);
+  const evidenceCleanupStatus = await evaluate(`fetch('/api/local-demo/backend/staff/tenant-config/offline-documents/${evidenceDocument.document_id}',{method:'DELETE',headers:{'x-cxops-local-origin':location.origin}}).then((response)=>response.status)`);
+  if (evidenceCleanupStatus !== 204) throw new Error(`evidence cleanup failed with ${evidenceCleanupStatus}`);
 
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=knowledge" }, sessionId);
   await waitFor(`document.body.innerText.includes('ui-synthetic-policy.txt')`);
@@ -181,7 +187,7 @@ async function main() {
   writeFileSync("artifacts/owner-studio-mobile-rtl.png", Buffer.from(mobileShot.data, "base64"));
   await evaluate(`localStorage.setItem('cxops.owner.language','auto')`);
 
-  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, visitor_send_poll_restore: true, knowledge_gap_review_correction: true, original_gap_conversation_unchanged: true, corrected_fresh_preview_grounded: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
+  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, content_based_document_evidence: true, visitor_send_poll_restore: true, knowledge_gap_review_correction: true, original_gap_conversation_unchanged: true, corrected_fresh_preview_grounded: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
   chrome.kill();
 }
 

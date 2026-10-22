@@ -158,5 +158,19 @@ class OfflineDocumentsResponse(BaseModel):
     items: list[OfflineDocumentSummary]
 
 
+class OfflineEvidenceItem(BaseModel):
+    source_id: str
+    title: str
+    provenance: str
+    excerpt: str
+    lexical_score: float
+
+
+class OfflineEvidenceResponse(BaseModel):
+    question: str
+    coverage: str
+    items: list[OfflineEvidenceItem]
+
+
 class OfflineDocumentUploadResponse(OfflineDocumentSummary):
     duplicate: bool

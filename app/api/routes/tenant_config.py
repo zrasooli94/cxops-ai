@@ -14,7 +14,16 @@ import hashlib
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +41,8 @@ from app.schemas.tenant_config import (
     OfflineDocumentsResponse,
     OfflineDocumentSummary,
     OfflineDocumentUploadResponse,
+    OfflineEvidenceItem,
+    OfflineEvidenceResponse,
     OfflineFaqItem,
     OfflineFaqsResponse,
     OfflineFaqsUpdateRequest,
@@ -44,6 +55,7 @@ from app.services.document_parser_service import (
     UnsupportedDocumentTypeError,
 )
 from app.services.knowledge_ingestion_service import KnowledgeIngestionService
+from app.services.offline_grounded_chat import _tokens
 from app.services.tenant_config_service import (
     CLEARABLE_PUBLIC_CHAT_FIELDS,
     AmbiguousWidgetError,
@@ -71,6 +83,8 @@ ManageAuthz = Annotated[
 MAX_LOCAL_DOCUMENT_BYTES = 512 * 1024
 MAX_LOCAL_DOCUMENTS = 20
 LOCAL_DOCUMENT_SOURCE = "local_synthetic_document"
+_OWNER_EVIDENCE_LIMIT = 5
+_OWNER_EVIDENCE_SCAN_LIMIT = 5000
 
 
 def _require_local_offline_demo() -> None:
@@ -205,6 +219,60 @@ async def get_offline_faqs(
     ).all()
     return OfflineFaqsResponse(
         items=[OfflineFaqItem(title=title, content=content) for title, content in rows]
+    )
+
+
+@router.get("/offline-evidence", response_model=OfflineEvidenceResponse)
+async def get_offline_evidence(
+    db: DatabaseSession,
+    tenant: CurrentTenant,
+    _authz: ManageAuthz,
+    question: Annotated[str, Query(min_length=2, max_length=500)],
+):
+    """Return bounded lexical excerpts from this local synthetic tenant only."""
+    _require_local_offline_demo()
+    question_tokens = _tokens(question)
+    rows = (
+        await db.execute(
+            select(KnowledgeChunk, KnowledgeDocument.title, KnowledgeDocument.source)
+            .join(
+                KnowledgeDocument,
+                (KnowledgeDocument.id == KnowledgeChunk.document_id)
+                & (KnowledgeDocument.organization_id == KnowledgeChunk.organization_id),
+            )
+            .where(KnowledgeChunk.organization_id == tenant.organization_id)
+            .where(
+                KnowledgeDocument.source.in_(
+                    {"local_synthetic", LOCAL_DOCUMENT_SOURCE}
+                )
+            )
+            .order_by(KnowledgeChunk.id.asc())
+            .limit(_OWNER_EVIDENCE_SCAN_LIMIT)
+        )
+    ).all()
+    ranked: list[tuple[float, KnowledgeChunk, str, str]] = []
+    for chunk, title, source in rows:
+        overlap = question_tokens & _tokens(f"{title} {chunk.content}")
+        if not overlap:
+            continue
+        coverage = len(overlap) / max(1, len(question_tokens))
+        ranked.append((coverage, chunk, title, source))
+    ranked.sort(key=lambda item: (-item[0], item[1].id))
+    selected = ranked[:_OWNER_EVIDENCE_LIMIT]
+    coverage = "missing" if not selected else "ambiguous" if len(selected) > 1 and selected[0][0] - selected[1][0] < 0.08 else "related"
+    return OfflineEvidenceResponse(
+        question=question,
+        coverage=coverage,
+        items=[
+            OfflineEvidenceItem(
+                source_id=f"offline:{chunk.id}",
+                title=title,
+                provenance="document" if source == LOCAL_DOCUMENT_SOURCE else "faq",
+                excerpt=chunk.content.strip()[:280],
+                lexical_score=round(score, 4),
+            )
+            for score, chunk, title, source in selected
+        ],
     )
 
 

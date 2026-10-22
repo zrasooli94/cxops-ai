@@ -38,6 +38,8 @@ from app.core.database import AsyncSessionLocal
 from app.main import app
 from app.models.base import Base
 from app.models.business_integration import BusinessIntegrationConfiguration
+from app.models.knowledge_chunk import KnowledgeChunk
+from app.models.knowledge_document import KnowledgeDocument
 from app.models.organization import Organization
 from app.models.organization_membership import (
     OrganizationMembership,
@@ -819,6 +821,59 @@ async def test_local_document_upload_list_duplicate_and_delete(
         "/staff/tenant-config/offline-documents", headers=headers
     )
     assert listed_again.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_local_evidence_matches_document_content_and_stays_tenant_scoped(
+    db, client, monkeypatch
+):
+    _enable_local_offline_demo(monkeypatch)
+    mine, subject, _key = await _make_tenant(db)
+    theirs, other_subject, _other_key = await _make_tenant(db)
+    await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("unrelated-title.txt", b"Synthetic wheel truing is offered on Thursday evenings.", "text/plain")},
+        headers=_headers(subject, mine),
+    )
+    await client.post(
+        "/staff/tenant-config/offline-documents",
+        files={"file": ("private-other.txt", b"Synthetic wheel truing costs a secret amount.", "text/plain")},
+        headers=_headers(other_subject, theirs),
+    )
+    internal_document = KnowledgeDocument(
+        organization_id=mine.id,
+        title="Internal prompt material",
+        source="manual",
+        checksum=secrets.token_hex(32),
+        metadata_json={},
+    )
+    db.add(internal_document)
+    await db.flush()
+    db.add(KnowledgeChunk(
+        organization_id=mine.id,
+        document_id=internal_document.id,
+        chunk_index=0,
+        content="Synthetic wheel truing internal prompt must not be exposed.",
+        token_count=9,
+        metadata_json={},
+        embedding=[0.0] * 1536,
+    ))
+    await db.commit()
+
+    response = await client.get(
+        "/staff/tenant-config/offline-evidence",
+        params={"question": "When is synthetic wheel truing offered?"},
+        headers=_headers(subject, mine),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["question"] == "When is synthetic wheel truing offered?"
+    assert body["items"][0]["title"] == "unrelated-title"
+    assert body["items"][0]["provenance"] == "document"
+    assert "Thursday evenings" in body["items"][0]["excerpt"]
+    assert "secret amount" not in response.text
+    assert "internal prompt" not in response.text
+    assert len(body["items"][0]["excerpt"]) <= 280
 
 
 @pytest.mark.asyncio

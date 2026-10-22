@@ -12,6 +12,7 @@ function isSameLoopbackOrigin(candidate: string, requestOrigin: string): boolean
 export const LOCAL_DEMO_PATHS = [
   /^staff\/tenant-config\/public-chat$/,
   /^staff\/tenant-config\/offline-faqs$/,
+  /^staff\/tenant-config\/offline-evidence$/,
   /^staff\/tenant-config\/offline-documents(?:\/\d+)?$/,
   /^staff\/public-chat\/handoff$/,
   /^staff\/public-chat\/sessions\/\d+\/(assign|release|resolve)$/,
