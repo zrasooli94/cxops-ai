@@ -57,6 +57,49 @@ owner studio continues to label itself “Offline responder · no paid AI”. Th
 proves route composition and safety mechanics only; it is not a genuine model
 quality result.
 
+## Reproducible customer and owner demonstration
+
+The safest complete demonstration is intentionally split into two complementary
+checks. There is no browser/API switch that injects a provider: adding one would
+make a server-only spending and approval boundary caller-controlled.
+
+1. The route-level test above exercises the new composition seam through the
+   real `/public/chat/messages` endpoint. It proves three ordered turns including
+   an explicit topic switch, English input plus a Persian mocked answer, tenant knowledge/citation membership,
+   durable approval and reservation, session restoration context, non-target
+   fall-through, cross-tenant refusal, and same-tenant foreign-conversation
+   rejection. The test-only controls are Python object injection, an in-memory
+   disconnected transport, a synthetic full-request counter, and direct ORM
+   setup of a decision-bound activation record. None is exposed by application
+   startup or HTTP.
+2. The existing isolated browser harness exercises the normal owner and visitor
+   interfaces against the same persisted tenant lifecycle. With the disposable
+   database seeded and the local backend/frontend running as described in
+   `docs/local-offline-chat-demo.md`, run it from `/tmp` to keep generated
+   screenshots outside the repository:
+
+   ```sh
+   cd /tmp
+   node /ABSOLUTE/PATH/TO/cxops-ai/scripts/headless_owner_studio_e2e.mjs
+   ```
+
+   The browser harness narrowly fault-injects only the local evidence-fetch
+   endpoint to verify stale/error recovery; chat and staff actions use the normal
+   local HTTP routes. A successful run prints one JSON object whose sixteen values are `true`. It
+   covers owner settings and FAQ save/reload, document upload/retrieval/removal,
+   English and Persian visitor questions, source-evidence display, knowledge-gap
+   correction and a fresh grounded preview, transcript restoration, unknown
+   knowledge handoff, staff claim/reply/release/resolve, post-takeover visitor
+   persistence with no automated reply, analytics, and 390 px RTL layout.
+
+Measured locally on 2026-10-22: the route/provider regression group passed
+150 tests with two existing warnings, and the browser harness returned all
+sixteen checks true. The browser run intentionally uses the visibly labeled
+offline deterministic responder; the route test intentionally uses mocked model
+text. Together they prove UI/lifecycle integration and the disabled model seam,
+not genuine model intelligence, semantic retrieval quality, factual entailment,
+provider account access, or paid spend.
+
 ## Enforced offline contract
 
 - One durable maximum-cost reservation is committed before each mocked dispatch.

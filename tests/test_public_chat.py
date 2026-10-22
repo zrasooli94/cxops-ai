@@ -219,14 +219,16 @@ class _SyntheticResponsesTransport:
 
     async def create_response(self, payload):
         self.payloads.append(payload)
+        evidence = json.loads(payload["input"])["business_knowledge"]
+        citation_id = evidence[0]["citation_id"]
         return {
             "status": "completed",
             "usage": {"input_tokens": 120, "output_tokens": 30},
             "output": [{"content": [{
                 "type": "output_text",
                 "text": json.dumps({
-                    "answer": "پاسخ ساختگی: تعمیرگاه جمعه تا ۱۹:۱۵ باز است.",
-                    "citation_ids": [self.citation_id],
+                    "answer": f"پاسخ ساختگی با منبع {citation_id}",
+                    "citation_ids": [citation_id],
                     "refused": False,
                 }),
             }]}],
@@ -2754,6 +2756,11 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         org.id,
         content="Friday bicycle workshop hours are 10:00 to 19:15.",
     )
+    _, returns_chunk_id = await _seed_offline_knowledge(
+        db,
+        org.id,
+        content="Unused bicycle accessories can be returned within 14 days.",
+    )
     created = await _create_session(client, key)
     token = created["session"]["token"]
     session = await db.scalar(select(PublicChatSession).where(
@@ -2824,7 +2831,7 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     )
     assert response.status_code == 200, response.text
     assert response.json()["handoff"] is False
-    assert response.json()["reply"].startswith("پاسخ ساختگی:")
+    assert response.json()["reply"].startswith("پاسخ ساختگی")
     assert len(transport.payloads) == 1
     grounded = json.loads(transport.payloads[0]["input"])
     assert grounded["customer_message"].startswith("What are")
@@ -2848,6 +2855,20 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     assert follow_up_input["conversation_history"][0]["text"].startswith("What are")
     assert follow_up_input["conversation_history"][1]["text"].startswith("پاسخ ساختگی")
 
+    topic_switch = await client.post(
+        "/public/chat/messages",
+        json={"client_message_id": "controlled-model-topic", "text": "Can unused accessories be returned within 14 days?"},
+        headers=_origin_headers(token=token),
+    )
+    assert topic_switch.status_code == 200
+    assert topic_switch.json()["handoff"] is False
+    assert len(transport.payloads) == 3
+    topic_input = json.loads(transport.payloads[2]["input"])
+    assert topic_input["business_knowledge"] == [{
+        "citation_id": f"offline:{returns_chunk_id}",
+        "text": "Unused bicycle accessories can be returned within 14 days.",
+    }]
+
     # A caller cannot reuse the durable run for another session.
     monkeypatch.setattr(settings, "public_chat_offline_provider_enabled", True)
     second = await _create_session(client, key)
@@ -2859,7 +2880,7 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     assert blocked.status_code == 200
     assert blocked.json()["handoff"] is False
     assert blocked.json()["reply"].startswith("Friday bicycle workshop")
-    assert len(transport.payloads) == 2
+    assert len(transport.payloads) == 3
 
     second_session = await db.scalar(select(PublicChatSession).where(
         PublicChatSession.token_hash == hash_digest(second["session"]["token"]),
