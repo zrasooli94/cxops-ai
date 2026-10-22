@@ -5,8 +5,19 @@ The 50-turn English/Persian evaluation remains **provider-disconnected**. Run
 expected outcomes, scoring rubric, and worst-case arithmetic. This command does
 not read credentials or call a provider.
 
-The plan repeats ten independent fixtures five times. Its rubric is a manual
-acceptance definition, not an implemented grader or a multi-turn quality result.
+The plan contains ten synthetic five-turn conversations: five English and five
+Persian. Every noninitial turn links the full prior conversation, with expected
+behavior, evidence requirements, and forbidden claims. Its rubric is a manual
+acceptance definition, not an implemented grader or a model-quality result.
+Token admission must count the fully serialized system instructions, all linked
+history, retrieved evidence, current message, and response framing; prompt-only
+byte checks are fixture sanity checks and cannot admit a real request.
+
+The planner also performs a deterministic mocked replay. It appends a synthetic
+assistant outcome after every user turn, carries all prior user/assistant entries
+forward, verifies expected citation IDs, and enforces silence after mocked
+handoff. Serialized byte counts are diagnostics only; every turn remains marked
+blocked for exact-token admission.
 
 ## Enforced offline contract
 
