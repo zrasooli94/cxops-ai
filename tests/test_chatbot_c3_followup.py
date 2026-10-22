@@ -109,6 +109,35 @@ def test_standalone_action_or_unbounded_followups_have_no_prior_topic(
     assert not is_referential_information_followup(question)
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What about its warranty? Actually I mean Nova Bike.",
+        "What about Trek FX, not Nova Bike?",
+        "How about weekends instead of weekdays?",
+        "آخر هفته چطور؟ منظورم Nova Bike است.",
+        "و شنبه چطور؟ نه، برای Trek FX.",
+        "What about Nova Bike warranty?",
+        "Sorry, I meant Nova Bike warranty.",
+        "What about Trek FX rather than Nova Bike?",
+        "منظور من ضمانت Nova Bike است.",
+        "Trek FX بلکه Nova Bike چطور؟",
+    ],
+)
+def test_corrections_negation_and_explicit_topics_do_not_inherit_prior_topic(
+    question: str,
+) -> None:
+    assert not is_referential_information_followup(question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["What about it?", "How about that?", "What about its warranty?"],
+)
+def test_pronoun_followups_remain_bounded_and_referential(question: str) -> None:
+    assert is_referential_information_followup(question)
+
+
 def test_one_preceding_answered_public_customer_question_is_selected() -> None:
     assert _lookup(_thread()) == QUESTION
 

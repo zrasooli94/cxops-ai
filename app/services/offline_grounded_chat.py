@@ -37,6 +37,7 @@ _ACTION_REQUEST = re.compile(
     r"|پرداخت|خرید|رزرو|ثبت سفارش|لغو|بازپرداخت (کنید|می خواهم|می‌خواهم)",
     re.IGNORECASE,
 )
+_AMBIGUOUS_NEGATION = re.compile(r"\bnot\b|(?:^|[\s،,])نه(?:[\s،,.!?؟]|$)", re.IGNORECASE)
 _FOLLOWUP_WORDS = frozenset({"it", "that", "those", "آن", "این", "همان"})
 _DOCUMENT_INSTRUCTION = re.compile(
     r"\b(?:ignore|disregard|forget)\b.{0,40}\b(?:instruction|prompt|rule)\b"
@@ -65,13 +66,13 @@ _QUANTITY_CONTEXT = {
 }
 _NUMBER_WORDS = frozenset({
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-    "nine", "ten", "یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "نه", "ده",
+    "nine", "ten", "یک", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "ده",
 })
 _NUMBER_WORD_VALUES = {
     "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
     "ten": "10", "یک": "1", "دو": "2", "سه": "3", "چهار": "4",
-    "پنج": "5", "شش": "6", "هفت": "7", "هشت": "8", "نه": "9", "ده": "10",
+    "پنج": "5", "شش": "6", "هفت": "7", "هشت": "8", "ده": "10",
 }
 _PAGE_SIZE = 200
 _MAX_CHUNKS = 5000
@@ -138,7 +139,12 @@ def _has_numeric_conflict(left: str, right: str) -> bool:
     for context in shared_contexts:
         left_values = {number for number, fact_context in left_facts if fact_context == context}
         right_values = {number for number, fact_context in right_facts if fact_context == context}
-        if len(left_values) == len(right_values) == 1 and left_values.isdisjoint(right_values):
+        # Equal sets and strict subsets are compatible (one source may add a
+        # second fact). Disjoint or partially overlapping sets are ambiguous;
+        # lexical extraction cannot bind each value to its predicate safely.
+        if left_values != right_values and not (
+            left_values <= right_values or right_values <= left_values
+        ):
             return True
     return False
 
@@ -176,6 +182,11 @@ class OfflineGroundedChat:
     ) -> OfflineGroundedAnswer | None:
         raw_question_tokens = _raw_tokens(question)
         if _ACTION_REQUEST.search(question):
+            return None
+        # Lexical ranking cannot bind a negated product/entity reliably. When a
+        # prior topic exists, clarify instead of allowing both old and negated
+        # entity tokens to compete for an authored answer.
+        if _AMBIGUOUS_NEGATION.search(question):
             return None
         question_tokens = raw_question_tokens - _STOPWORDS
         current_topic_tokens = set(question_tokens)

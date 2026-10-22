@@ -2742,6 +2742,17 @@ async def test_c3_short_followup_reuses_only_preceding_answered_question(
     assert calls[1]["previous_customer_question"] == "When are you open?"
     assert calls[1]["organization_id"] == org.id
 
+    corrected_topic = await client.post(
+        "/public/chat/messages",
+        json={
+            "client_message_id": "c3-topic-3",
+            "text": "What about Trek FX, not Nova Bike?",
+        },
+        headers=headers,
+    )
+    assert corrected_topic.status_code == 200, corrected_topic.text
+    assert calls[2]["previous_customer_question"] is None
+
     # The original question is still the stored visitor message, never a
     # rewritten or concatenated customer message.
     conversation = (
@@ -2758,9 +2769,11 @@ async def test_c3_short_followup_reuses_only_preceding_answered_question(
         organization_id=org.id,
     )
     assert [m.body for m in messages if m.direction == "inbound"] == [
-        "When are you open?", "What about weekends?",
+        "When are you open?",
+        "What about weekends?",
+        "What about Trek FX, not Nova Bike?",
     ]
-    assert sum(m.direction == "outbound" for m in messages) == 2
+    assert sum(m.direction == "outbound" for m in messages) == 3
 
 
 @pytest.mark.asyncio

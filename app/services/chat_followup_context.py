@@ -20,9 +20,16 @@ MAX_CONTEXT_AGE = timedelta(minutes=30)
 CONTEXT_MESSAGE_LIMIT = 3
 
 _FOLLOWUP_EN = re.compile(
-    r"^(?:(?:and|also)\s+)?(?:what|how)\s+about\b"
-    r"|^and\s+(?:on|for)\s+(?:weekends?|weekdays?|saturdays?|sundays?)\b"
+    r"^(?:(?:and|also)\s+)?(?:what|how)\s+about\s+"
+    r"(?:it|that|this|those|them|its\s+[a-z-]+|"
+    r"weekends?|weekdays?|saturdays?|sundays?)\??$"
+    r"|^and\s+(?:on|for)\s+(?:weekends?|weekdays?|saturdays?|sundays?)\??$"
     r"|^(?:(?:and|also)\s+)?(?:weekends?|weekdays?|saturdays?|sundays?)\??$",
+    re.IGNORECASE,
+)
+_FOLLOWUP_CORRECTION_OR_NEGATION = re.compile(
+    r"\b(?:actually|instead|i\s+mean|i\s+meant|not|rather\s+than|sorry)\b"
+    r"|(?:در\s+واقع|به\s+جای|منظورم|منظور\s+من|بلکه|نه(?:،|,|\s))",
     re.IGNORECASE,
 )
 _SIMPLE_DAY_FOLLOWUP_EN = re.compile(
@@ -70,7 +77,9 @@ def is_referential_information_followup(question: str) -> bool:
     ):
         return False
     normalized = question.strip()
-    if not (_FOLLOWUP_EN.match(normalized) or _FOLLOWUP_FA.match(normalized)):
+    if _FOLLOWUP_CORRECTION_OR_NEGATION.search(normalized):
+        return False
+    if not (_FOLLOWUP_EN.fullmatch(normalized) or _FOLLOWUP_FA.fullmatch(normalized)):
         return False
     return (
         classify_intent(

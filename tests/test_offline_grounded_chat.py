@@ -220,6 +220,50 @@ async def test_referential_followup_adds_prior_topic_but_topic_switch_does_not(d
 
 
 @pytest.mark.asyncio
+async def test_correction_and_negated_followup_never_reuse_old_product_topic(db):
+    suffix = uuid.uuid4().hex
+    organization = Organization(name=f"Offline corrected topic {suffix}")
+    db.add(organization)
+    await db.commit()
+    await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="Trek FX warranty",
+        content="The Trek FX warranty lasts 12 months.",
+    )
+    await _knowledge(
+        db,
+        organization_id=organization.id,
+        title="Nova Bike warranty",
+        content="ضمانت Nova Bike بیست و پنج ماه است.",
+    )
+
+    corrected = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="Actually I mean Nova Bike warranty.",
+        previous_customer_question="How long is the Trek FX warranty?",
+    )
+    ambiguous_negation = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="What about Trek FX, not Nova Bike?",
+        previous_customer_question=None,
+    )
+
+    assert corrected is not None and "Nova Bike" in corrected.text
+    assert ambiguous_negation is None
+
+    explicit_switch = await offline_grounded_chat.answer(
+        db,
+        organization_id=organization.id,
+        question="What about Nova Bike warranty?",
+        previous_customer_question=None,
+    )
+    assert explicit_switch is not None and "Nova Bike" in explicit_switch.text
+
+
+@pytest.mark.asyncio
 async def test_conflicting_equal_evidence_and_unknown_question_fail_closed(db):
     suffix = uuid.uuid4().hex
     organization = Organization(name=f"Offline conflict {suffix}")
@@ -359,10 +403,15 @@ def test_quantity_conflicts_compare_only_shared_explicit_units():
     assert not _has_numeric_conflict("The fee is RM 25.", "The discount is 25%.")
     assert _has_numeric_conflict("نرخ خدمات ۲٫۵ درصد است.", "The service rate is 3.5%.")
     assert _has_numeric_conflict("هزینه ۱٬۲۰۰ رینگیت است.", "The cost is RM 1,500.")
-    assert not _has_numeric_conflict(
+    assert _has_numeric_conflict(
         "The warranty is 25 months and inspection is every 6 months.",
         "The warranty is 30 months and inspection is every 6 months.",
     )
+    assert not _has_numeric_conflict(
+        "The warranty is 25 months and inspection is every 6 months.",
+        "The warranty is 25 months.",
+    )
+    assert _quantity_facts("نه، ضمانت شامل این مورد نیست.") == set()
 
 
 @pytest.mark.asyncio
