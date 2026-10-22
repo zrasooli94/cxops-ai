@@ -1,4 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "codex/cxops-owner-studio-recovered": false
+    }
+  },
   "regions": ["sin1"]
 }
