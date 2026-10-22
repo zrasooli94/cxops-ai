@@ -71,6 +71,7 @@ async function main() {
   writeFileSync("artifacts/owner-studio-setup.png", Buffer.from(setupShot.data, "base64"));
 
   await clickText("knowledge"); await waitFor(`document.querySelectorAll('textarea').length>0`);
+  const originalFaqs = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-faq-index]')].map((row)=>({title:row.querySelector('input').value,content:row.querySelector('textarea').value})))`);
   const originalFaq = (await evaluate(`document.querySelector('textarea').value`)).replaceAll(" UI-SAVE-CHECK", "");
   const changedFaq = `${originalFaq} UI-SAVE-CHECK`;
   await setValue("textarea", changedFaq); await clickText("Save FAQs");
@@ -94,13 +95,22 @@ async function main() {
   await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('7:15 PM')`, 15000);
 
-  await setValue("#cxops-chat-input", "Please book a snowboard repair");
+  await setValue("#cxops-chat-input", "Do you offer synthetic snowboard waxing?");
   await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
   await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
   await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('needs to review')`, 15000);
 
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=inbox" }, sessionId);
   await waitFor(`document.body.innerText.includes('Shared inbox') && document.body.innerText.includes('Claim & take over')`);
+  await waitFor(`document.querySelector('[aria-label="Knowledge gap review"]')?.innerText.includes('Do you offer synthetic snowboard waxing?')`);
+  const originalGapConversationSnapshot = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))`);
+  await clickText("Draft FAQ from question");
+  await waitFor(`document.body.innerText.includes('Business FAQs') && [...document.querySelectorAll('[data-faq-index] input')].at(-1)?.value==='Do you offer synthetic snowboard waxing?'`);
+  await evaluate(`(()=>{const e=[...document.querySelectorAll('[data-faq-index] textarea')].at(-1);if(!e)return false;const s=Object.getOwnPropertyDescriptor(e.constructor.prototype,'value').set;s.call(e,'Synthetic snowboard waxing is available Tuesday at 4:30 PM.');e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
+  await clickText("Save FAQs");
+  await waitFor(`document.body.innerText.includes('FAQ knowledge saved')`);
+  await clickText("inbox");
+  await waitFor(`JSON.stringify([...document.querySelectorAll('[data-conversation-message]')].map((message)=>message.innerText))===${JSON.stringify(originalGapConversationSnapshot)}`);
   await clickText("Claim & take over"); await waitFor(`document.body.innerText.includes('Release')`);
 
   // Exercise the visitor UI after staff takeover. The message must persist, but
@@ -126,6 +136,20 @@ async function main() {
   const inboxShot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }, sessionId);
   writeFileSync("artifacts/owner-studio-inbox.png", Buffer.from(inboxShot.data, "base64"));
   await clickText("Resolve"); await waitFor(`!document.body.innerText.includes('Release')`);
+
+  // A fresh visitor session should use the owner-approved correction while the
+  // original handed-off conversation above remains an immutable history row.
+  await evaluate(`sessionStorage.removeItem('cxops.chat.owner-studio.preview.v1')`);
+  await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio" }, sessionId);
+  await waitFor(`document.body.innerText.includes('Assistant setup') && !!document.querySelector('[aria-label="Open support chat"]')`);
+  await evaluate(`document.querySelector('[aria-label="Open support chat"]').click()`);
+  await waitFor(`!!document.querySelector('#cxops-chat-input')`);
+  await setValue("#cxops-chat-input", "Do you offer synthetic snowboard waxing?");
+  await waitFor(`!document.querySelector('[aria-label="Send message"]')?.disabled`);
+  await evaluate(`document.querySelector('[aria-label="Send message"]').click()`);
+  await waitFor(`document.querySelector('[aria-label="Support conversation"]')?.innerText.includes('Tuesday at 4:30 PM')`, 15000);
+  const faqCleanupStatus = await evaluate(`fetch('/api/local-demo/backend/staff/tenant-config/offline-faqs',{method:'PUT',headers:{'content-type':'application/json','x-cxops-local-origin':location.origin},body:JSON.stringify({items:JSON.parse(${JSON.stringify(originalFaqs)})})}).then((response)=>response.status)`);
+  if (faqCleanupStatus !== 200) throw new Error(`FAQ cleanup failed with ${faqCleanupStatus}`);
 
   await command("Page.navigate", { url: "http://127.0.0.1:3000/chat/owner-studio?view=knowledge" }, sessionId);
   await waitFor(`document.body.innerText.includes('ui-synthetic-policy.txt')`);
@@ -157,7 +181,7 @@ async function main() {
   writeFileSync("artifacts/owner-studio-mobile-rtl.png", Buffer.from(mobileShot.data, "base64"));
   await evaluate(`localStorage.setItem('cxops.owner.language','auto')`);
 
-  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, visitor_send_poll_restore: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
+  console.log(JSON.stringify({ settings_save_reload: true, install_snippet_preview: true, faq_save_reload: true, document_upload_retrieval_delete: true, visitor_send_poll_restore: true, knowledge_gap_review_correction: true, original_gap_conversation_unchanged: true, corrected_fresh_preview_grounded: true, no_automated_reply_after_takeover: true, handoff_claim_reply_release_resolve: true, conversation_analytics: true, mobile_rtl_no_overflow: true }));
   chrome.kill();
 }
 

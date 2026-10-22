@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { summarizeOwnerStudio } from "./owner-studio.ts";
+import { buildKnowledgeGapReview, summarizeOwnerStudio } from "./owner-studio.ts";
 
 describe("summarizeOwnerStudio", () => {
   it("derives tenant inbox metrics without counting closed handoffs as active", () => {
@@ -12,5 +12,59 @@ describe("summarizeOwnerStudio", () => {
       ],
       [{ status: "human_requested" }, { status: "human_assigned" }, { status: "closed" }],
     ), { conversations: 3, awaitingReply: 1, activeHandoffs: 2, resolved: 2 });
+  });
+});
+
+describe("buildKnowledgeGapReview", () => {
+  it("finds the latest customer question and ranks only possibly relevant tenant sources", () => {
+    assert.deepEqual(buildKnowledgeGapReview(
+      [
+        { direction: "inbound", body: "Do you repair skis?" },
+        { direction: "outbound", body: "A support team member needs to review this request." },
+        { direction: "inbound", body: "Can you repair a snowboard?" },
+      ],
+      [
+        { title: "Bicycle repair", content: "We repair bicycles." },
+        { title: "Snowboard rentals", content: "Snowboard rentals are documented." },
+        { title: "Store hours", content: "Open Tuesday." },
+      ],
+      true,
+    ), {
+      question: "Do you repair skis?",
+      relevantSources: [
+        { title: "Bicycle repair", content: "We repair bicycles.", overlap: 1 },
+      ],
+    });
+  });
+
+  it("never turns a post-handoff visitor update into the suggested FAQ", () => {
+    const review = buildKnowledgeGapReview([
+      { direction: "inbound", body: "Do you offer wheel building?" },
+      { direction: "outbound", body: "A support team member needs to review this request." },
+      { direction: "inbound", body: "I am still here after staff takeover" },
+    ], [], true);
+    assert.equal(review?.question, "Do you offer wheel building?");
+  });
+
+  it("does not infer a gap without a handoff or customer message", () => {
+    assert.equal(buildKnowledgeGapReview([{ direction: "inbound", body: "Unknown" }], [], false), null);
+    assert.equal(buildKnowledgeGapReview([{ direction: "outbound", body: "Transferred" }], [], true), null);
+    assert.equal(buildKnowledgeGapReview([
+      { direction: "inbound", body: "Original question" },
+      { direction: "outbound", body: "A localized or alternate handoff reply" },
+      { direction: "inbound", body: "Later visitor update" },
+    ], [], true), null);
+  });
+
+  it("normalizes Persian Arabic variants and zero-width joiners", () => {
+    const review = buildKnowledgeGapReview(
+      [
+        { direction: "inbound", body: "آیا دوچرخه‌ی كودك داريد؟" },
+        { direction: "outbound", body: "A support team member needs to review this request." },
+      ],
+      [{ title: "دوچرخه کودک", content: "دوچرخه‌های کودکان موجود است." }],
+      true,
+    );
+    assert.equal(review?.relevantSources[0]?.title, "دوچرخه کودک");
   });
 });
