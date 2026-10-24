@@ -193,13 +193,17 @@ billing/support confirmation that names the endpoint, model, region, charge
 unit/rate, and failure/retry treatment. No authenticated count request has been
 authorized or performed; only the narrow billing inquiry was authorized.
 
-The owner reports written guidance dated 2026-10-23 from an **OpenAI AI Support
-Agent**, case `18041142`, stating that `POST /v1/responses/input_tokens` is free,
-including failed and rejected counting requests, and does not consume paid
-generation quota. This is owner-provided support evidence, not public developer
-documentation and not a confirmed human-specialist response. The original email
-or support transcript is not attached or independently archived in this
-workspace, so the runtime's `independently_verified` gate remains unsatisfied.
+The owner supplied the full screenshot transcription of written guidance dated
+2026-10-23 from an **OpenAI AI Support Agent**, case `18041142`, stating that
+`POST /v1/responses/input_tokens` is free, including failed and rejected counting
+requests, and does not consume paid generation quota. The owner reports receipt
+at 2026-10-24 01:28 Malaysia time (UTC+08:00). The verbatim owner-provided text
+and provenance are preserved in
+[`docs/evidence/openai-support-case-18041142.md`](evidence/openai-support-case-18041142.md).
+It is a screenshot transcription—not an original email export, public developer
+documentation, or confirmed human-specialist response—and has not been
+independently authenticated. No original screenshot hash is asserted. The
+runtime's `independently_verified` gate therefore remains unsatisfied.
 The source gate does not encode a human-specialist role requirement; it requires
 an independently verified, expiring evidence identity plus an explicit approval.
 All authenticated provider requests therefore remain blocked.
