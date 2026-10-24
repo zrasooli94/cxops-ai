@@ -11,8 +11,19 @@
 - Evidence class: transcription from an owner-reported screenshot, not an
   original email export, public developer documentation, or a confirmed human
   specialist response
-- Authentication state: not independently authenticated
-- Original screenshot hash: unavailable; no hash is asserted
+- Original screenshot independently inspected on 2026-10-24 from the owner's
+  native ChatGPT Library attachment. The private byte-identical copy is not
+  stored in this public repository.
+- Screenshot size: `433137` bytes
+- Screenshot SHA-256:
+  `ec6aeba1c797adeab058174b17ef76dcb4f01281e0d98ec0f6958561abf624bf`
+- Visual inspection confirmed the subject `New Case`, case `18041142`, date
+  `Oct 24, 2026 at 1:28 AM`, display name `Support`, signature `OpenAI AI
+  Support Agent`, and the transcribed body below.
+- Authentication boundary: the screenshot does not expose full sender headers,
+  DKIM, SPF, or an original `.eml`; visual review therefore verifies the
+  preserved screenshot bytes and visible content, not sender-domain
+  authentication or a human-specialist identity.
 
 ## Verbatim owner-provided transcription
 
@@ -34,11 +45,11 @@
 
 ## Use in the evaluation gate
 
-This transcript supports a `no_charge` count-policy claim, including failed and
-rejected count requests. It does not establish generation cost, taxes, regional
-applicability, account entitlement, or a guaranteed final invoice. The current
-runtime gate does not require a human-specialist title, but it does require the
-evidence used for activation to be independently verified, expiring, and
-explicitly approved. This preserved transcription is not independently
-authenticated and therefore does not activate or satisfy that runtime gate by
-itself.
+The inspected screenshot supports a `no_charge` count-policy claim, including
+failed and rejected count requests, attributed specifically to an OpenAI AI
+Support Agent. It does not establish generation cost, taxes, regional
+applicability, account entitlement, sender-header authenticity, or a guaranteed
+final invoice. The runtime gate does not require a human-specialist title, but
+it does require an authenticated `evaluation.manage` principal to review and
+attest an expiring evidence identity in the exact activation manifest. This
+document and private screenshot do not self-attest or activate that gate.

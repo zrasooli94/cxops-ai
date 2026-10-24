@@ -205,13 +205,17 @@ requests, and does not consume paid generation quota. The owner reports receipt
 at 2026-10-24 01:28 Malaysia time (UTC+08:00). The verbatim owner-provided text
 and provenance are preserved in
 [`docs/evidence/openai-support-case-18041142.md`](evidence/openai-support-case-18041142.md).
-It is a screenshot transcription—not an original email export, public developer
-documentation, or confirmed human-specialist response—and has not been
-independently authenticated. No original screenshot hash is asserted. The
-runtime's `independently_verified` gate therefore remains unsatisfied.
-The source gate does not encode a human-specialist role requirement; it requires
-an independently verified, expiring evidence identity plus an explicit approval.
-All authenticated provider requests therefore remain blocked.
+The original owner-supplied screenshot attachment was independently materialized
+and visually inspected on 2026-10-24. Its 433137 bytes have SHA-256
+`ec6aeba1c797adeab058174b17ef76dcb4f01281e0d98ec0f6958561abf624bf`;
+the private image is deliberately excluded from this public repository. Its
+visible body matches the preserved transcription. This verifies the screenshot
+bytes and visible content, not full sender headers, DKIM/SPF, an original `.eml`,
+or a human-specialist identity. The source gate does not require a
+human-specialist role. An authenticated `evaluation.manage` principal must still
+review this evidence, assign an expiring evidence identity, and approve the exact
+manifest; the screenshot cannot self-assert `independently_verified` or activate
+provider access. All authenticated provider requests remain blocked.
 
 ## Generation budget arithmetic
 
@@ -223,17 +227,21 @@ all further attempts until reconciliation; it is never retried automatically.
 At 3,000 full-request input tokens and 500 total output tokens per attempt:
 
 - one standard attempt is US$0.00055; 50 attempts are US$0.0275; 100 are US$0.055;
-- one documented 10% uplift makes those totals US$0.03025 and US$0.0605;
+- one conservative 10% financial buffer makes those reserved totals US$0.03025
+  and US$0.0605; it is not evidence that a regional surcharge applies;
 - regional and FedRAMP uplifts are each documented as 10%, but this plan does not
   assume they stack or apply to this account;
 - no embeddings, tools, graders, translations, cache writes, or paid model
   metadata requests are included.
 
-The durable controller conservatively reserves the single documented 10% uplift,
+The durable controller conservatively reserves a 10% financial buffer,
 leaving US$0.0395 beneath the US$0.10 ledger ceiling across 100 attempts. This is
 API-usage arithmetic, not an all-inclusive invoice guarantee: account taxes,
-regional applicability, the unarchived count guidance, and any ancillary charge
+regional applicability, account-specific surcharges, and any ancillary charge
 must be resolved before the owner can approve an all-provider-charge ceiling.
+Standard processing is independently pinned by the request field
+`service_tier: "default"`; the financial buffer does not select a geographic or
+premium processing tier.
 
 Restricted credential procedure: create a dedicated provider-project key with
 only the minimum permissions available for Responses count/create and model
