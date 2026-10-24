@@ -395,7 +395,8 @@ def test_controller_fails_closed_without_approval_tokenizer_or_known_policy():
     for changes in [
         {"model": "unknown"}, {"service_tier": "regional"},
         {"cache_retention": "12h"}, {"input_rate_per_million": 0},
-        {"output_rate_per_million": 0.49}, {"cost_ceiling_usd": 0.11},
+        {"output_rate_per_million": 0.49}, {"price_multiplier": 1.0},
+        {"cost_ceiling_usd": 0.11},
     ]:
         with pytest.raises(EvaluationBlockedError):
             _controller(transport, **changes)
@@ -425,7 +426,7 @@ async def test_reservation_is_durable_before_dispatch_and_sdk_retry_is_zero(db):
     assert reservation.status == "settled"
     # Keep the conservative full reservation: this table's six-decimal money
     # precision cannot faithfully store every token-level sub-cent estimate.
-    assert float(reservation.estimated_cost_usd) == pytest.approx(0.000625)
+    assert float(reservation.estimated_cost_usd) == pytest.approx(0.000605)
 
 
 @pytest.mark.asyncio
@@ -631,7 +632,7 @@ async def test_persisted_hundred_attempt_cap_blocks_another_dispatch(db):
             reservation_key=f"model-eval:{organization.id}:approved-eval:seed-{index}",
             period_start=now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
             status="settled",
-            estimated_cost_usd=0.000625,
+            estimated_cost_usd=0.000605,
             expires_at=now + timedelta(days=30),
             settled_at=now,
         )

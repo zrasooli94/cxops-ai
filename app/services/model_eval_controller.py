@@ -149,13 +149,14 @@ class EvaluationPolicy:
     max_attempts: int = 100
     max_input_tokens: int = 3000
     max_output_tokens: int = 500
-    input_rate_per_million: float = 0.125
+    input_rate_per_million: float = 0.10
     output_rate_per_million: float = 0.50
+    price_multiplier: float = 1.10
     cost_ceiling_usd: float = 0.10
 
     @property
     def reserved_cost_per_attempt(self) -> float:
-        return (
+        return self.price_multiplier * (
             self.max_input_tokens * self.input_rate_per_million
             + self.max_output_tokens * self.output_rate_per_million
         ) / 1_000_000
@@ -166,8 +167,9 @@ class EvaluationPolicy:
         if self.cache_retention != "30m":
             raise EvaluationBlockedError("only the approved 30m cache policy is allowed")
         if (
-            self.input_rate_per_million != 0.125
+            self.input_rate_per_million != 0.10
             or self.output_rate_per_million != 0.50
+            or self.price_multiplier != 1.10
             or self.cost_ceiling_usd != 0.10
             or self.max_input_tokens != 3000
             or self.max_output_tokens != 500

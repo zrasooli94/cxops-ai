@@ -131,7 +131,11 @@ provider account access, or paid spend.
    tokens; byte/character estimates are not accepted for admission. Pricing for
    the count request is also unverified.
 2. Re-verify the exact model identifier, Responses schema, service tier, cache
-   policy, and current official prices immediately before approval.
+   policy, and current official prices immediately before approval. On
+   2026-10-24 the official model and pricing pages listed `gpt-6-luna` at
+   US$0.10/M short-input tokens and US$0.50/M output tokens. Output includes
+   non-visible reasoning tokens. Explicit cache mode with no breakpoints avoids
+   cache reads and writes.
 3. Verify the owner's API project can access that exact model using a securely
    configured restricted credential. No credential exists in this source path.
 4. Deliberately construct the reviewed development-only HTTPS source at startup
@@ -189,18 +193,74 @@ billing/support confirmation that names the endpoint, model, region, charge
 unit/rate, and failure/retry treatment. No authenticated count request has been
 authorized or performed; only the narrow billing inquiry was authorized.
 
-OpenAI's Help Center assistant could not certify the endpoint's price, failure
-charges, model-budget treatment, or endpoint-specific usage reporting and
-escalated the question to a support specialist on 2026-10-22. That automated
-response is not billing evidence. The specialist response is pending, so count
-billing remains unknown and all authenticated provider requests remain blocked.
+The owner reports written guidance dated 2026-10-23 from an **OpenAI AI Support
+Agent**, case `18041142`, stating that `POST /v1/responses/input_tokens` is free,
+including failed and rejected counting requests, and does not consume paid
+generation quota. This is owner-provided support evidence, not public developer
+documentation and not a confirmed human-specialist response. The original email
+or support transcript is not attached or independently archived in this
+workspace, so the runtime's `independently_verified` gate remains unsatisfied.
+The source gate does not encode a human-specialist role requirement; it requires
+an independently verified, expiring evidence identity plus an explicit approval.
+All authenticated provider requests therefore remain blocked.
+
+## Generation budget arithmetic
+
+The 50-turn plan permits at most one explicit retry per turn, so 100 dispatched
+generation attempts is a ceiling, not the expected run. SDK retries are zero,
+and an uncertain count or generation outcome retains its reservation and blocks
+all further attempts until reconciliation; it is never retried automatically.
+
+At 3,000 full-request input tokens and 500 total output tokens per attempt:
+
+- one standard attempt is US$0.00055; 50 attempts are US$0.0275; 100 are US$0.055;
+- one documented 10% uplift makes those totals US$0.03025 and US$0.0605;
+- regional and FedRAMP uplifts are each documented as 10%, but this plan does not
+  assume they stack or apply to this account;
+- no embeddings, tools, graders, translations, cache writes, or paid model
+  metadata requests are included.
+
+The durable controller conservatively reserves the single documented 10% uplift,
+leaving US$0.0395 beneath the US$0.10 ledger ceiling across 100 attempts. This is
+API-usage arithmetic, not an all-inclusive invoice guarantee: account taxes,
+regional applicability, the unarchived count guidance, and any ancillary charge
+must be resolved before the owner can approve an all-provider-charge ceiling.
 
 Restricted credential procedure: create a dedicated provider-project key with
-only the minimum Responses permissions and a project-side spend limit, store it
-in the approved secret manager, and inject it as `OPENAI_API_KEY` only into the
-local development process. Never put the value in chat, shell history, CLI
-arguments, source, `.env` committed files, screenshots, or logs. The planner
-does not inspect whether the variable exists and never reads its value.
+only the minimum permissions available for Responses count/create and model
+access; disable every unrelated endpoint permission. Set the provider project's
+lowest practical budget/alert independently of the application ledger. Store the
+key in the approved secret manager and inject it as `OPENAI_API_KEY` only into
+the isolated local development process. Never put the value in chat, shell
+history, CLI arguments, source, committed `.env` files, screenshots, or logs.
+The planner does not inspect whether the variable exists and never reads its
+value. Credential creation, injection, and account/model access checks remain
+separately unauthorized and undone.
+
+## Future development-only activation and rollback
+
+There is no executable activation procedure today: checked-in startup composes
+no live count or generation transport, and the operator planner cannot write an
+approval. After the remaining evidence and owner approval gates are satisfied,
+the smallest future activation change must:
+
+1. use only `ENVIRONMENT=development` and a disposable synthetic tenant/session;
+2. inject the restricted credential out of band, verify project/model access,
+   and keep SDK retries at zero;
+3. bind the exact tenant, session, run, `gpt-6-luna`, expiry, count evidence,
+   3,000/500 token limits, 50-turn/100-attempt limits, pricing multiplier and
+   US$0.10 ceiling into matching immutable run/decision snapshots;
+4. compose the reviewed live count and generation transports server-side, then
+   enable both `MODEL_EVAL_OPENAI_SOURCE_ENABLED=true` and
+   `PUBLIC_CHAT_MODEL_EVAL_ENABLED=true` only in that local process;
+5. stop immediately on an uncertain outcome, token overrun, citation failure,
+   budget rejection, expired evidence, or handoff.
+
+Rollback is fail-closed: stop the local process, remove the injected provider,
+unset both flags and the process-scoped credential, restart with defaults, and
+leave all durable reservations/audit records intact. Reconcile any unresolved
+reservation before a later run; never delete it or retry automatically. The
+production validator rejects both flags.
 
 Go only when every item is true:
 
@@ -215,6 +275,17 @@ Go only when every item is true:
 - the decision snapshot exactly matches the expiring tenant/session/run
   activation manifest, and the final persisted handoff recheck remains enabled;
 - the owner gives one explicit approval to execute the controlled evaluation.
+
+Once the evidence, account-charge and credential gates are resolved, the
+smallest sufficient owner approval is one bounded authorization naming: the
+dedicated restricted API project/key delivery method; one authenticated,
+non-generation account/model-access check; authenticated exact count requests;
+the 50-turn EN/FA fixture with at most 100 dispatched generation attempts;
+`gpt-6-luna`, standard service tier, synthetic tenant only, zero SDK retries;
+and an all-provider-charge ceiling of US$0.10. That approval must explicitly
+cover credential injection and provider access. It must not authorize production,
+deployment, real customer data, tools/actions, or automatic retry of uncertain
+outcomes.
 
 Otherwise the decision is **NO-GO**. Run `python -m
 scripts.plan_chat_model_evaluation` for the exact 50-turn fixture/replay output;
@@ -244,6 +315,13 @@ The official model page at
 model ID `gpt-6-luna` and Responses `v1/responses` support on the same check
 date. This is public documentation evidence only, not evidence that the owner's
 API project is entitled to use the model.
+
+The official pricing page at <https://developers.openai.com/api/docs/pricing>
+listed the standard short-input/output rates above on 2026-10-24 and documented
+10% regional and FedRAMP uplifts. The prompt-caching guide at
+<https://developers.openai.com/api/docs/guides/prompt-caching> documents that
+explicit mode without breakpoints avoids cache reads and writes. These sources
+do not establish that the input-token counting endpoint is free.
 
 This source check does **not** prove project access to `gpt-6-luna`, exact
 tokenizer support, actual response compatibility, or future schema stability.

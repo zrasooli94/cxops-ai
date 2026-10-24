@@ -148,24 +148,23 @@ python -m scripts.plan_chat_model_evaluation
 The source-only baseline is `gpt-6-luna`, which the official model page lists
 as a supported Chat Completions model for focused, high-volume work:
 https://developers.openai.com/api/docs/models/gpt-6-luna. Standard token prices
-were verified on 2026-10-21 as $0.10 input and $0.50 output per million tokens;
-the plan also shows a conservative hypothetical using the $0.125 30-minute
-cache-write input rate:
+were reverified on 2026-10-24 as $0.10 input and $0.50 output per million tokens;
+the plan reports standard arithmetic and one conservative documented 10%
+regional/FedRAMP uplift without assuming those uplifts stack:
 https://developers.openai.com/api/docs/pricing. The 50-turn plan caps input at
 3,000 counted full-request tokens for admission and requests at most 500 output
-tokens per turn; 3,000 is not a provider truncation setting. Its $0.0625
-cache-write-rate arithmetic treats
+tokens per turn; 3,000 is not a provider truncation setting. Its $0.055
+standard-rate arithmetic treats
 the configured one retry as a second fully billed attempt for every turn (100
-total attempts), rather than assuming failed attempts are free. Standard-rate
-generation arithmetic is $0.055, or $0.0605 with a 10% regional uplift;
-all-input cache-write arithmetic is $0.0625, or $0.06875 with that uplift.
+total attempts), rather than assuming failed attempts are free. With one 10%
+uplift, generation arithmetic is $0.0605.
 These figures exclude unverified token-counting endpoint charges, taxes, and
 other invoice effects and therefore do not guarantee an all-inclusive total.
 The current request contract sets `prompt_cache_options.mode=explicit` with
 `ttl=30m` and no breakpoints, which the official cache guide says disables cache
 reads and writes;
-the cache-write figures are therefore a conservative scenario, not a prediction
-of this exact payload: https://developers.openai.com/api/docs/guides/prompt-caching.
+no cache-write rate is included in the current evaluation arithmetic:
+https://developers.openai.com/api/docs/guides/prompt-caching.
 The disconnected
 `ModelEvaluationController` contract reserves a full attempt before its injected
 mock transport, retains ambiguous-timeout reservations for manual reconciliation,

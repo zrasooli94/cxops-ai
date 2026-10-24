@@ -41,7 +41,8 @@ def test_billable_count_cost_is_reserved_for_all_attempts_and_must_leave_headroo
         count_billing_evidence_url="https://developers.openai.com/example",
     ).render()
     assert rendered["budget"]["count_reservation_usd"] == 0.01
-    assert rendered["budget"]["combined_reservation_usd"] == 0.0725
+    assert rendered["budget"]["generation_reservation_usd"] == 0.0605
+    assert rendered["budget"]["combined_reservation_usd"] == 0.0705
     assert rendered["budget"]["positive_headroom"] is True
     assert rendered["activation_manifest"]["count_policy"] == {
         "endpoint": "https://api.openai.com/v1/responses/input_tokens",
@@ -56,7 +57,7 @@ def test_billable_count_cost_is_reserved_for_all_attempts_and_must_leave_headroo
         "reservation_per_attempt_usd": 0.0001,
         "reservation_all_attempts_usd": 0.01,
     }
-    assert rendered["activation_manifest"]["combined_reservation_usd"] == 0.0725
+    assert rendered["activation_manifest"]["combined_reservation_usd"] == 0.0705
     assert "independent authoritative verification" in rendered["blockers"][0]
 
     no_headroom = _plan(

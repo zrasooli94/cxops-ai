@@ -2785,7 +2785,11 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         "service_tier": "default",
         "max_input_tokens": 3000,
         "max_output_tokens": 500,
-        "combined_reservation_usd": 0.0635,
+        "combined_reservation_usd": 0.0615,
+        "generation_input_rate_per_million_usd": 0.10,
+        "generation_output_rate_per_million_usd": 0.50,
+        "generation_price_multiplier": 1.10,
+        "generation_reservation_all_attempts_usd": 0.0605,
         "public_chat_session_id": session.id,
         "expires_at": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
         "count_policy": {

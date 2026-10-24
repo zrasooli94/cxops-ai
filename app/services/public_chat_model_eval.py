@@ -128,6 +128,10 @@ class PersistedEvaluationActivationGuard:
             or manifest.get("service_tier") != "default"
             or manifest.get("max_input_tokens") != 3000
             or manifest.get("max_output_tokens") != 500
+            or manifest.get("generation_input_rate_per_million_usd") != 0.10
+            or manifest.get("generation_output_rate_per_million_usd") != 0.50
+            or manifest.get("generation_price_multiplier") != 1.10
+            or manifest.get("generation_reservation_all_attempts_usd") != 0.0605
             or manifest.get("public_chat_session_id") != public_chat_session_id
             or not isinstance(count_policy, dict)
             or count_policy.get("endpoint")

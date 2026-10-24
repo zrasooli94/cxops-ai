@@ -174,11 +174,13 @@ def mocked_mechanical_replay(turns: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def main() -> None:
-    budget = ModelEvalBudget(max_turns=50, max_input_tokens_per_turn=3000, max_output_tokens_per_turn=500, max_attempts_per_turn=2, input_cost_per_million=0.125, output_cost_per_million=0.50, cost_ceiling_usd=0.10)
+    standard_budget = ModelEvalBudget(max_turns=50, max_input_tokens_per_turn=3000, max_output_tokens_per_turn=500, max_attempts_per_turn=2, input_cost_per_million=0.10, output_cost_per_million=0.50, cost_ceiling_usd=0.10)
+    uplift_budget = ModelEvalBudget(max_turns=50, max_input_tokens_per_turn=3000, max_output_tokens_per_turn=500, max_attempts_per_turn=2, input_cost_per_million=0.10, output_cost_per_million=0.50, cost_ceiling_usd=0.10, price_multiplier=1.10)
     turns = expanded_turns()
     validate_mechanical_spec(turns)
     replay = mocked_mechanical_replay(turns)
-    worst_case = budget.validate(len(turns))
+    standard_worst_case = standard_budget.validate(len(turns))
+    uplift_worst_case = uplift_budget.validate(len(turns))
     print(json.dumps({
         "mode": "provider_disconnected_spec_with_mocked_mechanical_replay", "model": "gpt-6-luna",
         "admission_state": "blocked_authenticated_full_request_count_unavailable",
@@ -187,9 +189,10 @@ def main() -> None:
         "language_distribution": {"en": 25, "fa": 25},
         "max_input_tokens_per_turn": 3000, "max_output_tokens_per_turn": 500,
         "max_retries_per_turn": 1, "max_billable_attempts_total": 100,
-        "sdk_retries": 0, "cost_ceiling_usd": budget.cost_ceiling_usd,
-        "cache_write_rate_arithmetic_usd": round(worst_case, 6),
-        "generation_cost_note": "arithmetic only; counting-endpoint cost, taxes, and invoice effects are unverified",
+        "sdk_retries": 0, "cost_ceiling_usd": standard_budget.cost_ceiling_usd,
+        "standard_generation_arithmetic_usd": round(standard_worst_case, 6),
+        "single_10_percent_uplift_generation_arithmetic_usd": round(uplift_worst_case, 6),
+        "generation_cost_note": "arithmetic only; do not stack regional and FedRAMP uplifts; counting-endpoint cost, taxes, account charges, and invoice effects remain separate gates",
         "executed_mock_assertions": ["full accumulated mock history", "expected citation ids", "handoff state and silence", "forbidden-claim absence"],
         "controller_assertions_covered_by_tests": ["usage presence and caps", "one retry maximum", "durable cost admission", "ambiguous outcome reconciliation"],
         "manual_quality_rubric": {"grounding": "claims supported by required evidence", "context": "follow-ups use only linked history", "correction": "topic changes replace old topics", "uncertainty": "missing/conflicting evidence clarifies or refuses", "handoff": "no automated answer after takeover", "language": "natural and accurate in requested language"},

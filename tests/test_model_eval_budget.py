@@ -15,7 +15,7 @@ def _budget(**changes):
         "max_input_tokens_per_turn": 3000,
         "max_output_tokens_per_turn": 500,
         "max_attempts_per_turn": 2,
-        "input_cost_per_million": 0.125,
+        "input_cost_per_million": 0.10,
         "output_cost_per_million": 0.50,
         "cost_ceiling_usd": 0.10,
     }
@@ -23,11 +23,12 @@ def _budget(**changes):
     return ModelEvalBudget(**values)
 
 
-def test_fifty_turn_plan_is_bounded_by_ten_cents_with_cache_writes():
-    assert _budget().validate(50) == pytest.approx(0.0625)
+def test_fifty_turn_plan_is_bounded_at_standard_and_single_uplift_rates():
+    assert _budget().validate(50) == pytest.approx(0.055)
+    assert _budget(price_multiplier=1.10).validate(50) == pytest.approx(0.0605)
 
 
-def test_twelve_hour_cache_write_rate_exhausts_cap_before_regional_uplift():
+def test_higher_input_rate_exhausts_cap_before_any_uplift():
     with pytest.raises(ValueError, match="no headroom"):
         _budget(input_cost_per_million=0.25).validate(50)
 

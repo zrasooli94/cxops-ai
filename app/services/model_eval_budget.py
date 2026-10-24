@@ -12,13 +12,14 @@ class ModelEvalBudget:
     input_cost_per_million: float
     output_cost_per_million: float
     cost_ceiling_usd: float
+    price_multiplier: float = 1.0
 
     def worst_case_cost_usd(self, turns: int) -> float:
         if turns < 0 or turns > self.max_turns:
             raise ValueError(f"turn count must be between 0 and {self.max_turns}")
         if self.max_attempts_per_turn < 1:
             raise ValueError("max attempts per turn must be at least 1")
-        return turns * self.max_attempts_per_turn * (
+        return turns * self.max_attempts_per_turn * self.price_multiplier * (
             self.max_input_tokens_per_turn / 1_000_000 * self.input_cost_per_million
             + self.max_output_tokens_per_turn / 1_000_000 * self.output_cost_per_million
         )
