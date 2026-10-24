@@ -165,7 +165,13 @@ python -m scripts.plan_public_chat_model_activation \
   --session-id 29 --session-id 30 --session-id 31 --session-id 32 --session-id 33 \
   --session-id 34 --session-id 35 --session-id 36 --session-id 37 --session-id 38 \
   --run-id controlled-eval-01 \
-  --expires-at <FUTURE_ISO_8601_UTC_WITHIN_2_HOURS>
+  --expires-at <FUTURE_ISO_8601_UTC_WITHIN_2_HOURS> \
+  --additional-all-in-reserve-usd 0.00484 \
+  --all-in-evidence-id <REVIEWED_MALAYSIA_PLANNING_EVIDENCE_ID> \
+  --all-in-evidence-expires-at <FUTURE_ISO_8601_UTC> \
+  --count-billing-status no_charge \
+  --count-billing-evidence-id <REVIEWED_CASE_18041142_EVIDENCE_ID> \
+  --count-billing-evidence-expires-at <FUTURE_ISO_8601_UTC>
 ```
 
 Use real local identifiers and an expiry between five minutes and two hours in
@@ -229,30 +235,61 @@ At 3,000 full-request input tokens and 500 total output tokens per attempt:
 - one standard attempt is US$0.00055; 50 attempts are US$0.0275; 100 are US$0.055;
 - one conservative 10% financial buffer makes those reserved totals US$0.03025
   and US$0.0605; it is not evidence that a regional surcharge applies;
+- applying the owner's separate 8% Malaysia planning allowance after that 10%
+  buffer gives US$0.03267 for 50 attempts and US$0.06534 for 100 attempts;
+- the corresponding incremental all-in reserve at the 100-attempt ceiling is
+  US$0.00484 (`0.06534 - 0.06050`), leaving US$0.03466 beneath the US$0.10
+  ceiling;
 - regional and FedRAMP uplifts are each documented as 10%, but this plan does not
   assume they stack or apply to this account;
 - no embeddings, tools, graders, translations, cache writes, or paid model
   metadata requests are included.
 
-The durable controller conservatively reserves a 10% financial buffer,
-leaving US$0.0395 beneath the US$0.10 ledger ceiling across 100 attempts. This is
-API-usage arithmetic, not an all-inclusive invoice guarantee: account taxes,
-regional applicability, account-specific surcharges, and any ancillary charge
-must be resolved before the owner can approve an all-provider-charge ceiling.
+The durable controller already includes the 10% financial buffer in its
+US$0.06050 generation reservation. Its separate
+`additional_all_in_reserve_usd` field must therefore be set to only US$0.00484
+for this planning scenario, not the full tax-inclusive total; adding US$0.06534
+there would double count generation. The combined reservation is US$0.06534
+and leaves US$0.03466 headroom. These values are conditional planning bounds,
+not an independently verified account tax or surcharge determination and not
+an all-inclusive invoice guarantee. The owner still needs to verify actual tax,
+account-specific surcharges, and ancillary charges before manifest attestation.
 Standard processing is independently pinned by the request field
 `service_tier: "default"`; the financial buffer does not select a geographic or
 premium processing tier.
 
+Public-source planning evidence rechecked on 2026-10-24 consists of the
+[OpenAI API pricing page](https://developers.openai.com/api/docs/pricing) for
+the US$0.10/M input and US$0.50/M output rates, and Royal Malaysian Customs'
+[transitional guide for digital services provided by foreign registered
+persons](https://mystods.customs.gov.my/storage/app/media/pdf/guide/guide-on-transitional-rules-for-the-change-in-st-rate-to-8-on-digital-service-provided-by-frp.pdf),
+section 3.2, for the statutory 8% planning assumption effective 2024-03-01.
+Neither source verifies how the owner's specific OpenAI account will be taxed.
+
 Restricted credential procedure: create a dedicated provider-project key with
 only the minimum permissions available for Responses count/create and model
 access; disable every unrelated endpoint permission. Set the provider project's
-lowest practical budget/alert independently of the application ledger. Store the
+lowest practical budget/alert independently of the application ledger, while
+recognizing that an alert is not a hard provider spending cap. Before credential
+injection, an authorized operator must verify that already-available account
+credits exceed the full US$0.10 ceiling and that this evaluation will not trigger
+a prepaid-credit purchase or automatic recharge; unknown credit or recharge
+state is fail-closed. No source code or operator may change those billing settings
+automatically. Store the
 key in the approved secret manager and inject it as `OPENAI_API_KEY` only into
 the isolated local development process. Never put the value in chat, shell
 history, CLI arguments, source, committed `.env` files, screenshots, or logs.
 The planner does not inspect whether the variable exists and never reads its
 value. Credential creation, injection, and account/model access checks remain
 separately unauthorized and undone.
+
+OpenAI's [prepaid billing guidance](https://help.openai.com/en/articles/8264644-setting-up-and-managing-prepaid-api-billing)
+states that prepaid purchases/recharges have a US$5 minimum, auto-recharge can
+be enabled during setup, a configured threshold can trigger a purchase, and
+credit cutoff can lag. Therefore this evaluation must not create a prepaid
+setup, buy or top up credits, or alter recharge/payment settings. A permitted
+future preflight must establish that usable existing credit is sufficient and
+that the run will not trigger recharge; otherwise it remains NO-GO.
 
 ## Development-only composition and rollback
 
@@ -288,6 +325,9 @@ Go only when every item is true:
 
 - authoritative count-endpoint billing and fresh generation pricing are known,
   and count plus generation reservations retain positive budget headroom;
+- actual account tax/surcharge treatment has been reviewed, existing available
+  credits cover the complete US$0.10 ceiling, and no prepaid purchase or
+  automatic recharge can be triggered by the run;
 - the exact `gpt-6-luna` model, Responses schema, account access and restricted
   credential have been verified without exposing the key;
 - the existing 50-turn EN/FA specification, strict citation membership,
