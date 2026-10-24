@@ -35,13 +35,14 @@ The durable approval is not a widget or owner-studio request field. It is the
 latest immutable-by-application tenant-owned `AIEvaluationReleaseDecision` for
 the configured run. That decision snapshot must contain an exact copy of the
 bounded activation manifest stored on the run, so later run-input mutation
-invalidates activation. The manifest binds the exact synthetic public-chat
-session, expires, and retains the 50-turn/100-attempt/US$0.10 limits. A second
-session or tenant falls through to the existing responder instead of being
+invalidates activation. The manifest binds ten synthetic public-chat sessions
+(five turns each), expires, and retains the 50-turn/100-attempt/US$0.10 limits.
+A session outside that set or another tenant falls through to the existing responder instead of being
 disrupted. This reuses existing records and adds no migration or public approval
-endpoint. There is intentionally no supported HTTP/UI flow that provisions this
-special activation snapshot today; controlled operator provisioning remains a
-pre-evaluation blocker.
+endpoint. The planner cannot write the immutable snapshot: the current data
+model has no authenticated operator command that can bind independently
+reviewed billing/all-in evidence and the owner's execution approval without
+self-asserted CLI flags. Activation therefore remains NO-GO.
 
 The route-level test is reproducible with:
 
@@ -143,10 +144,9 @@ provider account access, or paid spend.
    now wired to an injection seam, but checked-in startup intentionally leaves it
    uncomposed. The source pins the count/create endpoints, zero retries and
    redacted failures; all tests inject a mock client.
-   Its checked-in input-count method deliberately fails before HTTP. The generic
-   controller now validates and reserves a decision-bound count policy before an
-   injected count invocation, but a live count transport remains intentionally
-   uncomposed until authoritative billing evidence and separate authorization exist.
+   Its input-count transport is composed only by the explicit development
+   lifecycle and can dispatch only after decision-bound count admission. Tests
+   inject a socket-free client. Checked-in startup never installs it.
 5. Obtain explicit owner approval for the provider, model, credential method,
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
@@ -160,7 +160,8 @@ binding without network access, database writes, or reading a credential:
 ```sh
 python -m scripts.plan_public_chat_model_activation \
   --organization-id 17 \
-  --session-id 29 \
+  --session-id 29 --session-id 30 --session-id 31 --session-id 32 --session-id 33 \
+  --session-id 34 --session-id 35 --session-id 36 --session-id 37 --session-id 38 \
   --run-id controlled-eval-01 \
   --expires-at <FUTURE_ISO_8601_UTC_WITHIN_2_HOURS>
 ```
@@ -241,12 +242,16 @@ The planner does not inspect whether the variable exists and never reads its
 value. Credential creation, injection, and account/model access checks remain
 separately unauthorized and undone.
 
-## Future development-only activation and rollback
+## Development-only composition and rollback
 
-There is no executable activation procedure today: checked-in startup composes
-no live count or generation transport, and the operator planner cannot write an
-approval. After the remaining evidence and owner approval gates are satisfied,
-the smallest future activation change must:
+The source contains a disabled process-scoped composition:
+`installed_development_evaluation_provider` installs count and generation only
+for one local process lifetime and derives environment/feature gates from
+validated server settings. Application startup does not call it. The missing
+source decision is an authenticated operator path (or an existing trusted
+approval record) that can create the immutable snapshot without treating
+operator-supplied booleans as evidence or owner approval. After that decision
+and the remaining evidence/approval gates are satisfied, an operator must:
 
 1. use only `ENVIRONMENT=development` and a disposable synthetic tenant/session;
 2. inject the restricted credential out of band, verify project/model access,
@@ -254,13 +259,14 @@ the smallest future activation change must:
 3. bind the exact tenant, session, run, `gpt-6-luna`, expiry, count evidence,
    3,000/500 token limits, 50-turn/100-attempt limits, pricing multiplier and
    US$0.10 ceiling into matching immutable run/decision snapshots;
-4. compose the reviewed live count and generation transports server-side, then
+4. enter the reviewed development lifecycle server-side, then
    enable both `MODEL_EVAL_OPENAI_SOURCE_ENABLED=true` and
    `PUBLIC_CHAT_MODEL_EVAL_ENABLED=true` only in that local process;
 5. stop immediately on an uncertain outcome, token overrun, citation failure,
    budget rejection, expired evidence, or handoff.
 
-Rollback is fail-closed: stop the local process, remove the injected provider,
+Rollback is fail-closed: exit or stop the local process; the lifecycle removes
+the injected provider in `finally`. Then
 unset both flags and the process-scoped credential, restart with defaults, and
 leave all durable reservations/audit records intact. Reconcile any unresolved
 reservation before a later run; never delete it or retry automatically. The

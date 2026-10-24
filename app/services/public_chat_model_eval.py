@@ -62,7 +62,7 @@ class SnapshotSessionGuard:
 class ApprovedEvaluationActivation:
     run_id: str
     organization_id: int
-    public_chat_session_id: int
+    public_chat_session_ids: tuple[int, ...]
 
 
 class PersistedEvaluationActivationGuard:
@@ -70,11 +70,16 @@ class PersistedEvaluationActivationGuard:
 
     @staticmethod
     async def require(
-        db: AsyncSession, *, organization_id: int, run_id: str,
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        run_id: str,
         public_chat_session_id: int,
         runtime_count_policy: InputTokenCountPolicy,
+        runtime_evaluation_policy: EvaluationPolicy,
     ) -> ApprovedEvaluationActivation:
-        runtime_count_policy.validate(expected_model=EvaluationPolicy().model)
+        runtime_count_policy.validate(expected_model=runtime_evaluation_policy.model)
+        runtime_evaluation_policy.validate()
         row = (
             await db.execute(
                 select(AIEvaluationRun, AIEvaluationReleaseDecision)
@@ -100,15 +105,26 @@ class PersistedEvaluationActivationGuard:
         if row is None:
             raise EvaluationBlockedError("durable evaluation approval is missing")
         run, decision = row
-        manifest = run.input.get("provider_activation") if isinstance(run.input, dict) else None
+        manifest = (
+            run.input.get("provider_activation")
+            if isinstance(run.input, dict)
+            else None
+        )
         try:
-            expires_at = datetime.fromisoformat(str(manifest["expires_at"]).replace("Z", "+00:00"))
+            expires_at = datetime.fromisoformat(
+                str(manifest["expires_at"]).replace("Z", "+00:00")
+            )
             count_policy = manifest["count_policy"]
             count_evidence_expires_at = datetime.fromisoformat(
                 str(count_policy["evidence_expires_at"]).replace("Z", "+00:00")
             )
+            all_in_evidence_expires_at = datetime.fromisoformat(
+                str(manifest["all_in_evidence_expires_at"]).replace("Z", "+00:00")
+            )
         except (KeyError, TypeError, ValueError):
-            raise EvaluationBlockedError("evaluation activation manifest is invalid") from None
+            raise EvaluationBlockedError(
+                "evaluation activation manifest is invalid"
+            ) from None
         if (
             run.status != "succeeded"
             or run.target_type != "rag"
@@ -132,39 +148,67 @@ class PersistedEvaluationActivationGuard:
             or manifest.get("generation_output_rate_per_million_usd") != 0.50
             or manifest.get("generation_price_multiplier") != 1.10
             or manifest.get("generation_reservation_all_attempts_usd") != 0.0605
-            or manifest.get("public_chat_session_id") != public_chat_session_id
+            or not isinstance(manifest.get("public_chat_session_ids"), list)
+            or len(manifest["public_chat_session_ids"]) != 10
+            or len(set(manifest["public_chat_session_ids"])) != 10
+            or any(
+                not isinstance(item, int) or isinstance(item, bool) or item < 1
+                for item in manifest["public_chat_session_ids"]
+            )
+            or public_chat_session_id not in manifest["public_chat_session_ids"]
             or not isinstance(count_policy, dict)
             or count_policy.get("endpoint")
             != "https://api.openai.com/v1/responses/input_tokens"
             or count_policy.get("model") != "gpt-6-luna"
             or count_policy.get("region") != "standard"
-            or count_policy.get("billing_status_claim") != "billable"
+            or count_policy.get("billing_status_claim") not in {"billable", "no_charge"}
             or count_policy.get("evidence_verification") != "independently_verified"
             or count_policy.get("explicitly_approved") is not True
             or not str(count_policy.get("evidence_id", "")).strip()
-            or not isinstance(count_policy.get("reservation_per_attempt_usd"), (int, float))
+            or not isinstance(
+                count_policy.get("reservation_per_attempt_usd"), (int, float)
+            )
             or isinstance(count_policy.get("reservation_per_attempt_usd"), bool)
-            or count_policy["reservation_per_attempt_usd"] <= 0
+            or (
+                count_policy["billing_status_claim"] == "billable"
+                and count_policy["reservation_per_attempt_usd"] <= 0
+            )
+            or (
+                count_policy["billing_status_claim"] == "no_charge"
+                and count_policy["reservation_per_attempt_usd"] != 0
+            )
             or count_policy.get("reservation_all_attempts_usd")
             != round(
                 count_policy["reservation_per_attempt_usd"]
                 * EvaluationPolicy().max_attempts,
                 6,
             )
+            or not isinstance(
+                manifest.get("additional_all_in_reserve_usd"), (int, float)
+            )
+            or isinstance(manifest.get("additional_all_in_reserve_usd"), bool)
+            or manifest["additional_all_in_reserve_usd"] < 0
             or manifest.get("combined_reservation_usd")
             != round(
                 EvaluationPolicy().max_attempts
                 * (
                     EvaluationPolicy().reserved_cost_per_attempt
                     + count_policy["reservation_per_attempt_usd"]
-                ),
+                )
+                + manifest["additional_all_in_reserve_usd"],
                 6,
             )
+            or not str(manifest.get("all_in_evidence_id", "")).strip()
+            or manifest.get("all_in_evidence_verification") != "independently_verified"
+            or runtime_evaluation_policy.additional_all_in_reserve_usd
+            != manifest["additional_all_in_reserve_usd"]
             or runtime_count_policy.endpoint != count_policy["endpoint"]
             or runtime_count_policy.model != count_policy["model"]
             or runtime_count_policy.region != count_policy["region"]
             or runtime_count_policy.reservation_per_attempt_usd
             != count_policy["reservation_per_attempt_usd"]
+            or runtime_count_policy.billing_status
+            != count_policy["billing_status_claim"]
             or runtime_count_policy.evidence_id != count_policy["evidence_id"]
             or runtime_count_policy.evidence_expires_at.astimezone(UTC)
             != count_evidence_expires_at.astimezone(UTC)
@@ -172,6 +216,8 @@ class PersistedEvaluationActivationGuard:
             or runtime_count_policy.explicitly_approved is not True
             or count_evidence_expires_at.tzinfo is None
             or count_evidence_expires_at <= datetime.now(UTC)
+            or all_in_evidence_expires_at.tzinfo is None
+            or all_in_evidence_expires_at <= datetime.now(UTC)
             or expires_at.tzinfo is None
             or expires_at <= datetime.now(UTC)
         ):
@@ -179,7 +225,7 @@ class PersistedEvaluationActivationGuard:
         return ApprovedEvaluationActivation(
             run_id=run.run_id,
             organization_id=organization_id,
-            public_chat_session_id=public_chat_session_id,
+            public_chat_session_ids=tuple(manifest["public_chat_session_ids"]),
         )
 
 
@@ -200,6 +246,7 @@ class PublicChatModelEvaluationProvider:
         count_policy: InputTokenCountPolicy,
         count_transport: ExactInputTokenCountTransport,
         adapter: ProviderDisconnectedResponsesAdapter,
+        evaluation_policy: EvaluationPolicy | None = None,
     ) -> None:
         if not run_id:
             raise EvaluationBlockedError("an approved evaluation run id is required")
@@ -207,6 +254,7 @@ class PublicChatModelEvaluationProvider:
         self.count_policy = count_policy
         self.count_transport = count_transport
         self.adapter = adapter
+        self.evaluation_policy = evaluation_policy or EvaluationPolicy()
 
     async def targets(
         self, db: AsyncSession, *, organization_id: int, session_id: int
@@ -219,6 +267,7 @@ class PublicChatModelEvaluationProvider:
                 run_id=self.run_id,
                 public_chat_session_id=session_id,
                 runtime_count_policy=self.count_policy,
+                runtime_evaluation_policy=self.evaluation_policy,
             )
         except EvaluationBlockedError:
             return False
@@ -242,13 +291,20 @@ class PublicChatModelEvaluationProvider:
             run_id=self.run_id,
             public_chat_session_id=session_id,
             runtime_count_policy=self.count_policy,
+            runtime_evaluation_policy=self.evaluation_policy,
         )
         bound_message = await db.scalar(
             select(ConversationMessage.id)
             .join(
                 PublicChatSession,
-                (PublicChatSession.conversation_id == ConversationMessage.conversation_id)
-                & (PublicChatSession.organization_id == ConversationMessage.organization_id),
+                (
+                    PublicChatSession.conversation_id
+                    == ConversationMessage.conversation_id
+                )
+                & (
+                    PublicChatSession.organization_id
+                    == ConversationMessage.organization_id
+                ),
             )
             .where(
                 PublicChatSession.id == session_id,
@@ -294,7 +350,10 @@ class PublicChatModelEvaluationProvider:
                 .join(
                     KnowledgeDocument,
                     (KnowledgeDocument.id == KnowledgeChunk.document_id)
-                    & (KnowledgeDocument.organization_id == KnowledgeChunk.organization_id),
+                    & (
+                        KnowledgeDocument.organization_id
+                        == KnowledgeChunk.organization_id
+                    ),
                 )
                 .where(
                     KnowledgeChunk.id == chunk_id,
@@ -327,8 +386,10 @@ class PublicChatModelEvaluationProvider:
             )
             or 0
         )
-        if turn_number < 1 or turn_number > EvaluationPolicy().max_turns:
-            raise EvaluationBlockedError("approved session turn cap exceeded")
+        if turn_number < 1 or turn_number > 5:
+            raise EvaluationBlockedError(
+                "approved conversation requires exactly five turns"
+            )
         serialized_input = self.adapter.serialize_grounded_input(
             session_status="ai_active",
             assistant_name=assistant_name,
@@ -339,7 +400,7 @@ class PublicChatModelEvaluationProvider:
         )
         request_payload = self.adapter.request_payload(serialized_input)
         controller = ModelEvaluationController(
-            policy=EvaluationPolicy(),
+            policy=self.evaluation_policy,
             exact_token_counter=None,
             count_policy=self.count_policy,
             count_transport=self.count_transport,
@@ -366,7 +427,9 @@ class PublicChatModelEvaluationProvider:
             raise EvaluationBlockedError("model refused the grounded answer")
         source_ids = tuple(parsed.get("citation_ids") or ())
         if source_ids != (evidence.source_id,):
-            raise EvaluationBlockedError("model citations do not match retrieved evidence")
+            raise EvaluationBlockedError(
+                "model citations do not match retrieved evidence"
+            )
         return PublicChatModelAnswer(
             text=str(parsed["answer"]),
             source_ids=source_ids,

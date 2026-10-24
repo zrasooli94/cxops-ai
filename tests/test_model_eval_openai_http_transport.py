@@ -21,6 +21,7 @@ from app.services.model_eval_openai_adapter import (
     ProviderDisconnectedResponsesAdapter,
 )
 from app.services.model_eval_openai_http_transport import (
+    DevelopmentExactInputTokenCountTransport,
     DevelopmentOpenAIResponsesHttpSource,
     ProviderDisconnectedResponsesHttpTransport,
 )
@@ -58,14 +59,22 @@ def _completed_response():
     return {
         "status": "completed",
         "usage": {"input_tokens": 100, "output_tokens": 20},
-        "output": [{"content": [{
-            "type": "output_text",
-            "text": json.dumps({
-                "answer": "Open until 19:15.",
-                "citation_ids": ["hours"],
-                "refused": False,
-            }),
-        }]}],
+        "output": [
+            {
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(
+                            {
+                                "answer": "Open until 19:15.",
+                                "citation_ids": ["hours"],
+                                "refused": False,
+                            }
+                        ),
+                    }
+                ]
+            }
+        ],
     }
 
 
@@ -146,7 +155,9 @@ async def test_policy_or_schema_mismatch_is_confirmed_before_dispatch(change):
     payload = _payload()
     payload.update(change)
     with pytest.raises(ConfirmedNoDispatchError, match="policy"):
-        await ProviderDisconnectedResponsesHttpTransport(client).create_response(payload)
+        await ProviderDisconnectedResponsesHttpTransport(client).create_response(
+            payload
+        )
     assert client.calls == []
 
 
@@ -175,7 +186,9 @@ async def test_request_byte_limit_is_confirmed_before_dispatch():
 async def test_post_dispatch_failures_are_safe_and_redacted(response, message):
     client = _Client(response=response)
     with pytest.raises(EvaluationBlockedError, match=message) as captured:
-        await ProviderDisconnectedResponsesHttpTransport(client).create_response(_payload())
+        await ProviderDisconnectedResponsesHttpTransport(client).create_response(
+            _payload()
+        )
     assert "secret body" not in str(captured.value)
     assert captured.value.__cause__ is None
     assert len(client.calls) == 1
@@ -185,7 +198,9 @@ async def test_post_dispatch_failures_are_safe_and_redacted(response, message):
 async def test_timeout_propagates_as_ambiguous_without_retry():
     client = _Client(error=TimeoutError("contains sensitive diagnostic"))
     with pytest.raises(EvaluationBlockedError, match="ambiguous") as captured:
-        await ProviderDisconnectedResponsesHttpTransport(client).create_response(_payload())
+        await ProviderDisconnectedResponsesHttpTransport(client).create_response(
+            _payload()
+        )
     assert captured.value.__cause__ is None
     assert "sensitive diagnostic" not in str(captured.value)
     assert len(client.calls) == 1
@@ -193,7 +208,9 @@ async def test_timeout_propagates_as_ambiguous_without_retry():
 
 @pytest.mark.asyncio
 async def test_http_failure_keeps_controller_reservation_for_reconciliation(db):
-    organization = Organization(name=f"Synthetic HTTP reconciliation {uuid.uuid4().hex}")
+    organization = Organization(
+        name=f"Synthetic HTTP reconciliation {uuid.uuid4().hex}"
+    )
     db.add(organization)
     await db.commit()
     client = _Client(response=_Response(status=429))
@@ -264,9 +281,11 @@ async def test_composed_success_settles_reservation_and_records_usage(db):
         public_chat_session_id=101,
     )
 
-    reservation = await db.scalar(select(AIUsageReservation).where(
-        AIUsageReservation.organization_id == organization.id
-    ))
+    reservation = await db.scalar(
+        select(AIUsageReservation).where(
+            AIUsageReservation.organization_id == organization.id
+        )
+    )
     assert json.loads(answer)["citation_ids"] == ["hours"]
     assert reservation is not None and reservation.status == "settled"
     assert len(client.calls) == 1
@@ -285,21 +304,30 @@ async def test_predispatch_schema_rejection_settles_without_http_call(db):
     original = adapter.request_payload
     adapter.request_payload = lambda value: {**original(value), "stream": True}
     controller = ModelEvaluationController(
-        policy=EvaluationPolicy(), exact_token_counter=_ExactCounter(),
+        policy=EvaluationPolicy(),
+        exact_token_counter=_ExactCounter(),
         transport=DisconnectedResponsesEvaluationTransport(adapter),
-        explicitly_approved=True, approved_run_id="http-contract",
-        approved_organization_id=organization.id, session_guard=_AllowSession(),
+        explicitly_approved=True,
+        approved_run_id="http-contract",
+        approved_organization_id=organization.id,
+        session_guard=_AllowSession(),
     )
 
     with pytest.raises(ConfirmedNoDispatchError):
         await controller.attempt(
-            db, organization_id=organization.id, run_id="http-contract",
-            turn_number=1, retry_number=0, serialized_input=_serialized_input(),
+            db,
+            organization_id=organization.id,
+            run_id="http-contract",
+            turn_number=1,
+            retry_number=0,
+            serialized_input=_serialized_input(),
             public_chat_session_id=101,
         )
-    reservation = await db.scalar(select(AIUsageReservation).where(
-        AIUsageReservation.organization_id == organization.id
-    ))
+    reservation = await db.scalar(
+        select(AIUsageReservation).where(
+            AIUsageReservation.organization_id == organization.id
+        )
+    )
     assert reservation is not None and reservation.status == "settled"
     assert client.calls == []
 
@@ -312,13 +340,19 @@ async def test_persisted_handoff_suppresses_before_http_call(db):
     client = _Client()
     with pytest.raises(EvaluationBlockedError, match="persisted session"):
         await _controller(organization.id, client, _BlockSession()).attempt(
-            db, organization_id=organization.id, run_id="http-contract",
-            turn_number=1, retry_number=0, serialized_input=_serialized_input(),
+            db,
+            organization_id=organization.id,
+            run_id="http-contract",
+            turn_number=1,
+            retry_number=0,
+            serialized_input=_serialized_input(),
             public_chat_session_id=101,
         )
-    reservation = await db.scalar(select(AIUsageReservation).where(
-        AIUsageReservation.organization_id == organization.id
-    ))
+    reservation = await db.scalar(
+        select(AIUsageReservation).where(
+            AIUsageReservation.organization_id == organization.id
+        )
+    )
     assert reservation is None
     assert client.calls == []
 
@@ -327,9 +361,21 @@ def test_https_source_is_disabled_without_every_development_gate():
     client = _Client()
     client.provider_disconnected = False
     cases = [
-        {"environment": "production", "feature_enabled": True, "explicitly_approved": True},
-        {"environment": "development", "feature_enabled": False, "explicitly_approved": True},
-        {"environment": "development", "feature_enabled": True, "explicitly_approved": False},
+        {
+            "environment": "production",
+            "feature_enabled": True,
+            "explicitly_approved": True,
+        },
+        {
+            "environment": "development",
+            "feature_enabled": False,
+            "explicitly_approved": True,
+        },
+        {
+            "environment": "development",
+            "feature_enabled": True,
+            "explicitly_approved": False,
+        },
     ]
     for gates in cases:
         with pytest.raises(EvaluationBlockedError):
@@ -339,8 +385,8 @@ def test_https_source_is_disabled_without_every_development_gate():
 
 
 @pytest.mark.asyncio
-async def test_https_source_counting_fails_before_http_and_generation_uses_fixed_endpoint():
-    client = _Client(response=_Response())
+async def test_https_source_counting_and_generation_use_fixed_endpoints():
+    client = _Client(response=_Response({"input_tokens": 100}))
     client.provider_disconnected = False
     source = DevelopmentOpenAIResponsesHttpSource(
         client,
@@ -352,18 +398,38 @@ async def test_https_source_counting_fails_before_http_and_generation_uses_fixed
     serialized_input = _serialized_input()
     payload = _payload(serialized_input)
 
-    with pytest.raises(EvaluationBlockedError, match="cost is verified"):
-        await source.count_input_tokens(payload)
-    assert client.calls == []
+    assert await source.count_input_tokens(payload) == 100
+    assert client.calls[0][0] == "https://api.openai.com/v1/responses/input_tokens"
 
+    client.response = _Response()
     body = await source.create_response(payload)
     assert body["status"] == "completed"
-    assert len(client.calls) == 1
-    url, options = client.calls[0]
+    assert len(client.calls) == 2
+    url, options = client.calls[1]
     assert url == "https://api.openai.com/v1/responses"
     assert options["json"] == payload
     assert options["timeout"] == 30.0
     assert options["headers"]["Authorization"] == "Bearer synthetic-test-token"
+
+
+@pytest.mark.asyncio
+async def test_connected_count_adapter_is_mock_exercised_without_socket():
+    client = _Client(response=_Response({"input_tokens": 123}))
+    client.provider_disconnected = False
+    source = DevelopmentOpenAIResponsesHttpSource(
+        client,
+        environment="development",
+        feature_enabled=True,
+        explicitly_approved=True,
+        bearer_token="synthetic-test-token",
+    )
+    result = await DevelopmentExactInputTokenCountTransport(source).count(
+        model="gpt-6-luna",
+        request_payload=_payload(),
+        sdk_max_retries=0,
+    )
+    assert result.input_tokens == 123
+    assert len(result.request_sha256) == 64
 
 
 @pytest.mark.asyncio

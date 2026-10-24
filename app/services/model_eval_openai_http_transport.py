@@ -8,6 +8,7 @@ its request cost has not been verified or included in the evaluation ceiling.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -15,6 +16,7 @@ from typing import Any, Protocol
 from app.services.model_eval_controller import (
     ConfirmedNoDispatchError,
     EvaluationBlockedError,
+    ExactInputTokenCountResult,
 )
 
 
@@ -48,24 +50,30 @@ class ProviderDisconnectedResponsesHttpTransport:
     ENDPOINT = "mock://provider-disconnected/v1/responses"
     TIMEOUT_SECONDS = 30.0
     MAX_REQUEST_BYTES = 65_536
-    _PAYLOAD_KEYS = frozenset({
-        "model",
-        "input",
-        "reasoning",
-        "max_output_tokens",
-        "service_tier",
-        "prompt_cache_options",
-        "store",
-        "stream",
-        "truncation",
-        "text",
-    })
+    _PAYLOAD_KEYS = frozenset(
+        {
+            "model",
+            "input",
+            "reasoning",
+            "max_output_tokens",
+            "service_tier",
+            "prompt_cache_options",
+            "store",
+            "stream",
+            "truncation",
+            "text",
+        }
+    )
 
     def __init__(self, client: DisconnectedHttpClient) -> None:
         if not getattr(client, "provider_disconnected", False):
-            raise EvaluationBlockedError("only an injected disconnected HTTP client is allowed")
+            raise EvaluationBlockedError(
+                "only an injected disconnected HTTP client is allowed"
+            )
         if getattr(client, "max_retries", None) != 0:
-            raise EvaluationBlockedError("the disconnected HTTP client must disable retries")
+            raise EvaluationBlockedError(
+                "the disconnected HTTP client must disable retries"
+            )
         self._client = client
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -114,7 +122,9 @@ class ProviderDisconnectedResponsesHttpTransport:
     @classmethod
     def _validate_payload(cls, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict) or set(payload) != cls._PAYLOAD_KEYS:
-            raise ConfirmedNoDispatchError("request does not match the fixed Responses schema")
+            raise ConfirmedNoDispatchError(
+                "request does not match the fixed Responses schema"
+            )
         if (
             payload.get("model") != "gpt-6-luna"
             or payload.get("service_tier") != "default"
@@ -127,14 +137,18 @@ class ProviderDisconnectedResponsesHttpTransport:
             or not isinstance(payload.get("input"), str)
             or not payload["input"]
         ):
-            raise ConfirmedNoDispatchError("request violates the fixed evaluation policy")
+            raise ConfirmedNoDispatchError(
+                "request violates the fixed evaluation policy"
+            )
         # Pin the entire request, including the output schema/name. Only the
         # serialized input is variable.
         from app.services.model_eval_openai_adapter import (
             ProviderDisconnectedResponsesAdapter,
         )
 
-        if payload != ProviderDisconnectedResponsesAdapter.request_payload(payload["input"]):
+        if payload != ProviderDisconnectedResponsesAdapter.request_payload(
+            payload["input"]
+        ):
             raise ConfirmedNoDispatchError("structured JSON output contract changed")
 
 
@@ -184,7 +198,9 @@ class DevelopmentOpenAIResponsesHttpSource:
         if getattr(client, "max_retries", None) != 0:
             raise EvaluationBlockedError("provider HTTP client must disable retries")
         if not bearer_token or any(char.isspace() for char in bearer_token):
-            raise EvaluationBlockedError("an injected restricted credential is required")
+            raise EvaluationBlockedError(
+                "an injected restricted credential is required"
+            )
         self._client = client
         self._headers = {
             "Authorization": f"Bearer {bearer_token}",
@@ -203,18 +219,22 @@ class DevelopmentOpenAIResponsesHttpSource:
 
         return ProviderDisconnectedResponsesAdapter.request_payload(serialized_input)
 
-    async def count_input_tokens(self, payload: dict[str, Any]) -> None:
-        """Fail closed until count requests are inside durable cost admission.
-
-        The official endpoint and payload contract are recorded here, but its
-        price is unverified. Emitting even a count request outside the durable
-        reservation/attempt/handoff envelope would weaken the hard ceiling.
-        """
+    async def count_input_tokens(self, payload: dict[str, Any]) -> int:
+        """Count the exact canonical request after controller-side admission."""
         self._validate_payload(payload)
-        raise EvaluationBlockedError(
-            "authenticated full-request counting is disabled until its cost is verified "
-            "and included in durable admission"
-        )
+        response = await self._post(self.INPUT_TOKENS_ENDPOINT, payload)
+        try:
+            body = response.json()
+        except (TypeError, ValueError):
+            raise EvaluationBlockedError(
+                "provider returned malformed count JSON"
+            ) from None
+        count = body.get("input_tokens") if isinstance(body, dict) else None
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise EvaluationBlockedError(
+                "provider returned an invalid input-token count"
+            )
+        return count
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._validate_payload(payload)
@@ -230,9 +250,11 @@ class DevelopmentOpenAIResponsesHttpSource:
     async def _post(
         self, endpoint: str, payload: dict[str, Any]
     ) -> DisconnectedHttpResponse:
-        size = len(json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8"))
+        size = len(
+            json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+        )
         if size > self.MAX_REQUEST_BYTES:
             raise ConfirmedNoDispatchError("request exceeds the fixed byte boundary")
         try:
@@ -257,3 +279,32 @@ class DevelopmentOpenAIResponsesHttpSource:
         if "application/json" not in content_type:
             raise EvaluationBlockedError("provider response is not JSON")
         return response
+
+
+class DevelopmentExactInputTokenCountTransport:
+    """Controller adapter for the admitted development-only count source."""
+
+    provider_disconnected = False
+
+    def __init__(self, source: DevelopmentOpenAIResponsesHttpSource) -> None:
+        self.source = source
+
+    async def count(
+        self,
+        *,
+        model: str,
+        request_payload: dict[str, Any],
+        sdk_max_retries: int,
+    ) -> ExactInputTokenCountResult:
+        if model != "gpt-6-luna" or sdk_max_retries != 0:
+            raise ConfirmedNoDispatchError("count transport policy changed")
+        count = await self.source.count_input_tokens(request_payload)
+        digest = hashlib.sha256(
+            json.dumps(
+                request_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        return ExactInputTokenCountResult(count, digest)

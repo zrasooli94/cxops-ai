@@ -676,3 +676,48 @@ async def test_existing_handoff_gate_blocks_before_generation_reservation(db):
         AIUsageReservation.organization_id == organization.id
     ))
     assert reservation is None
+
+
+@pytest.mark.asyncio
+async def test_same_turn_number_is_isolated_by_session_in_reservation_key(db):
+    organization = Organization(name=f"Eval sessions {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    transport = _Transport()
+    controller = _controller(transport, organization_id=organization.id)
+    for session_id in (101, 202):
+        await controller.attempt(
+            db, organization_id=organization.id, run_id="approved-eval",
+            turn_number=1, retry_number=0, serialized_input="bounded input",
+            public_chat_session_id=session_id,
+        )
+    keys = list(await db.scalars(select(AIUsageReservation.reservation_key).where(
+        AIUsageReservation.organization_id == organization.id,
+    )))
+    assert any("session-101:turn-1" in key for key in keys)
+    assert any("session-202:turn-1" in key for key in keys)
+    assert len(transport.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_ten_five_turn_sessions_share_one_fifty_attempt_budget(db):
+    organization = Organization(name=f"Eval 10x5 {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    transport = _Transport()
+    controller = _controller(transport, organization_id=organization.id)
+    for session_id in range(1001, 1011):
+        for turn_number in range(1, 6):
+            await controller.attempt(
+                db, organization_id=organization.id, run_id="approved-eval",
+                turn_number=turn_number, retry_number=0,
+                serialized_input="bounded input", public_chat_session_id=session_id,
+            )
+    reservations = int(await db.scalar(select(func.count()).select_from(
+        AIUsageReservation
+    ).where(
+        AIUsageReservation.organization_id == organization.id,
+        AIUsageReservation.reservation_key.like("model-eval:%"),
+    )) or 0)
+    assert reservations == 50
+    assert len(transport.calls) == 50

@@ -209,12 +209,14 @@ class _SyntheticFullRequestCounter:
     provider_disconnected = True
 
     async def count(self, **kwargs) -> ExactInputTokenCountResult:
-        digest = hashlib.sha256(json.dumps(
-            kwargs["request_payload"],
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(
+            json.dumps(
+                kwargs["request_payload"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
         return ExactInputTokenCountResult(120, digest)
 
 
@@ -232,14 +234,22 @@ class _SyntheticResponsesTransport:
         return {
             "status": "completed",
             "usage": {"input_tokens": 120, "output_tokens": 30},
-            "output": [{"content": [{
-                "type": "output_text",
-                "text": json.dumps({
-                    "answer": f"پاسخ ساختگی با منبع {citation_id}",
-                    "citation_ids": [citation_id],
-                    "refused": False,
-                }),
-            }]}],
+            "output": [
+                {
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps(
+                                {
+                                    "answer": f"پاسخ ساختگی با منبع {citation_id}",
+                                    "citation_ids": [citation_id],
+                                    "refused": False,
+                                }
+                            ),
+                        }
+                    ]
+                }
+            ],
         }
 
 
@@ -274,9 +284,7 @@ async def _assert_phase1p_namespace_clean() -> None:
                 Organization.name.like(f"{PUBLIC_CHAT_ORG_PREFIX}%")
             )
         )
-        assert not leftover_orgs.all(), (
-            "Phase 1P.1 namespace leaked organizations"
-        )
+        assert not leftover_orgs.all(), "Phase 1P.1 namespace leaked organizations"
         leftover_memberships = await session.execute(
             select(OrganizationMembership.id).where(
                 OrganizationMembership.organization_id.in_(
@@ -365,7 +373,9 @@ async def _make_widget_config(
     return config, key
 
 
-def _origin_headers(token: str | None = None, origin: str | None = ALLOWED_ORIGIN) -> dict:
+def _origin_headers(
+    token: str | None = None, origin: str | None = ALLOWED_ORIGIN
+) -> dict:
     headers: dict[str, str] = {}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
@@ -374,7 +384,9 @@ def _origin_headers(token: str | None = None, origin: str | None = ALLOWED_ORIGI
     return headers
 
 
-async def _create_session(client, key: str, *, origin: str | None = ALLOWED_ORIGIN) -> dict:
+async def _create_session(
+    client, key: str, *, origin: str | None = ALLOWED_ORIGIN
+) -> dict:
     response = await client.post(
         "/public/chat/sessions",
         json={"public_widget_key": key},
@@ -527,7 +539,12 @@ def _stub_rag(
     calls: list[dict] = []
 
     async def _fake_answer(
-        _db, *, organization_id, question, top_k=None, feature="rag_answer",
+        _db,
+        *,
+        organization_id,
+        question,
+        top_k=None,
+        feature="rag_answer",
         previous_customer_question=None,
     ):
         calls.append(
@@ -588,7 +605,9 @@ async def test_config_endpoint_is_bounded(db, client, org_scope):
 @pytest.mark.asyncio
 async def test_config_unknown_key_is_404(db, client, org_scope):
     await org_scope()
-    response = await client.get(f"/public/chat/config?key=pk_live_{secrets.token_hex(20)}")
+    response = await client.get(
+        f"/public/chat/config?key=pk_live_{secrets.token_hex(20)}"
+    )
     assert response.status_code == 404
 
 
@@ -634,7 +653,9 @@ async def test_create_session_wires_tenant_ticket_conversation(db, client, org_s
     token = body["session"]["token"]
     assert len(token) >= 40
 
-    expires_at = datetime.fromisoformat(body["session"]["expires_at"].replace("Z", "+00:00"))
+    expires_at = datetime.fromisoformat(
+        body["session"]["expires_at"].replace("Z", "+00:00")
+    )
     now = datetime.now(UTC)
     assert now + timedelta(hours=23) <= expires_at <= now + timedelta(hours=25)
 
@@ -734,8 +755,16 @@ async def test_create_session_rate_limited_per_hour(db, client, org_scope, monke
 
 
 @pytest.mark.asyncio
-async def test_create_session_respects_active_capacity(db, client, org_scope, monkeypatch):
+async def test_create_session_respects_active_capacity(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
+    db.add(OrganizationMembership(
+        organization_id=org.id,
+        subject="owner:test",
+        role="owner",
+    ))
+    await db.commit()
     _, key = await _make_widget_config(db, org)
     monkeypatch.setattr(settings, "public_chat_max_active_sessions_per_config", 1)
 
@@ -773,7 +802,9 @@ async def test_disabled_widget_rejects_session_creation(db, client, org_scope):
 
 
 @pytest.mark.asyncio
-async def test_send_message_respond_action_hands_off(db, client, org_scope, monkeypatch):
+async def test_send_message_respond_action_hands_off(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
     _stub_agent(monkeypatch, _ai_decision(draft="Refund details are on the way."))
@@ -799,7 +830,8 @@ async def test_send_message_respond_action_hands_off(db, client, org_scope, monk
     ticket = (
         await db.execute(
             select(Ticket).where(
-                Ticket.organization_id == org.id, Ticket.subject == "I need help with a refund."
+                Ticket.organization_id == org.id,
+                Ticket.subject == "I need help with a refund.",
             )
         )
     ).scalar_one()
@@ -809,7 +841,9 @@ async def test_send_message_respond_action_hands_off(db, client, org_scope, monk
         db,
         conversation_id=(
             await db.execute(
-                select(PublicChatSession).where(PublicChatSession.token_hash == hash_digest(token))
+                select(PublicChatSession).where(
+                    PublicChatSession.token_hash == hash_digest(token)
+                )
             )
         )
         .scalar_one()
@@ -826,7 +860,9 @@ async def test_send_message_respond_action_hands_off(db, client, org_scope, monk
 
 
 @pytest.mark.asyncio
-async def test_send_message_no_action_returns_fallback(db, client, org_scope, monkeypatch):
+async def test_send_message_no_action_returns_fallback(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
     _stub_agent(monkeypatch, _ai_decision(action="no_action"))
@@ -847,7 +883,9 @@ async def test_send_message_no_action_returns_fallback(db, client, org_scope, mo
 
 
 @pytest.mark.asyncio
-async def test_send_message_handoff_when_approval_required(db, client, org_scope, monkeypatch):
+async def test_send_message_handoff_when_approval_required(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
     _stub_agent(monkeypatch, _ai_decision(requires_human=True))
@@ -866,13 +904,17 @@ async def test_send_message_handoff_when_approval_required(db, client, org_scope
     assert body["handoff"] is True
     assert body["status"] == "human_requested"
 
-    state = await client.get("/public/chat/sessions/state", headers=_origin_headers(token=token))
+    state = await client.get(
+        "/public/chat/sessions/state", headers=_origin_headers(token=token)
+    )
     assert state.status_code == 200
     assert state.json()["status"] == "human_requested"
 
 
 @pytest.mark.asyncio
-async def test_send_message_handoff_when_run_review_required(db, client, org_scope, monkeypatch):
+async def test_send_message_handoff_when_run_review_required(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
     _stub_agent(monkeypatch, _ai_decision(action="human_review", requires_human=False))
@@ -914,7 +956,9 @@ async def test_send_message_is_idempotent_on_retry(db, client, org_scope, monkey
         db,
         conversation_id=(
             await db.execute(
-                select(PublicChatSession).where(PublicChatSession.token_hash == hash_digest(token))
+                select(PublicChatSession).where(
+                    PublicChatSession.token_hash == hash_digest(token)
+                )
             )
         )
         .scalar_one()
@@ -970,7 +1014,9 @@ async def test_send_message_rejects_wrong_origin(db, client, org_scope, monkeypa
     response = await client.post(
         "/public/chat/messages",
         json={"client_message_id": "m-1", "text": "Hi"},
-        headers=_origin_headers(token=created["session"]["token"], origin="https://evil.example.net"),
+        headers=_origin_headers(
+            token=created["session"]["token"], origin="https://evil.example.net"
+        ),
     )
     assert response.status_code == 403
 
@@ -986,7 +1032,9 @@ async def test_send_message_rejects_expired_session(db, client, org_scope, monke
 
     session_row = (
         await db.execute(
-            select(PublicChatSession).where(PublicChatSession.token_hash == hash_digest(token))
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
         )
     ).scalar_one()
     session_row.expires_at = datetime.now(UTC) - timedelta(minutes=1)
@@ -1077,7 +1125,9 @@ async def test_send_message_rejects_malformed_client_message_id(db, client, org_
 
 
 @pytest.mark.asyncio
-async def test_send_message_rate_limited_per_session(db, client, org_scope, monkeypatch):
+async def test_send_message_rate_limited_per_session(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org, max_messages_per_minute=2)
     _stub_agent(monkeypatch, _ai_decision(draft="ok"))
@@ -1127,7 +1177,9 @@ async def test_state_returns_bounded_public_history(db, client, org_scope, monke
 
     session_row = (
         await db.execute(
-            select(PublicChatSession).where(PublicChatSession.token_hash == hash_digest(token))
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
         )
     ).scalar_one()
     internal_note = ConversationMessage(
@@ -1175,7 +1227,9 @@ async def test_state_rejects_closed_session(db, client, org_scope):
 
 
 @pytest.mark.asyncio
-async def test_request_human_is_idempotent_and_close_terminates(db, client, org_scope, monkeypatch):
+async def test_request_human_is_idempotent_and_close_terminates(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
     _stub_agent(monkeypatch, _ai_decision(draft="ok"))
@@ -1197,7 +1251,9 @@ async def test_request_human_is_idempotent_and_close_terminates(db, client, org_
     assert close.status_code == 200
     assert close.json()["status"] == "closed"
 
-    human_after_close = await client.post("/public/chat/sessions/human", headers=headers)
+    human_after_close = await client.post(
+        "/public/chat/sessions/human", headers=headers
+    )
     assert human_after_close.status_code == 409
 
     # A retried "End conversation" resolves the already-closed session
@@ -1374,9 +1430,7 @@ async def test_close_sla_failure_after_core_commit_then_retry_repairs_resolved_a
     assert conversation.status == "closed"
     # Exactly one close audit signal, emitted despite the SLA failure.
     assert _closed_total_for("customer") == before + 1
-    closed_events = [
-        e for e in recorder.events if e[0] == "public_chat_session_closed"
-    ]
+    closed_events = [e for e in recorder.events if e[0] == "public_chat_session_closed"]
     assert len(closed_events) == 1
     assert closed_events[0][1].get("closed_by") == "customer"
 
@@ -1396,8 +1450,7 @@ async def test_close_sla_failure_after_core_commit_then_retry_repairs_resolved_a
     assert ticket.resolved_at is not None
     assert _closed_total_for("customer") == before + 1
     assert (
-        len([e for e in recorder.events if e[0] == "public_chat_session_closed"])
-        == 1
+        len([e for e in recorder.events if e[0] == "public_chat_session_closed"]) == 1
     )
 
 
@@ -1501,9 +1554,7 @@ async def test_close_emits_single_structured_log_per_transition(
     second = await _widget_close(client, token)
     assert second.status_code == 200, second.text
 
-    closed_events = [
-        e for e in recorder.events if e[0] == "public_chat_session_closed"
-    ]
+    closed_events = [e for e in recorder.events if e[0] == "public_chat_session_closed"]
     assert len(closed_events) == 1
     _, fields = closed_events[0]
     assert fields.get("closed_by") == "customer"
@@ -1559,7 +1610,9 @@ async def test_cross_tenant_widget_key_not_found(db, client, org_scope):
 
 
 @pytest.mark.asyncio
-async def test_prompt_injection_cannot_authorize_tools(db, client, org_scope, monkeypatch):
+async def test_prompt_injection_cannot_authorize_tools(
+    db, client, org_scope, monkeypatch
+):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
 
@@ -1889,15 +1942,17 @@ async def test_grounded_auto_reply_is_idempotent_on_retry(
     assert sum(1 for m in messages if m.direction == "outbound") == 1
 
     events = (
-        await db.execute(
-            select(AgentActionEvent)
-            .join(AgentRun, AgentActionEvent.agent_run_id == AgentRun.id)
-            .where(AgentRun.organization_id == org.id)
+        (
+            await db.execute(
+                select(AgentActionEvent)
+                .join(AgentRun, AgentActionEvent.agent_run_id == AgentRun.id)
+                .where(AgentRun.organization_id == org.id)
+            )
         )
-    ).scalars().all()
-    assert (
-        sum(1 for e in events if e.event_type == "public_grounded_auto_reply") == 1
+        .scalars()
+        .all()
     )
+    assert sum(1 for e in events if e.event_type == "public_grounded_auto_reply") == 1
 
 
 def test_strip_source_markers_collapses_marker_whitespace():
@@ -1906,7 +1961,10 @@ def test_strip_source_markers_collapses_marker_whitespace():
     assert _strip_source_markers("  [S1] leading marker") == "leading marker"
     assert _strip_source_markers("[S1]") == ""
     assert _strip_source_markers("No markers here.") == "No markers here."
-    assert _strip_source_markers("Double  space [S1] stays clean") == "Double space stays clean"
+    assert (
+        _strip_source_markers("Double  space [S1] stays clean")
+        == "Double space stays clean"
+    )
 
 
 def test_strip_source_markers_leaves_urls_and_plain_brackets_alone():
@@ -2234,13 +2292,19 @@ async def test_grounded_auto_reply_records_audit_event_and_never_approves_run(
     assert run.authorization_source is None
 
     events = (
-        await db.execute(
-            select(AgentActionEvent)
-            .join(AgentRun, AgentActionEvent.agent_run_id == AgentRun.id)
-            .where(AgentRun.organization_id == org.id)
+        (
+            await db.execute(
+                select(AgentActionEvent)
+                .join(AgentRun, AgentActionEvent.agent_run_id == AgentRun.id)
+                .where(AgentRun.organization_id == org.id)
+            )
         )
-    ).scalars().all()
-    auto_reply_events = [e for e in events if e.event_type == "public_grounded_auto_reply"]
+        .scalars()
+        .all()
+    )
+    auto_reply_events = [
+        e for e in events if e.event_type == "public_grounded_auto_reply"
+    ]
     assert len(auto_reply_events) == 1
     event = auto_reply_events[0]
     assert event.actor == "public_chat"
@@ -2309,7 +2373,9 @@ def _guard_analyze_never_runs(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
-    db, client, org_scope,
+    db,
+    client,
+    org_scope,
 ):
     """The real row guard keeps staff takeover ordered after bounded dispatch."""
     org = await org_scope()
@@ -2317,9 +2383,11 @@ async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
     created = await _create_session(client, key)
     token = created["session"]["token"]
     session_row = (
-        await db.execute(select(PublicChatSession).where(
-            PublicChatSession.token_hash == hash_digest(token)
-        ))
+        await db.execute(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
+        )
     ).scalar_one()
     session_id = session_row.id
 
@@ -2349,27 +2417,39 @@ async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
 
     transport = PausedTransport()
     controller = ModelEvaluationController(
-        policy=EvaluationPolicy(), exact_token_counter=ExactCounter(),
-        transport=transport, explicitly_approved=True,
+        policy=EvaluationPolicy(),
+        exact_token_counter=ExactCounter(),
+        transport=transport,
+        explicitly_approved=True,
         approved_run_id=f"race-{uuid.uuid4().hex}",
         approved_organization_id=org.id,
         session_guard=PersistedPublicChatSessionGuard(),
     )
     run_id = controller.approved_run_id
-    dispatch = asyncio.create_task(controller.attempt(
-        db, organization_id=org.id, run_id=run_id,
-        turn_number=1, retry_number=0, serialized_input="bounded request",
-        public_chat_session_id=session_id,
-    ))
+    dispatch = asyncio.create_task(
+        controller.attempt(
+            db,
+            organization_id=org.id,
+            run_id=run_id,
+            turn_number=1,
+            retry_number=0,
+            serialized_input="bounded request",
+            public_chat_session_id=session_id,
+        )
+    )
     await asyncio.wait_for(transport.entered.wait(), timeout=2)
 
     async def handoff():
         async with AsyncSessionLocal() as staff_db:
-            await staff_db.execute(update(PublicChatSession).where(
-                PublicChatSession.id == session_id,
-                PublicChatSession.organization_id == org.id,
-                PublicChatSession.status == "ai_active",
-            ).values(status="human_requested"))
+            await staff_db.execute(
+                update(PublicChatSession)
+                .where(
+                    PublicChatSession.id == session_id,
+                    PublicChatSession.organization_id == org.id,
+                    PublicChatSession.status == "ai_active",
+                )
+                .values(status="human_requested")
+            )
             await staff_db.commit()
 
     takeover = asyncio.create_task(handoff())
@@ -2383,8 +2463,12 @@ async def test_model_eval_controller_linearizes_mock_dispatch_before_handoff(
     assert transport.calls == 1
     with pytest.raises(EvaluationBlockedError, match="persisted session state"):
         await controller.attempt(
-            db, organization_id=org.id, run_id=run_id,
-            turn_number=2, retry_number=0, serialized_input="must remain silent",
+            db,
+            organization_id=org.id,
+            run_id=run_id,
+            turn_number=2,
+            retry_number=0,
+            serialized_input="must remain silent",
             public_chat_session_id=session_id,
         )
     assert transport.calls == 1
@@ -2417,13 +2501,17 @@ async def test_handed_off_followup_human_requested_is_recorded_without_ai(
     assert body["status"] == "human_requested"
 
     session_row = (
-        await db.execute(select(PublicChatSession).where(
-            PublicChatSession.token_hash == hash_digest(token)
-        ))
+        await db.execute(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
+        )
     ).scalar_one()
     with pytest.raises(EvaluationBlockedError, match="persisted session state"):
         await PersistedPublicChatSessionGuard().assert_generation_allowed(
-            db, organization_id=org.id, session_id=session_row.id,
+            db,
+            organization_id=org.id,
+            session_id=session_row.id,
         )
     assert rag_calls == []
 
@@ -2446,16 +2534,17 @@ async def test_handed_off_followup_human_requested_is_recorded_without_ai(
     follow_up = [
         m
         for m in messages
-        if m.direction == "inbound" and m.body == "Actually, please wait — I found my receipt."
+        if m.direction == "inbound"
+        and m.body == "Actually, please wait — I found my receipt."
     ]
     assert len(follow_up) == 1
     assert follow_up[0].organization_id == org.id
 
     runs = (
-        await db.execute(
-            select(AgentRun).where(AgentRun.organization_id == org.id)
-        )
-    ).scalars().all()
+        (await db.execute(select(AgentRun).where(AgentRun.organization_id == org.id)))
+        .scalars()
+        .all()
+    )
     assert len(runs) == 1, "a handed-off follow-up must not create an AgentRun"
 
     jobs = await db.execute(
@@ -2501,10 +2590,10 @@ async def test_handed_off_followup_human_assigned_stays_assigned(
     assert rag_calls == []
 
     runs = (
-        await db.execute(
-            select(AgentRun).where(AgentRun.organization_id == org.id)
-        )
-    ).scalars().all()
+        (await db.execute(select(AgentRun).where(AgentRun.organization_id == org.id)))
+        .scalars()
+        .all()
+    )
     assert len(runs) == 1
 
     session_row = (
@@ -2558,10 +2647,10 @@ async def test_handed_off_customer_can_send_multiple_messages(
     assert sum(1 for m in messages if m.direction == "outbound") == 1
 
     runs = (
-        await db.execute(
-            select(AgentRun).where(AgentRun.organization_id == org.id)
-        )
-    ).scalars().all()
+        (await db.execute(select(AgentRun).where(AgentRun.organization_id == org.id)))
+        .scalars()
+        .all()
+    )
     assert len(runs) == 1
 
 
@@ -2572,9 +2661,7 @@ async def test_handed_off_followup_duplicate_is_idempotent(
 ):
     org = await org_scope()
     _, key = await _make_widget_config(db, org)
-    token = await _establish_handoff(
-        db, client, org, key, monkeypatch, status=status
-    )
+    token = await _establish_handoff(db, client, org, key, monkeypatch, status=status)
     _guard_analyze_never_runs(monkeypatch)
     rag_calls = _stub_rag(monkeypatch, _rag_result())
 
@@ -2683,10 +2770,14 @@ async def test_handed_off_followup_preserves_tenant_isolation(
     assert second_messages == []
 
     second_runs = (
-        await db.execute(
-            select(AgentRun).where(AgentRun.organization_id == second_org.id)
+        (
+            await db.execute(
+                select(AgentRun).where(AgentRun.organization_id == second_org.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert second_runs == []
 
 
@@ -2697,7 +2788,10 @@ async def test_handed_off_followup_preserves_tenant_isolation(
 
 @pytest.mark.asyncio
 async def test_removed_knowledge_is_not_reused_by_restored_session_but_history_remains(
-    db, client, org_scope, monkeypatch,
+    db,
+    client,
+    org_scope,
+    monkeypatch,
 ):
     org = await org_scope()
     _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
@@ -2712,49 +2806,68 @@ async def test_removed_knowledge_is_not_reused_by_restored_session_but_history_r
 
     first = await client.post(
         "/public/chat/messages",
-        json={"client_message_id": "freshness-old", "text": "When is synthetic restoration pickup available?"},
+        json={
+            "client_message_id": "freshness-old",
+            "text": "When is synthetic restoration pickup available?",
+        },
         headers=headers,
     )
     assert first.status_code == 200
     assert "16:00" in first.json()["reply"]
 
-    await db.execute(delete(KnowledgeChunk).where(
-        KnowledgeChunk.organization_id == org.id,
-        KnowledgeChunk.document_id == document_id,
-    ))
-    await db.execute(delete(KnowledgeDocument).where(
-        KnowledgeDocument.organization_id == org.id,
-        KnowledgeDocument.id == document_id,
-    ))
+    await db.execute(
+        delete(KnowledgeChunk).where(
+            KnowledgeChunk.organization_id == org.id,
+            KnowledgeChunk.document_id == document_id,
+        )
+    )
+    await db.execute(
+        delete(KnowledgeDocument).where(
+            KnowledgeDocument.organization_id == org.id,
+            KnowledgeDocument.id == document_id,
+        )
+    )
     await db.commit()
 
     # The same persisted visitor token represents a restored widget session.
     fresh = await client.post(
         "/public/chat/messages",
-        json={"client_message_id": "freshness-new", "text": "When is synthetic restoration pickup available?"},
+        json={
+            "client_message_id": "freshness-new",
+            "text": "When is synthetic restoration pickup available?",
+        },
         headers=headers,
     )
     assert fresh.status_code == 200
     assert fresh.json()["handoff"] is True
     assert "16:00" not in (fresh.json()["reply"] or "")
 
-    conversation = await db.scalar(select(Conversation).where(
-        Conversation.organization_id == org.id,
-        Conversation.channel == "web",
-    ))
+    conversation = await db.scalar(
+        select(Conversation).where(
+            Conversation.organization_id == org.id,
+            Conversation.channel == "web",
+        )
+    )
     messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
-        db, conversation_id=conversation.id, organization_id=org.id,
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
     )
     bodies = [message.body for message in messages]
-    assert any("16:00" in body for body in bodies), "historical answer must remain unchanged"
-    assert any(
-        "[Source: Synthetic restoration policy]" in body for body in bodies
-    ), "historical answer must retain its delivered source label"
+    assert any("16:00" in body for body in bodies), (
+        "historical answer must remain unchanged"
+    )
+    assert any("[Source: Synthetic restoration policy]" in body for body in bodies), (
+        "historical answer must retain its delivered source label"
+    )
 
 
 @pytest.mark.asyncio
 async def test_disabled_model_evaluation_path_requires_durable_session_bound_approval(
-    db, client, org_scope, monkeypatch,
+    db,
+    client,
+    org_scope,
+    monkeypatch,
 ):
     """The real route is composable with a fake wire, but never caller-enabled."""
     org = await org_scope()
@@ -2771,10 +2884,22 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     )
     created = await _create_session(client, key)
     token = created["session"]["token"]
-    session = await db.scalar(select(PublicChatSession).where(
-        PublicChatSession.token_hash == hash_digest(token),
-        PublicChatSession.organization_id == org.id,
-    ))
+    session = await db.scalar(
+        select(PublicChatSession).where(
+            PublicChatSession.token_hash == hash_digest(token),
+            PublicChatSession.organization_id == org.id,
+        )
+    )
+    bound_session_ids = [session.id]
+    for _ in range(9):
+        bound = await _create_session(client, key)
+        bound_row = await db.scalar(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(bound["session"]["token"]),
+                PublicChatSession.organization_id == org.id,
+            )
+        )
+        bound_session_ids.append(bound_row.id)
     count_evidence_expires_at = datetime.now(UTC) + timedelta(minutes=30)
     activation = {
         "purpose": "controlled_public_chat_model_evaluation",
@@ -2790,7 +2915,11 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         "generation_output_rate_per_million_usd": 0.50,
         "generation_price_multiplier": 1.10,
         "generation_reservation_all_attempts_usd": 0.0605,
-        "public_chat_session_id": session.id,
+        "additional_all_in_reserve_usd": 0.0,
+        "all_in_evidence_id": "synthetic-all-in-evidence",
+        "all_in_evidence_expires_at": count_evidence_expires_at.isoformat(),
+        "all_in_evidence_verification": "independently_verified",
+        "public_chat_session_ids": bound_session_ids,
         "expires_at": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
         "count_policy": {
             "endpoint": "https://api.openai.com/v1/responses/input_tokens",
@@ -2831,14 +2960,16 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     )
     db.add(baseline)
     await db.flush()
-    db.add(AIEvaluationReleaseDecision(
-        organization_id=org.id,
-        candidate_run_id=run.id,
-        baseline_id=baseline.id,
-        decision="approved",
-        decided_by_subject="owner:test",
-        comparison_snapshot={"synthetic": True, "provider_activation": activation},
-    ))
+    db.add(
+        AIEvaluationReleaseDecision(
+            organization_id=org.id,
+            candidate_run_id=run.id,
+            baseline_id=baseline.id,
+            decision="approved",
+            decided_by_subject="owner:test",
+            comparison_snapshot={"synthetic": True, "provider_activation": activation},
+        )
+    )
     await db.commit()
 
     transport = _SyntheticResponsesTransport(f"offline:{chunk_id}")
@@ -2862,7 +2993,9 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         adapter=adapter,
     )
     assert not await mismatched_provider.targets(
-        db, organization_id=org.id, session_id=session.id,
+        db,
+        organization_id=org.id,
+        session_id=session.id,
     )
     provider = PublicChatModelEvaluationProvider(
         run_id=run.run_id,
@@ -2880,11 +3013,16 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         adapter=adapter,
     )
     monkeypatch.setattr(settings, "public_chat_model_eval_enabled", True)
-    monkeypatch.setattr(type(public_chat_service), "model_evaluation_provider", provider)
+    monkeypatch.setattr(
+        type(public_chat_service), "model_evaluation_provider", provider
+    )
 
     response = await client.post(
         "/public/chat/messages",
-        json={"client_message_id": "controlled-model-1", "text": "What are the Friday bicycle workshop hours?"},
+        json={
+            "client_message_id": "controlled-model-1",
+            "text": "What are the Friday bicycle workshop hours?",
+        },
         headers=_origin_headers(token=token),
     )
     assert response.status_code == 200, response.text
@@ -2893,14 +3031,19 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     assert len(transport.payloads) == 1
     grounded = json.loads(transport.payloads[0]["input"])
     assert grounded["customer_message"].startswith("What are")
-    assert grounded["business_knowledge"] == [{
-        "citation_id": f"offline:{chunk_id}",
-        "text": "Friday bicycle workshop hours are 10:00 to 19:15.",
-    }]
+    assert grounded["business_knowledge"] == [
+        {
+            "citation_id": f"offline:{chunk_id}",
+            "text": "Friday bicycle workshop hours are 10:00 to 19:15.",
+        }
+    ]
 
     follow_up = await client.post(
         "/public/chat/messages",
-        json={"client_message_id": "controlled-model-follow-up", "text": "And on Friday?"},
+        json={
+            "client_message_id": "controlled-model-follow-up",
+            "text": "And on Friday?",
+        },
         headers=_origin_headers(token=token),
     )
     assert follow_up.status_code == 200
@@ -2908,31 +3051,40 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     assert len(transport.payloads) == 2
     follow_up_input = json.loads(transport.payloads[1]["input"])
     assert [turn["role"] for turn in follow_up_input["conversation_history"]] == [
-        "customer", "assistant",
+        "customer",
+        "assistant",
     ]
     assert follow_up_input["conversation_history"][0]["text"].startswith("What are")
     assert follow_up_input["conversation_history"][1]["text"].startswith("پاسخ ساختگی")
 
     topic_switch = await client.post(
         "/public/chat/messages",
-        json={"client_message_id": "controlled-model-topic", "text": "Can unused accessories be returned within 14 days?"},
+        json={
+            "client_message_id": "controlled-model-topic",
+            "text": "Can unused accessories be returned within 14 days?",
+        },
         headers=_origin_headers(token=token),
     )
     assert topic_switch.status_code == 200
     assert topic_switch.json()["handoff"] is False
     assert len(transport.payloads) == 3
     topic_input = json.loads(transport.payloads[2]["input"])
-    assert topic_input["business_knowledge"] == [{
-        "citation_id": f"offline:{returns_chunk_id}",
-        "text": "Unused bicycle accessories can be returned within 14 days.",
-    }]
+    assert topic_input["business_knowledge"] == [
+        {
+            "citation_id": f"offline:{returns_chunk_id}",
+            "text": "Unused bicycle accessories can be returned within 14 days.",
+        }
+    ]
 
     # A caller cannot reuse the durable run for another session.
     monkeypatch.setattr(settings, "public_chat_offline_provider_enabled", True)
     second = await _create_session(client, key)
     blocked = await client.post(
         "/public/chat/messages",
-        json={"client_message_id": "controlled-model-2", "text": "Friday workshop hours?"},
+        json={
+            "client_message_id": "controlled-model-2",
+            "text": "Friday workshop hours?",
+        },
         headers=_origin_headers(token=second["session"]["token"]),
     )
     assert blocked.status_code == 200
@@ -2940,10 +3092,12 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     assert blocked.json()["reply"].startswith("Friday bicycle workshop")
     assert len(transport.payloads) == 3
 
-    second_session = await db.scalar(select(PublicChatSession).where(
-        PublicChatSession.token_hash == hash_digest(second["session"]["token"]),
-        PublicChatSession.organization_id == org.id,
-    ))
+    second_session = await db.scalar(
+        select(PublicChatSession).where(
+            PublicChatSession.token_hash == hash_digest(second["session"]["token"]),
+            PublicChatSession.organization_id == org.id,
+        )
+    )
     foreign_inbound = await db.scalar(
         select(ConversationMessage)
         .where(
@@ -2966,13 +3120,18 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         )
     foreign_org = await org_scope()
     assert not await provider.targets(
-        db, organization_id=foreign_org.id, session_id=session.id,
+        db,
+        organization_id=foreign_org.id,
+        session_id=session.id,
     )
 
 
 @pytest.mark.asyncio
 async def test_knowledge_removal_during_offline_retrieval_discards_stale_answer(
-    db, client, org_scope, monkeypatch,
+    db,
+    client,
+    org_scope,
+    monkeypatch,
 ):
     org = await org_scope()
     _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
@@ -2998,21 +3157,30 @@ async def test_knowledge_removal_during_offline_retrieval_discards_stale_answer(
 
     monkeypatch.setattr(offline_grounded_chat, "answer", paused_answer)
     token = (await _create_session(client, key))["session"]["token"]
-    pending = asyncio.create_task(client.post(
-        "/public/chat/messages",
-        json={"client_message_id": "freshness-race", "text": "When is synthetic overlap pickup available?"},
-        headers=_origin_headers(token=token),
-    ))
+    pending = asyncio.create_task(
+        client.post(
+            "/public/chat/messages",
+            json={
+                "client_message_id": "freshness-race",
+                "text": "When is synthetic overlap pickup available?",
+            },
+            headers=_origin_headers(token=token),
+        )
+    )
     await asyncio.wait_for(retrieved.wait(), timeout=2)
     async with AsyncSessionLocal() as owner_db:
-        await owner_db.execute(delete(KnowledgeChunk).where(
-            KnowledgeChunk.organization_id == org.id,
-            KnowledgeChunk.document_id == document_id,
-        ))
-        await owner_db.execute(delete(KnowledgeDocument).where(
-            KnowledgeDocument.organization_id == org.id,
-            KnowledgeDocument.id == document_id,
-        ))
+        await owner_db.execute(
+            delete(KnowledgeChunk).where(
+                KnowledgeChunk.organization_id == org.id,
+                KnowledgeChunk.document_id == document_id,
+            )
+        )
+        await owner_db.execute(
+            delete(KnowledgeDocument).where(
+                KnowledgeDocument.organization_id == org.id,
+                KnowledgeDocument.id == document_id,
+            )
+        )
         await owner_db.commit()
     release.set()
     response = await asyncio.wait_for(pending, timeout=2)
@@ -3025,7 +3193,10 @@ async def test_knowledge_removal_during_offline_retrieval_discards_stale_answer(
 
 @pytest.mark.asyncio
 async def test_delete_after_final_source_check_waits_for_reply_commit(
-    db, client, org_scope, monkeypatch,
+    db,
+    client,
+    org_scope,
+    monkeypatch,
 ):
     """The final source check and reply persistence have one database order.
 
@@ -3055,33 +3226,41 @@ async def test_delete_after_final_source_check_waits_for_reply_commit(
 
     monkeypatch.setattr(offline_grounded_chat, "source_is_current", paused_final_check)
     token = (await _create_session(client, key))["session"]["token"]
-    pending_reply = asyncio.create_task(client.post(
-        "/public/chat/messages",
-        json={
-            "client_message_id": "freshness-final-check-order",
-            "text": "When is synthetic ordered pickup available?",
-        },
-        headers=_origin_headers(token=token),
-    ))
+    pending_reply = asyncio.create_task(
+        client.post(
+            "/public/chat/messages",
+            json={
+                "client_message_id": "freshness-final-check-order",
+                "text": "When is synthetic ordered pickup available?",
+            },
+            headers=_origin_headers(token=token),
+        )
+    )
     await asyncio.wait_for(checked.wait(), timeout=2)
 
     async def remove_knowledge():
         async with AsyncSessionLocal() as owner_db:
             delete_started.set()
-            await owner_db.execute(delete(KnowledgeChunk).where(
-                KnowledgeChunk.organization_id == org.id,
-                KnowledgeChunk.document_id == document_id,
-            ))
-            await owner_db.execute(delete(KnowledgeDocument).where(
-                KnowledgeDocument.organization_id == org.id,
-                KnowledgeDocument.id == document_id,
-            ))
+            await owner_db.execute(
+                delete(KnowledgeChunk).where(
+                    KnowledgeChunk.organization_id == org.id,
+                    KnowledgeChunk.document_id == document_id,
+                )
+            )
+            await owner_db.execute(
+                delete(KnowledgeDocument).where(
+                    KnowledgeDocument.organization_id == org.id,
+                    KnowledgeDocument.id == document_id,
+                )
+            )
             await owner_db.commit()
 
     pending_delete = asyncio.create_task(remove_knowledge())
     await asyncio.wait_for(delete_started.wait(), timeout=2)
     await asyncio.sleep(0.05)
-    assert not pending_delete.done(), "delete must wait for the validated reply transaction"
+    assert not pending_delete.done(), (
+        "delete must wait for the validated reply transaction"
+    )
 
     release.set()
     response = await asyncio.wait_for(pending_reply, timeout=2)
@@ -3106,7 +3285,10 @@ async def test_delete_after_final_source_check_waits_for_reply_commit(
 
 @pytest.mark.asyncio
 async def test_handoff_during_grounded_generation_discards_stale_reply(
-    db, client, org_scope, monkeypatch,
+    db,
+    client,
+    org_scope,
+    monkeypatch,
 ):
     """A committed customer takeover during RAG wins at reply persistence."""
     org = await org_scope()
@@ -3129,11 +3311,13 @@ async def test_handoff_during_grounded_generation_discards_stale_reply(
     monkeypatch.setattr(rag_service, "answer", paused_answer)
     token = (await _create_session(client, key))["session"]["token"]
     headers = _origin_headers(token=token)
-    pending = asyncio.create_task(client.post(
-        "/public/chat/messages",
-        json={"client_message_id": "late-handoff", "text": "When are you open?"},
-        headers=headers,
-    ))
+    pending = asyncio.create_task(
+        client.post(
+            "/public/chat/messages",
+            json={"client_message_id": "late-handoff", "text": "When are you open?"},
+            headers=headers,
+        )
+    )
     await asyncio.wait_for(started.wait(), timeout=2)
 
     handoff = await client.post(
@@ -3159,38 +3343,61 @@ async def test_handoff_during_grounded_generation_discards_stale_reply(
     assert retry.json()["reply"] is None
 
     conversation = (
-        await db.execute(select(Conversation).where(
-            Conversation.organization_id == org.id,
-            Conversation.channel == "web",
-        ))
+        await db.execute(
+            select(Conversation).where(
+                Conversation.organization_id == org.id,
+                Conversation.channel == "web",
+            )
+        )
     ).scalar_one()
     messages = await ConversationMessageRepository.list_for_conversation_for_tenant(
-        db, conversation_id=conversation.id, organization_id=org.id,
+        db,
+        conversation_id=conversation.id,
+        organization_id=org.id,
     )
-    assert [message.body for message in messages if message.direction == "outbound"] == []
-    assert PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
-        outcome="stale_handoff_suppressed"
-    )._value.get() == suppressed_before + 1
-    assert PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
-        outcome="grounded_reply"
-    )._value.get() == grounded_before
+    assert [
+        message.body for message in messages if message.direction == "outbound"
+    ] == []
+    assert (
+        PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(
+            outcome="stale_handoff_suppressed"
+        )._value.get()
+        == suppressed_before + 1
+    )
+    assert (
+        PUBLIC_CHAT_ANSWER_DECISIONS_TOTAL.labels(outcome="grounded_reply")._value.get()
+        == grounded_before
+    )
 
     session_row = (
-        await db.execute(select(PublicChatSession).where(
-            PublicChatSession.token_hash == hash_digest(token)
-        ))
-    ).scalar_one()
-    allowance = await db.scalar(select(AIUsageReservation).where(
-        AIUsageReservation.reservation_key == reservation_key(
-            organization_id=org.id,
-            session_id=session_row.id,
-            client_message_id="late-handoff",
+        await db.execute(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(token)
+            )
         )
-    ))
+    ).scalar_one()
+    allowance = await db.scalar(
+        select(AIUsageReservation).where(
+            AIUsageReservation.reservation_key
+            == reservation_key(
+                organization_id=org.id,
+                session_id=session_row.id,
+                client_message_id="late-handoff",
+            )
+        )
+    )
     assert allowance is not None and allowance.status == "settled"
-    audit_events = (await db.execute(select(AgentActionEvent).where(
-        AgentActionEvent.event_type == "public_grounded_auto_reply",
-    ))).scalars().all()
+    audit_events = (
+        (
+            await db.execute(
+                select(AgentActionEvent).where(
+                    AgentActionEvent.event_type == "public_grounded_auto_reply",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert audit_events == []
 
 
@@ -3226,7 +3433,9 @@ async def test_c3_short_followup_reuses_only_preceding_answered_question(
     assert followup.status_code == 200, followup.text
     assert followup.json()["status"] == "ai_active"
     assert followup.json()["handoff"] is False
-    assert followup.json()["reply"] == "The fictional workshop is open Monday to Saturday."
+    assert (
+        followup.json()["reply"] == "The fictional workshop is open Monday to Saturday."
+    )
     assert len(calls) == 2, "one grounded RAG call per customer question"
     assert calls[0]["previous_customer_question"] is None
     assert calls[1]["previous_customer_question"] == "When are you open?"
@@ -3280,11 +3489,13 @@ async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
         db, second_org, grounded_auto_reply_enabled=True
     )
     _stub_agent(monkeypatch, _ai_decision())
-    calls = _stub_rag(monkeypatch, _rag_result(
-        answer="Synthetic support is open on Saturdays [S1]."
-    ))
+    calls = _stub_rag(
+        monkeypatch, _rag_result(answer="Synthetic support is open on Saturdays [S1].")
+    )
     first_token = (await _create_session(client, first_key))["session"]["token"]
-    same_tenant_other_token = (await _create_session(client, first_key))["session"]["token"]
+    same_tenant_other_token = (await _create_session(client, first_key))["session"][
+        "token"
+    ]
     second_token = (await _create_session(client, second_key))["session"]["token"]
 
     previous = await client.post(
@@ -3321,10 +3532,12 @@ async def test_c3_standalone_followup_and_other_tenant_never_share_topic(
     )
     assert standalone.status_code == 200, standalone.text
     assert [c["organization_id"] for c in calls] == [
-        first_org.id, first_org.id, second_org.id, first_org.id
+        first_org.id,
+        first_org.id,
+        second_org.id,
+        first_org.id,
     ]
     assert all(c["previous_customer_question"] is None for c in calls)
-
 
 
 @pytest.mark.asyncio
@@ -3333,24 +3546,22 @@ async def test_customer_citation_with_directly_opposing_source_hands_off(
 ):
     """A fake *grounded* model can no longer publish the known false-free claim."""
     org = await org_scope()
-    _, key = await _make_widget_config(
-        db, org, grounded_auto_reply_enabled=True
-    )
-    _stub_agent(monkeypatch, _ai_decision(
-        draft="Agent draft must remain staff-only."
-    ))
+    _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
+    _stub_agent(monkeypatch, _ai_decision(draft="Agent draft must remain staff-only."))
     rag_calls = _stub_rag(
         monkeypatch,
         _rag_result(
             answer="All Aster bicycle repairs are free. [S1]",
-            sources=[{
-                "source_id": "S1",
-                "document_id": 1,
-                "chunk_id": 1,
-                "title": "Fictional workshop pricing",
-                "content": "Aster bicycle repairs are not free.",
-                "similarity": 0.89,
-            }],
+            sources=[
+                {
+                    "source_id": "S1",
+                    "document_id": 1,
+                    "chunk_id": 1,
+                    "title": "Fictional workshop pricing",
+                    "content": "Aster bicycle repairs are not free.",
+                    "similarity": 0.89,
+                }
+            ],
         ),
     )
     token = (await _create_session(client, key))["session"]["token"]
@@ -3373,8 +3584,12 @@ async def test_customer_citation_with_directly_opposing_source_hands_off(
     assert rag_calls[0]["organization_id"] == org.id
 
     jobs = (
-        await db.execute(
-            select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+        (
+            await db.execute(
+                select(IntegrationJob).where(IntegrationJob.organization_id == org.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert jobs == [], "a citation contradiction must not schedule a business action"
