@@ -237,18 +237,30 @@ class AIEvaluationService:
             "total_cases": total,
             "passed_cases": sum(result["passed"] for result in results),
             "pass_rate": rate([result["passed"] for result in results]),
-            "retrieval_accuracy": rate([result["retrieval_hit"] for result in answerable_results]),
-            "answer_correctness": rate([result["answer_correct"] for result in answerable_results]),
-            "grounding_accuracy": rate([result["grounding_correct"] for result in results]),
-            "citation_validity": rate([result["citation_valid"] for result in answerable_results]),
+            "retrieval_accuracy": rate(
+                [result["retrieval_hit"] for result in answerable_results]
+            ),
+            "answer_correctness": rate(
+                [result["answer_correct"] for result in answerable_results]
+            ),
+            "grounding_accuracy": rate(
+                [result["grounding_correct"] for result in results]
+            ),
+            "citation_validity": rate(
+                [result["citation_valid"] for result in answerable_results]
+            ),
             "refusal_accuracy": rate(
                 [bool(result["refusal_correct"]) for result in refusal_results]
             ),
             "avg_latency_ms": (
-                sum(result["latency_ms"] for result in results) / total if total else 0.0
+                sum(result["latency_ms"] for result in results) / total
+                if total
+                else 0.0
             ),
             "total_tokens": sum(result["total_tokens"] for result in results),
-            "estimated_cost_usd": sum(result["estimated_cost_usd"] for result in results),
+            "estimated_cost_usd": sum(
+                result["estimated_cost_usd"] for result in results
+            ),
         }
 
     @staticmethod
@@ -373,7 +385,9 @@ class AIEvaluationService:
                 db,
                 run_id=run_id,
                 organization_id=organization_id,
-                error=(f"RAG evaluation failed on case {case_id}: {type(exc).__name__}"),
+                error=(
+                    f"RAG evaluation failed on case {case_id}: {type(exc).__name__}"
+                ),
             )
             raise
 
@@ -479,7 +493,11 @@ class AIEvaluationService:
                             else {}
                         ),
                         **(
-                            {"expected_specialists": list(result["expected_specialists"])}
+                            {
+                                "expected_specialists": list(
+                                    result["expected_specialists"]
+                                )
+                            }
                             if result.get("expected_specialists") is not None
                             else {}
                         ),
@@ -512,7 +530,11 @@ class AIEvaluationService:
                             else {}
                         ),
                         **(
-                            {"specialist_path_pass": bool(result["specialist_path_pass"])}
+                            {
+                                "specialist_path_pass": bool(
+                                    result["specialist_path_pass"]
+                                )
+                            }
                             if result.get("expected_specialists") is not None
                             else {}
                         ),
@@ -524,7 +546,9 @@ class AIEvaluationService:
                 )
         except Exception as exc:
             case_id = (
-                AIEvaluationService._agent_case_id(current_case) if current_case else "unknown"
+                AIEvaluationService._agent_case_id(current_case)
+                if current_case
+                else "unknown"
             )
             await AIEvaluationService._fail_run(
                 db,
@@ -665,7 +689,9 @@ class AIEvaluationService:
         if run is None:
             raise ValueError(f"Evaluation run {run_id} was not found.")
         if run.organization_id != organization_id:
-            raise ValueError("Evaluation run is not owned by the executing organization.")
+            raise ValueError(
+                "Evaluation run is not owned by the executing organization."
+            )
         if run.target_type != "rag":
             raise ValueError(f"Evaluation run {run_id} is not a RAG evaluation run.")
 
@@ -728,8 +754,12 @@ class AIEvaluationService:
             "passed": sum(bool(result["overall_pass"]) for result in results),
             "failed": total - sum(bool(result["overall_pass"]) for result in results),
             "pass_rate": rate([bool(result["overall_pass"]) for result in results]),
-            "action_accuracy": rate([bool(result["action_pass"]) for result in results]),
-            "retrieval_accuracy": rate([bool(result["retrieval_pass"]) for result in results]),
+            "action_accuracy": rate(
+                [bool(result["action_pass"]) for result in results]
+            ),
+            "retrieval_accuracy": rate(
+                [bool(result["retrieval_pass"]) for result in results]
+            ),
             "tool_accuracy": rate([bool(result["tool_pass"]) for result in results]),
             "auto_execute_safety_accuracy": rate(
                 [bool(result["auto_execute_pass"]) for result in results]
@@ -864,7 +894,9 @@ class AIEvaluationService:
         if run is None:
             raise ValueError(f"Evaluation run {run_id} was not found.")
         if run.organization_id != organization_id:
-            raise ValueError("Evaluation run is not owned by the executing organization.")
+            raise ValueError(
+                "Evaluation run is not owned by the executing organization."
+            )
         if run.target_type != "agent":
             raise ValueError(f"Evaluation run {run_id} is not an Agent evaluation run.")
 
@@ -972,7 +1004,9 @@ class AIEvaluationService:
             db, baseline_id=baseline_id, organization_id=organization_id
         )
         if run is None or baseline is None:
-            raise ValueError("The evaluation run or baseline was not found for this organization.")
+            raise ValueError(
+                "The evaluation run or baseline was not found for this organization."
+            )
         if run.target_type != baseline.target_type:
             raise ValueError(
                 "Cannot compare an evaluation run against a baseline of a different target type."
@@ -998,7 +1032,9 @@ class AIEvaluationService:
                     baseline=baseline_num,
                     candidate=candidate_num,
                     delta=round(candidate_num - baseline_num, 6),
-                    direction=AIEvaluationService._direction(candidate_num, baseline_num),
+                    direction=AIEvaluationService._direction(
+                        candidate_num, baseline_num
+                    ),
                 )
             )
 
@@ -1006,7 +1042,9 @@ class AIEvaluationService:
         baseline_pass_rate = baseline.pass_rate
         pass_rate_delta: float | None = None
         if candidate_pass_rate is not None and baseline_pass_rate is not None:
-            pass_rate_delta = round(float(candidate_pass_rate) - float(baseline_pass_rate), 6)
+            pass_rate_delta = round(
+                float(candidate_pass_rate) - float(baseline_pass_rate), 6
+            )
 
         return EvaluationRunComparison(
             target_type=run.target_type,
@@ -1147,6 +1185,7 @@ class AIEvaluationService:
         decision: str,
         decided_by_subject: str,
         note: str | None = None,
+        provider_activation: dict | None = None,
     ) -> AIEvaluationReleaseDecision:
         """Record one immutable human release decision (Phase 1J.8A).
 
@@ -1174,7 +1213,9 @@ class AIEvaluationService:
             db, baseline_id=baseline_id, organization_id=organization_id
         )
         if run is None or baseline is None:
-            raise ValueError("The evaluation run or baseline was not found for this organization.")
+            raise ValueError(
+                "The evaluation run or baseline was not found for this organization."
+            )
         if run.status != "succeeded":
             raise ValueError(
                 f"Cannot record a release decision for evaluation run "
@@ -1198,9 +1239,34 @@ class AIEvaluationService:
             baseline_id=baseline.id,
         )
 
-        if decision == "approved" and AIEvaluationService._release_gate_result(comparison).blocked:
+        if (
+            decision == "approved"
+            and AIEvaluationService._release_gate_result(comparison).blocked
+        ):
             raise ValueError(_APPROVAL_BLOCKED_ERROR)
 
+        snapshot = comparison.model_dump()
+        if provider_activation is not None:
+            if decision != "approved" or settings.environment != "development":
+                raise ValueError(
+                    "provider activation is development-only and requires approval"
+                )
+            from app.services.model_eval_controller import EvaluationBlockedError
+            from app.services.public_chat_model_eval import validate_activation_manifest
+
+            try:
+                validated_activation = validate_activation_manifest(provider_activation)
+            except EvaluationBlockedError as exc:
+                raise ValueError(str(exc)) from None
+            if (
+                run.target_type != "rag"
+                or run.model != "gpt-6-luna"
+                or run.trigger_source != "manual"
+            ):
+                raise ValueError(
+                    "provider activation requires a manual gpt-6-luna RAG run"
+                )
+            snapshot["provider_activation"] = validated_activation
         return await AIEvaluationRepository.create_release_decision(
             db,
             organization_id=organization_id,
@@ -1209,5 +1275,5 @@ class AIEvaluationService:
             decision=decision,
             decided_by_subject=decided_by_subject,
             note=note,
-            comparison_snapshot=comparison.model_dump(),
+            comparison_snapshot=snapshot,
         )

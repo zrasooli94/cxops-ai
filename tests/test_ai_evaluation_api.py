@@ -22,7 +22,7 @@ tenant-scoped repository calls.
 import os
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -38,7 +38,7 @@ os.environ["AUTH_JWT_AUDIENCE"] = "test-eval-api-audience"
 os.environ["AUTH_DEV_MODE"] = "False"
 os.environ["ENVIRONMENT"] = "development"
 
-from app.core.config import reset_settings_cache
+from app.core.config import reset_settings_cache, settings
 from app.core.database import AsyncSessionLocal
 from app.core.rbac import (
     ROLE_CAPABILITIES,
@@ -130,7 +130,9 @@ async def two_orgs(db):
         org_ids.append(org.id)
         return org
 
-    async def add_membership(subject: str, organization_id: int, role: OrganizationRole) -> None:
+    async def add_membership(
+        subject: str, organization_id: int, role: OrganizationRole
+    ) -> None:
         db.add(
             OrganizationMembership(
                 subject=subject,
@@ -140,7 +142,9 @@ async def two_orgs(db):
         )
         await db.commit()
 
-    async def make_run(organization_id: int, run_id: str | None = None) -> AIEvaluationRun:
+    async def make_run(
+        organization_id: int, run_id: str | None = None
+    ) -> AIEvaluationRun:
         run = await AIEvaluationRepository.create_run(
             db,
             run_id=run_id or uuid.uuid4().hex,
@@ -180,18 +184,26 @@ async def two_orgs(db):
             )
         )
         await db.execute(
-            delete(AIEvaluationCase).where(AIEvaluationCase.organization_id.in_(org_ids))
+            delete(AIEvaluationCase).where(
+                AIEvaluationCase.organization_id.in_(org_ids)
+            )
         )
         await db.execute(
             delete(AIEvaluationRun).where(AIEvaluationRun.organization_id.in_(org_ids))
         )
         await db.execute(
-            delete(AIEvaluationBaseline).where(AIEvaluationBaseline.organization_id.in_(org_ids))
+            delete(AIEvaluationBaseline).where(
+                AIEvaluationBaseline.organization_id.in_(org_ids)
+            )
         )
-        await db.execute(delete(IntegrationJob).where(IntegrationJob.organization_id.in_(org_ids)))
+        await db.execute(
+            delete(IntegrationJob).where(IntegrationJob.organization_id.in_(org_ids))
+        )
         # Phase 1Q-R: staff AI calls leave settled budget reservations.
         await db.execute(
-            delete(AIUsageReservation).where(AIUsageReservation.organization_id.in_(org_ids))
+            delete(AIUsageReservation).where(
+                AIUsageReservation.organization_id.in_(org_ids)
+            )
         )
         await db.execute(
             delete(OrganizationMembership).where(
@@ -211,13 +223,14 @@ async def _make_succeeded_run(
     metrics: dict | None = None,
     case_count: int = 2,
     input_data: dict | None = None,
+    model: str = "test-model",
 ) -> AIEvaluationRun:
     run = await AIEvaluationRepository.create_run(
         db,
         run_id=uuid.uuid4().hex,
         organization_id=organization_id,
         target_type=target_type,
-        model="test-model",
+        model=model,
         embedding_model="test-embed",
         agent_decision_version="2",
         tool_policy_version=1,
@@ -262,7 +275,9 @@ def test_roles_with_manage_also_have_read():
         if Capability.EVALUATION_MANAGE in caps:
             assert Capability.EVALUATION_READ in caps
     assert Capability.EVALUATION_READ not in ROLE_CAPABILITIES[OrganizationRole.VIEWER]
-    assert Capability.EVALUATION_MANAGE not in ROLE_CAPABILITIES[OrganizationRole.VIEWER]
+    assert (
+        Capability.EVALUATION_MANAGE not in ROLE_CAPABILITIES[OrganizationRole.VIEWER]
+    )
 
 
 # ------------------------------------------------------------------ reads: list / detail / cases
@@ -442,7 +457,11 @@ async def test_start_rag_queues_run_and_job(client, two_orgs, db):
     assert run.requested_by_subject == USER_ALPHA
 
     job = (
-        (await db.execute(select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)))
+        (
+            await db.execute(
+                select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -454,7 +473,9 @@ async def test_start_rag_queues_run_and_job(client, two_orgs, db):
     case_rows = (
         (
             await db.execute(
-                select(AIEvaluationCase).where(AIEvaluationCase.organization_id == org_a.id)
+                select(AIEvaluationCase).where(
+                    AIEvaluationCase.organization_id == org_a.id
+                )
             )
         )
         .scalars()
@@ -484,7 +505,11 @@ async def test_start_agent_queues_run_and_job(client, two_orgs, db):
     assert run.target_type == "agent"
 
     job = (
-        (await db.execute(select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)))
+        (
+            await db.execute(
+                select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -495,7 +520,9 @@ async def test_start_agent_queues_run_and_job(client, two_orgs, db):
     case_rows = (
         (
             await db.execute(
-                select(AIEvaluationCase).where(AIEvaluationCase.organization_id == org_a.id)
+                select(AIEvaluationCase).where(
+                    AIEvaluationCase.organization_id == org_a.id
+                )
             )
         )
         .scalars()
@@ -554,14 +581,20 @@ async def test_repeated_start_provisions_independent_runs(client, two_orgs, db):
     runs = (
         (
             await db.execute(
-                select(AIEvaluationRun).where(AIEvaluationRun.organization_id == org_a.id)
+                select(AIEvaluationRun).where(
+                    AIEvaluationRun.organization_id == org_a.id
+                )
             )
         )
         .scalars()
         .all()
     )
     jobs = (
-        (await db.execute(select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)))
+        (
+            await db.execute(
+                select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -650,7 +683,11 @@ async def test_no_pii_in_response_or_queue(client, two_orgs, db):
     }
 
     stacked = (
-        (await db.execute(select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)))
+        (
+            await db.execute(
+                select(IntegrationJob).where(IntegrationJob.organization_id == org_a.id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -700,7 +737,9 @@ async def test_list_baselines_filters_by_target_type(client, two_orgs, db):
     await AIEvaluationService.create_baseline_from_run(
         db, organization_id=org_a.id, run_id=rag_run.run_id
     )
-    agent_run = await _make_succeeded_run(db, organization_id=org_a.id, target_type="agent")
+    agent_run = await _make_succeeded_run(
+        db, organization_id=org_a.id, target_type="agent"
+    )
     await AIEvaluationService.create_baseline_from_run(
         db, organization_id=org_a.id, run_id=agent_run.run_id
     )
@@ -797,12 +836,16 @@ async def test_create_baseline_viewer_denied(client, two_orgs, db):
     )
     assert resp.status_code == 403
 
-    remaining = await AIEvaluationRepository.list_baselines_for_tenant(db, organization_id=org_a.id)
+    remaining = await AIEvaluationRepository.list_baselines_for_tenant(
+        db, organization_id=org_a.id
+    )
     assert remaining == []
 
 
 @pytest.mark.asyncio
-async def test_create_baseline_versions_increment_and_history_kept(client, two_orgs, db):
+async def test_create_baseline_versions_increment_and_history_kept(
+    client, two_orgs, db
+):
     org_a = two_orgs["org_a"]
     run_one = await _make_succeeded_run(db, organization_id=org_a.id, pass_rate=0.8)
     run_two = await _make_succeeded_run(db, organization_id=org_a.id, pass_rate=0.9)
@@ -905,7 +948,9 @@ async def test_compare_different_target_type_is_400(client, two_orgs, db):
     baseline = await AIEvaluationService.create_baseline_from_run(
         db, organization_id=org_a.id, run_id=rag_run.run_id
     )
-    agent_run = await _make_succeeded_run(db, organization_id=org_a.id, target_type="agent")
+    agent_run = await _make_succeeded_run(
+        db, organization_id=org_a.id, target_type="agent"
+    )
 
     resp = await client.get(
         f"/evaluations/runs/{agent_run.run_id}/compare/{baseline.id}",
@@ -964,6 +1009,27 @@ async def test_compare_foreign_baseline_is_404(client, two_orgs, db):
 # ------------------------------------------------------- release decisions (1J.8B)
 
 
+def _provider_activation_manifest():
+    from app.services.model_eval_activation_plan import OperatorActivationPlan
+
+    expiry = datetime.now(UTC) + timedelta(minutes=30)
+    return OperatorActivationPlan.build(
+        environment="development",
+        organization_id=1,
+        public_chat_session_ids=tuple(range(101, 111)),
+        run_id="api-activation",
+        expires_at=expiry,
+        count_billing_status="no_charge",
+        count_billing_evidence_id="synthetic-reviewed-count",
+        count_billing_evidence_expires_at=expiry,
+        count_billing_independently_verified=True,
+        additional_all_in_reserve_usd=0.01,
+        all_in_evidence_id="synthetic-reviewed-all-in",
+        all_in_evidence_expires_at=expiry,
+        all_in_independently_verified=True,
+    ).render()["activation_manifest"]
+
+
 async def _make_baseline_for_org(
     db,
     *,
@@ -1016,6 +1082,99 @@ async def test_manage_can_approve_release_decision(client, two_orgs, db):
     assert body["decided_by_subject"] == USER_ALPHA
     assert body["comparison_snapshot"]["candidate_pass_rate"] == 0.9
     assert "input" not in body
+
+
+@pytest.mark.asyncio
+async def test_manage_can_immutably_review_bounded_provider_activation(
+    client, two_orgs, db
+):
+    org = two_orgs["org_a"]
+    run = await _make_succeeded_run(
+        db, organization_id=org.id, pass_rate=0.9, model="gpt-6-luna"
+    )
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    manifest = _provider_activation_manifest()
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=manifest,
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["comparison_snapshot"]["provider_activation"] == manifest
+
+
+@pytest.mark.asyncio
+async def test_viewer_cannot_review_provider_activation(client, two_orgs, db):
+    org = two_orgs["org_a"]
+    run = await _make_succeeded_run(db, organization_id=org.id)
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        sub=USER_VIEWER,
+        provider_activation=_provider_activation_manifest(),
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_provider_activation_cannot_cross_tenant(client, two_orgs, db):
+    org_a, org_b = two_orgs["org_a"], two_orgs["org_b"]
+    foreign_run = await _make_succeeded_run(db, organization_id=org_b.id)
+    baseline = await _make_baseline_for_org(db, organization_id=org_a.id)
+    response = await _post_release_decision(
+        client,
+        run=foreign_run,
+        baseline=baseline,
+        organization_id=org_a.id,
+        provider_activation=_provider_activation_manifest(),
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_changed_or_production_provider_activation_is_rejected(
+    client,
+    two_orgs,
+    db,
+    monkeypatch,
+):
+    org = two_orgs["org_a"]
+    run = await _make_succeeded_run(db, organization_id=org.id)
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    changed = _provider_activation_manifest()
+    changed["max_attempts"] = 101
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=changed,
+    )
+    assert response.status_code == 400
+    extra = _provider_activation_manifest()
+    extra["count_policy"]["customer_text"] = "must never be persisted"
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=extra,
+    )
+    assert response.status_code == 400
+    monkeypatch.setattr(settings, "environment", "production")
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=_provider_activation_manifest(),
+    )
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -1106,7 +1265,11 @@ async def test_client_cannot_send_organization_id(client, two_orgs, db):
     resp = await client.post(
         f"/evaluations/runs/{run_a.run_id}/release-decision",
         headers=_auth_headers(USER_ALPHA, tenant_id=org_a.id),
-        json={"baseline_id": baseline.id, "decision": "approved", "organization_id": org_b.id},
+        json={
+            "baseline_id": baseline.id,
+            "decision": "approved",
+            "organization_id": org_b.id,
+        },
     )
     assert resp.status_code == 422
 
@@ -1157,7 +1320,9 @@ async def test_queued_candidate_is_400(client, two_orgs, db):
     org_a = two_orgs["org_a"]
     queued_run = await two_orgs["make_run"](org_a.id)
     baseline_run = await _make_succeeded_run(db, organization_id=org_a.id)
-    baseline = await _make_baseline_for_org(db, organization_id=org_a.id, run=baseline_run)
+    baseline = await _make_baseline_for_org(
+        db, organization_id=org_a.id, run=baseline_run
+    )
 
     resp = await _post_release_decision(
         client, run=queued_run, baseline=baseline, organization_id=org_a.id
@@ -1218,7 +1383,9 @@ async def test_list_release_decisions_sees_only_own_tenant(client, two_orgs, db)
     run_b = await _make_succeeded_run(db, organization_id=org_b.id, pass_rate=0.7)
     baseline_b = await _make_baseline_for_org(db, organization_id=org_b.id, run=run_b)
 
-    await _post_release_decision(client, run=run_a, baseline=baseline_a, organization_id=org_a.id)
+    await _post_release_decision(
+        client, run=run_a, baseline=baseline_a, organization_id=org_a.id
+    )
     await _post_release_decision(
         client, run=run_b, baseline=baseline_b, organization_id=org_b.id, sub=USER_BETA
     )
@@ -1306,7 +1473,9 @@ async def test_get_release_decision_detail_and_foreign_404(client, two_orgs, db)
 
 
 @pytest.mark.asyncio
-async def test_release_decision_response_exposes_no_run_input_or_pii(client, two_orgs, db):
+async def test_release_decision_response_exposes_no_run_input_or_pii(
+    client, two_orgs, db
+):
     org_a = two_orgs["org_a"]
     secret_question = "My secret: reset every Friday 9am."
     run_a = await _make_succeeded_run(
@@ -1355,14 +1524,18 @@ async def _blocked_rag_run_and_baseline(db, *, organization_id: int):
     )
     regressed = dict(_RAG_SAFE_METRICS)
     regressed["citation_validity"] = 0.5
-    candidate = await _make_succeeded_run(db, organization_id=organization_id, metrics=regressed)
+    candidate = await _make_succeeded_run(
+        db, organization_id=organization_id, metrics=regressed
+    )
     return candidate, baseline
 
 
 @pytest.mark.asyncio
 async def test_approve_with_critical_regression_is_409(client, two_orgs, db):
     org_a = two_orgs["org_a"]
-    candidate, baseline = await _blocked_rag_run_and_baseline(db, organization_id=org_a.id)
+    candidate, baseline = await _blocked_rag_run_and_baseline(
+        db, organization_id=org_a.id
+    )
 
     resp = await _post_release_decision(
         client, run=candidate, baseline=baseline, organization_id=org_a.id
@@ -1371,15 +1544,21 @@ async def test_approve_with_critical_regression_is_409(client, two_orgs, db):
 
 
 @pytest.mark.asyncio
-async def test_blocked_approve_response_contains_safe_stable_message(client, two_orgs, db):
+async def test_blocked_approve_response_contains_safe_stable_message(
+    client, two_orgs, db
+):
     org_a = two_orgs["org_a"]
-    candidate, baseline = await _blocked_rag_run_and_baseline(db, organization_id=org_a.id)
+    candidate, baseline = await _blocked_rag_run_and_baseline(
+        db, organization_id=org_a.id
+    )
 
     resp = await _post_release_decision(
         client, run=candidate, baseline=baseline, organization_id=org_a.id
     )
     assert resp.status_code == 409
-    assert resp.json()["detail"] == "Approval blocked by critical evaluation regression."
+    assert (
+        resp.json()["detail"] == "Approval blocked by critical evaluation regression."
+    )
     assert "citation_validity" not in resp.text
     assert "regressed" not in resp.text
     assert "0.5" not in resp.text
@@ -1389,7 +1568,9 @@ async def test_blocked_approve_response_contains_safe_stable_message(client, two
 @pytest.mark.asyncio
 async def test_blocked_approve_writes_no_decision(client, two_orgs, db):
     org_a = two_orgs["org_a"]
-    candidate, baseline = await _blocked_rag_run_and_baseline(db, organization_id=org_a.id)
+    candidate, baseline = await _blocked_rag_run_and_baseline(
+        db, organization_id=org_a.id
+    )
 
     resp = await _post_release_decision(
         client, run=candidate, baseline=baseline, organization_id=org_a.id
@@ -1405,7 +1586,9 @@ async def test_blocked_approve_writes_no_decision(client, two_orgs, db):
 @pytest.mark.asyncio
 async def test_reject_on_same_blocked_comparison_is_201(client, two_orgs, db):
     org_a = two_orgs["org_a"]
-    candidate, baseline = await _blocked_rag_run_and_baseline(db, organization_id=org_a.id)
+    candidate, baseline = await _blocked_rag_run_and_baseline(
+        db, organization_id=org_a.id
+    )
 
     resp = await _post_release_decision(
         client,
@@ -1427,7 +1610,9 @@ async def test_reject_on_same_blocked_comparison_is_201(client, two_orgs, db):
 @pytest.mark.asyncio
 async def test_blocked_approve_authorization_unchanged(client, two_orgs, db):
     org_a = two_orgs["org_a"]
-    candidate, baseline = await _blocked_rag_run_and_baseline(db, organization_id=org_a.id)
+    candidate, baseline = await _blocked_rag_run_and_baseline(
+        db, organization_id=org_a.id
+    )
 
     resp = await _post_release_decision(
         client,

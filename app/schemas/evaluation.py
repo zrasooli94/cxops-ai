@@ -252,6 +252,7 @@ class EvaluationReleaseDecisionCreate(BaseModel):
     baseline_id: int
     decision: Literal["approved", "rejected"]
     note: str | None = Field(default=None, max_length=1000)
+    provider_activation: dict | None = None
 
     model_config = ConfigDict(extra="forbid")
 

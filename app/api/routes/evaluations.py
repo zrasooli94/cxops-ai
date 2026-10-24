@@ -421,6 +421,7 @@ async def create_release_decision(
             decision=data.decision,
             decided_by_subject=authz.subject,
             note=data.note,
+            provider_activation=data.provider_activation,
         )
     except ValueError as exc:
         raise _value_error_to_http(exc) from None

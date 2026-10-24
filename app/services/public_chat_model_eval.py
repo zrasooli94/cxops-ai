@@ -40,6 +40,123 @@ from app.services.offline_grounded_chat import offline_grounded_chat
 ACTIVATION_PURPOSE = "controlled_public_chat_model_evaluation"
 
 
+def validate_activation_manifest(manifest: dict) -> dict:
+    """Validate the bounded manifest an authenticated manager reviewed."""
+    if not isinstance(manifest, dict):
+        raise EvaluationBlockedError("evaluation activation manifest is invalid")
+    manifest_keys = {
+        "purpose",
+        "public_chat_session_ids",
+        "max_turns",
+        "max_attempts",
+        "cost_ceiling_usd",
+        "model",
+        "service_tier",
+        "max_input_tokens",
+        "max_output_tokens",
+        "generation_input_rate_per_million_usd",
+        "generation_output_rate_per_million_usd",
+        "generation_price_multiplier",
+        "generation_reservation_all_attempts_usd",
+        "additional_all_in_reserve_usd",
+        "all_in_evidence_id",
+        "all_in_evidence_expires_at",
+        "all_in_evidence_verification",
+        "count_policy",
+        "combined_reservation_usd",
+        "expires_at",
+    }
+    count_keys = {
+        "endpoint",
+        "model",
+        "region",
+        "billing_status_claim",
+        "evidence_url",
+        "evidence_verification",
+        "evidence_id",
+        "evidence_expires_at",
+        "explicitly_approved",
+        "reservation_per_attempt_usd",
+        "reservation_all_attempts_usd",
+    }
+    if set(manifest) != manifest_keys or not isinstance(
+        manifest.get("count_policy"), dict
+    ):
+        raise EvaluationBlockedError("evaluation activation manifest is invalid")
+    if set(manifest["count_policy"]) != count_keys:
+        raise EvaluationBlockedError("evaluation activation manifest is invalid")
+    try:
+        expiry = datetime.fromisoformat(
+            str(manifest["expires_at"]).replace("Z", "+00:00")
+        )
+        count = manifest["count_policy"]
+        count_expiry = datetime.fromisoformat(
+            str(count["evidence_expires_at"]).replace("Z", "+00:00")
+        )
+        all_in_expiry = datetime.fromisoformat(
+            str(manifest["all_in_evidence_expires_at"]).replace("Z", "+00:00")
+        )
+        sessions = manifest["public_chat_session_ids"]
+        reservation = count["reservation_per_attempt_usd"]
+        additional = manifest["additional_all_in_reserve_usd"]
+    except (KeyError, TypeError, ValueError):
+        raise EvaluationBlockedError(
+            "evaluation activation manifest is invalid"
+        ) from None
+    billing = count.get("billing_status_claim")
+    fixed = {
+        "purpose": ACTIVATION_PURPOSE,
+        "max_turns": 50,
+        "max_attempts": 100,
+        "cost_ceiling_usd": 0.10,
+        "model": "gpt-6-luna",
+        "service_tier": "default",
+        "max_input_tokens": 3000,
+        "max_output_tokens": 500,
+        "generation_input_rate_per_million_usd": 0.10,
+        "generation_output_rate_per_million_usd": 0.50,
+        "generation_price_multiplier": 1.10,
+        "generation_reservation_all_attempts_usd": 0.0605,
+    }
+    valid = (
+        all(manifest.get(key) == value for key, value in fixed.items())
+        and isinstance(sessions, list)
+        and len(sessions) == len(set(sessions)) == 10
+        and all(
+            isinstance(item, int) and not isinstance(item, bool) and item > 0
+            for item in sessions
+        )
+        and count.get("endpoint") == "https://api.openai.com/v1/responses/input_tokens"
+        and count.get("model") == "gpt-6-luna"
+        and count.get("region") == "standard"
+        and billing in {"billable", "no_charge"}
+        and count.get("evidence_verification") == "independently_verified"
+        and count.get("explicitly_approved") is True
+        and bool(str(count.get("evidence_id", "")).strip())
+        and isinstance(reservation, (int, float))
+        and not isinstance(reservation, bool)
+        and (
+            (billing == "billable" and reservation > 0)
+            or (billing == "no_charge" and reservation == 0)
+        )
+        and count.get("reservation_all_attempts_usd") == round(reservation * 100, 6)
+        and isinstance(additional, (int, float))
+        and not isinstance(additional, bool)
+        and additional >= 0
+        and bool(str(manifest.get("all_in_evidence_id", "")).strip())
+        and manifest.get("all_in_evidence_verification") == "independently_verified"
+        and manifest.get("combined_reservation_usd")
+        == round(0.0605 + reservation * 100 + additional, 6)
+        and all(
+            item.tzinfo is not None and item > datetime.now(UTC)
+            for item in (expiry, count_expiry, all_in_expiry)
+        )
+    )
+    if not valid:
+        raise EvaluationBlockedError("evaluation activation manifest is not approved")
+    return json.loads(json.dumps(manifest, ensure_ascii=False, sort_keys=True))
+
+
 class SnapshotSessionGuard:
     """Check handoff without holding a database lock across provider I/O."""
 
@@ -106,8 +223,8 @@ class PersistedEvaluationActivationGuard:
             raise EvaluationBlockedError("durable evaluation approval is missing")
         run, decision = row
         manifest = (
-            run.input.get("provider_activation")
-            if isinstance(run.input, dict)
+            decision.comparison_snapshot.get("provider_activation")
+            if isinstance(decision.comparison_snapshot, dict)
             else None
         )
         try:
@@ -134,7 +251,6 @@ class PersistedEvaluationActivationGuard:
             or decision.decision != "approved"
             or not decision.decided_by_subject
             or not isinstance(decision.comparison_snapshot, dict)
-            or decision.comparison_snapshot.get("provider_activation") != manifest
             or not isinstance(manifest, dict)
             or manifest.get("purpose") != ACTIVATION_PURPOSE
             or manifest.get("max_turns") != 50

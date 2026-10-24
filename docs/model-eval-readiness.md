@@ -33,16 +33,18 @@ rejects true.
 
 The durable approval is not a widget or owner-studio request field. It is the
 latest immutable-by-application tenant-owned `AIEvaluationReleaseDecision` for
-the configured run. That decision snapshot must contain an exact copy of the
-bounded activation manifest stored on the run, so later run-input mutation
-invalidates activation. The manifest binds ten synthetic public-chat sessions
+the configured run. That authenticated decision snapshot is the authoritative,
+immutable copy of the server-validated manifest; run input is not trusted for
+activation. The manifest binds ten synthetic public-chat sessions
 (five turns each), expires, and retains the 50-turn/100-attempt/US$0.10 limits.
 A session outside that set or another tenant falls through to the existing responder instead of being
 disrupted. This reuses existing records and adds no migration or public approval
-endpoint. The planner cannot write the immutable snapshot: the current data
-model has no authenticated operator command that can bind independently
-reviewed billing/all-in evidence and the owner's execution approval without
-self-asserted CLI flags. Activation therefore remains NO-GO.
+endpoint. An authenticated tenant member with `evaluation.manage` may attach
+the exact reviewed manifest only while recording an approved release decision.
+The server validates every bound field and copies it into the immutable
+decision snapshot; tenant and deciding subject still come exclusively from the
+authenticated context. Ordinary release decisions are unchanged. This records
+review but does not install a provider or execute the evaluation.
 
 The route-level test is reproducible with:
 
@@ -180,9 +182,11 @@ attempts and requires positive headroom below US$0.10. Use `no_charge` only with
 an official OpenAI developer URL that explicitly establishes that status;
 absence of published pricing is `unresolved`, never free.
 
-The URL and billing status remain operator-supplied, unverified inputs: this
-offline tool cannot certify their contents. It therefore always retains an
-independent-authoritative-verification blocker. The complete count policy,
+The URL and billing status remain operator-supplied, unverified planner inputs:
+this offline tool cannot certify or persist them. An authenticated
+`evaluation.manage` principal becomes the authoritative attestor only after
+actually reviewing the referenced evidence and approving the exact manifest;
+that action still does not authorize execution. The complete count policy,
 evidence identity, per-attempt reservation and combined reservation are included
 in the same proposed decision snapshot as the generation limits.
 
@@ -247,11 +251,11 @@ separately unauthorized and undone.
 The source contains a disabled process-scoped composition:
 `installed_development_evaluation_provider` installs count and generation only
 for one local process lifetime and derives environment/feature gates from
-validated server settings. Application startup does not call it. The missing
-source decision is an authenticated operator path (or an existing trusted
-approval record) that can create the immutable snapshot without treating
-operator-supplied booleans as evidence or owner approval. After that decision
-and the remaining evidence/approval gates are satisfied, an operator must:
+validated server settings. Application startup does not call it. The existing
+authenticated `evaluation.manage` release-decision endpoint is the sole path
+that can attest and persist the bounded manifest; public chat and the planner
+cannot do so. After evidence/account gates and explicit execution approval are
+satisfied, an operator must:
 
 1. use only `ENVIRONMENT=development` and a disposable synthetic tenant/session;
 2. inject the restricted credential out of band, verify project/model access,
