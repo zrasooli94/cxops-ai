@@ -477,6 +477,84 @@ it remains offline and produces no model-quality score.
 Mocks verify contracts and failure handling only. They do not demonstrate model
 quality, factual entailment, account access, pricing accuracy, or paid spend.
 
+### Single 50-turn operator command
+
+The composed runner is `scripts.run_controlled_chat_model_evaluation`. It creates
+ten fresh local sessions in canonical fixture order, prints the exact
+session-bound manifest and request/cost assumptions, and stops by default. It
+never accepts a key in argv, an environment variable, a file, or a pipe.
+
+Offline preflight (both provider flags remain false):
+
+```bash
+ENVIRONMENT=development uv run python -m scripts.run_controlled_chat_model_evaluation \
+  --organization-id <SYNTHETIC_TENANT_ID> \
+  --widget-key <LOCAL_SYNTHETIC_WIDGET_KEY> \
+  --embedding-origin <EXACT_LOCAL_ALLOWED_ORIGIN> \
+  --run-id <OFFLINE_RAG_CANDIDATE_RUN_ID> \
+  --expires-at <UTC_5_TO_120_MINUTES_FROM_NOW> \
+  --count-evidence-id <REVIEWED_COUNT_EVIDENCE_ID> \
+  --count-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
+  --all-in-evidence-id <REVIEWED_ALL_IN_BUDGET_EVIDENCE_ID> \
+  --all-in-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
+  --additional-all-in-reserve-usd 0.00484
+```
+
+The preflight reports `approval_status: not_checked`, does not prompt for a key,
+and performs no provider request. Fresh session tokens remain process-local and
+are never printed. Its illustrative sessions are closed in `finally`; a live
+run keeps the same process open through approval and attempts to close every
+session on success, rejection, interruption, or error. Cleanup failures are reported as
+a bounded count and must be reconciled locally; they are not silently called a
+successful cleanup.
+
+For a separately authorized live run, add `--execute-live` and set the two
+development flags only for that process:
+
+```bash
+ENVIRONMENT=development \
+MODEL_EVAL_OPENAI_SOURCE_ENABLED=true \
+PUBLIC_CHAT_MODEL_EVAL_ENABLED=true \
+uv run python -m scripts.run_controlled_chat_model_evaluation \
+  --organization-id <SYNTHETIC_TENANT_ID> \
+  --widget-key <LOCAL_SYNTHETIC_WIDGET_KEY> \
+  --embedding-origin <EXACT_LOCAL_ALLOWED_ORIGIN> \
+  --run-id <OFFLINE_RAG_CANDIDATE_RUN_ID> \
+  --expires-at <UTC_5_TO_120_MINUTES_FROM_NOW> \
+  --count-evidence-id <REVIEWED_COUNT_EVIDENCE_ID> \
+  --count-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
+  --all-in-evidence-id <REVIEWED_ALL_IN_BUDGET_EVIDENCE_ID> \
+  --all-in-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
+  --additional-all-in-reserve-usd 0.00484 \
+  --execute-live
+```
+
+The command prints the exact manifest and pauses. While it remains open, an
+independently authenticated owner with `evaluation.manage` submits an
+`approved` release decision for the candidate through
+`POST /evaluations/runs/<RUN_ID>/release-decision`, using the printed manifest
+unchanged as `provider_activation` and the legitimate offline RAG baseline id.
+The runner then re-reads and validates that tenant/run/session-bound decision
+before constructing an HTTP client or opening the masked key prompt. A caller
+cannot substitute request flags for the authenticated decision. Evidence ids
+and verification claims printed before that decision are operator proposals,
+not trust anchors; they become usable only when the authenticated reviewer
+approves the exact immutable snapshot.
+
+Only after that recheck does the same process request the existing restricted
+key through `getpass`, install the provider for the context lifetime, execute
+the frozen turns in order, and remove the provider/client on exit. A denied
+approval, interrupt, count/generation ambiguity, exhausted reservation, changed
+evidence, handoff, or tenant mismatch fails closed. Ambiguous reservations are
+not refunded. The offline mocked integration drives all 50 ordered turns across
+ten sessions through the composed disconnected provider and real public-chat
+service on disposable PostgreSQL, then verifies persisted transcripts,
+reservations and 50 fixture-linked cases. It does not measure genuine model
+quality. The runner stores a separate tenant-owned
+fixture-linked protocol record (status, handoff, reply presence, citation
+contract enforcement, and no raw customer text); naturalness, factual quality,
+and multilingual quality remain manually scored after the genuine run.
+
 ## Public schema evidence (checked 2026-10-22)
 
 The disabled seam follows the official Responses create reference at

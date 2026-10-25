@@ -47,7 +47,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from prometheus_client import generate_latest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 os.environ["AUTH_MODE"] = "hs256"
@@ -3173,6 +3173,106 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         organization_id=foreign_org.id,
         session_id=session.id,
     )
+
+    # The operator runner drives the complete frozen 10x5 flow through the
+    # actual service and persists a separate protocol record. The response wire
+    # remains synthetic and therefore proves mechanics, never model quality.
+    from scripts import run_controlled_chat_model_evaluation as controlled_runner
+    from scripts.plan_chat_model_evaluation import expanded_turns
+
+    all_fixture_text = " ".join(turn["prompt"] for turn in expanded_turns())
+    _, runner_chunk_id = await _seed_offline_knowledge(
+        db,
+        org.id,
+        content=f"Synthetic evaluation reference. {all_fixture_text}",
+    )
+    runner_tokens = []
+    runner_session_ids = []
+    for _ in range(10):
+        created_runner_session = await _create_session(client, key)
+        runner_token = created_runner_session["session"]["token"]
+        runner_tokens.append(runner_token)
+        runner_row = await db.scalar(
+            select(PublicChatSession).where(
+                PublicChatSession.token_hash == hash_digest(runner_token),
+                PublicChatSession.organization_id == org.id,
+            )
+        )
+        runner_session_ids.append(runner_row.id)
+    runner_activation = json.loads(json.dumps(activation))
+    runner_activation["public_chat_session_ids"] = runner_session_ids
+    db.add(
+        AIEvaluationReleaseDecision(
+            organization_id=org.id,
+            candidate_run_id=run.id,
+            baseline_id=baseline.id,
+            decision="approved",
+            decided_by_subject="owner:synthetic-runner-test",
+            comparison_snapshot={
+                "synthetic": True,
+                "provider_activation": runner_activation,
+            },
+        )
+    )
+    await db.commit()
+    runner_transport = _SyntheticResponsesTransport(f"offline:{runner_chunk_id}")
+    runner_provider = PublicChatModelEvaluationProvider(
+        run_id=run.run_id,
+        count_policy=InputTokenCountPolicy(
+            endpoint="https://api.openai.com/v1/responses/input_tokens",
+            model="gpt-6-luna",
+            region="standard",
+            reservation_per_attempt_usd=0.00001,
+            evidence_id="synthetic-test-evidence",
+            evidence_expires_at=count_evidence_expires_at,
+            independently_verified=True,
+            explicitly_approved=True,
+        ),
+        count_transport=_SyntheticFullRequestCounter(),
+        adapter=ProviderDisconnectedResponsesAdapter(
+            transport=runner_transport,
+            explicitly_approved=True,
+        ),
+    )
+    monkeypatch.setattr(
+        type(public_chat_service), "model_evaluation_provider", runner_provider
+    )
+    fixture_ids = list(
+        dict.fromkeys(turn["conversation_id"] for turn in expanded_turns())
+    )
+    runner_bindings = [
+        controlled_runner.SessionBinding(fixture_id, session_id, runner_token)
+        for fixture_id, session_id, runner_token in zip(
+            fixture_ids, runner_session_ids, runner_tokens, strict=True
+        )
+    ]
+    completed = await controlled_runner._execute_turns(
+        runner_bindings,
+        organization_id=org.id,
+        approved_run_id=run.run_id,
+        activation_manifest=runner_activation,
+        embedding_origin=ALLOWED_ORIGIN,
+    )
+    assert completed["turns_attempted"] == 50
+    assert completed["sessions"] == 10
+    assert completed["quality_scores"] is None
+    persisted_runner = await db.scalar(
+        select(AIEvaluationRun).where(
+            AIEvaluationRun.run_id == completed["execution_run_id"],
+            AIEvaluationRun.organization_id == org.id,
+        )
+    )
+    assert persisted_runner is not None
+    assert persisted_runner.metrics["turns_attempted"] == 50
+    persisted_cases = await db.scalar(
+        select(func.count())
+        .select_from(AIEvaluationCase)
+        .where(
+            AIEvaluationCase.run_id == persisted_runner.id,
+            AIEvaluationCase.organization_id == org.id,
+        )
+    )
+    assert persisted_cases == 50
 
 
 @pytest.mark.asyncio
