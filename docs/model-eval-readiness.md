@@ -13,6 +13,47 @@ Token admission must count the fully serialized system instructions, all linked
 history, retrieved evidence, current message, and response framing; prompt-only
 byte checks are fixture sanity checks and cannot admit a real request.
 
+## Frozen offline plan identity
+
+The source-only evaluation plan was frozen on 2026-10-25 at repository
+checkpoint `e4665c07b222c8cf2a285d87d23e49638b64d403`:
+
+- specification source `scripts/plan_chat_model_evaluation.py` SHA-256:
+  `80fec287a8e0c20e0476e34cf1399e4162abf3a7ab96751e1699fa499e42d3b6`;
+- rendered JSON SHA-256:
+  `99a79f752b22ce1b1d9053c34a1ff30c1bbe55dec4fa9e05c7f888a199da0f4c`;
+- ten independent conversations, five turns each, with 25 English and 25
+  Persian user turns;
+- 3,000 full-request input tokens and 500 total output tokens per generation
+  attempt, with at most two attempts per turn and 100 generation attempts total.
+
+The 500-token output ceiling includes visible answer and non-visible reasoning
+tokens. Each generation attempt first makes one exact full-request count call,
+so the external-request ceiling is 100 count calls plus 100 generation calls,
+not 100 combined HTTP calls. A count call is separately capped and reserved;
+under the reviewed case-18041142 evidence its planned reservation is zero, but
+an ambiguous count still retains its reservation identity and stops the run.
+The counted canonical request includes the serialized instructions, all bounded
+conversation history, retrieved tenant evidence, current message, structured
+response schema and other Responses framing. A count above 3,000 blocks
+generation.
+
+The immutable tenant/session/run activation manifest is intentionally not
+created during offline preflight. The current disposable database has no
+evaluation run or release decision, and its existing sessions contain prior
+messages or handoff/closed state. Exactly ten fresh synthetic sessions, the
+matching offline RAG contract baseline/candidate and authenticated `evaluation.manage`
+release decision must be created immediately before an approved execution. The
+manifest expiry is limited to five minutes through two hours; binding current
+stale sessions or pre-creating a decision before final authorization would be
+unsafe. The exact manifest and its canonical hash must be shown in the final
+execution record before either activation flag changes.
+
+The normal legacy `AIEvaluationService.run_rag_evaluation` provider path is not
+used for this prerequisite because it can generate billable traffic outside the
+controlled ledger. The provider-free contract path described below replaces it
+without representing deterministic retrieval as real model evidence.
+
 The planner also performs a deterministic mocked replay. It appends a synthetic
 assistant outcome after every user turn, carries all prior user/assistant entries
 forward, verifies expected citation IDs, and enforces silence after mocked
@@ -283,6 +324,48 @@ The planner does not inspect whether the variable exists and never reads its
 value. Credential creation, injection, and account/model access checks remain
 separately unauthorized and undone.
 
+The prepared secret-entry boundary is
+`app.services.model_eval_operator_secret.run_with_operator_api_key`. It accepts
+the existing key only from a masked interactive terminal prompt, rejects
+non-TTY input before prompting, and treats any `getpass` visible-input fallback
+as an error. It does not read argv, environment variables, files, Keychain, or
+the clipboard. The supplied callback must perform the separately authorized
+operation in that same process; the key is not staged for later use. Python
+strings cannot be guaranteed to be zeroized, and this design cannot protect
+against root/admin tooling, debuggers, or sufficiently privileged same-user
+applications. No caller should invoke the prompt until credential entry and the
+immediately following operation are both authorized.
+
+The safe command available now is preflight-only and never prompts:
+
+```sh
+uv run python -m scripts.preflight_controlled_eval_secret_entry
+```
+
+The separately reviewed one-shot metadata launcher is now
+`scripts.verify_controlled_eval_model_access`. It fails before prompting unless
+the environment is development and both activation flags are false. Its sole
+operation is one fixed, non-redirecting, no-retry HTTPS `GET` to
+`https://api.openai.com/v1/models/gpt-6-luna`; it neither counts tokens nor
+creates a Response. The owner must run it manually in a private terminal only
+after that exact operation is authorized:
+
+```sh
+cd /ABSOLUTE/PATH/TO/cxops-ai
+env -u OPENAI_API_KEY -u EVALUATION_OPENAI_API_KEY \
+  ENVIRONMENT=development \
+  MODEL_EVAL_OPENAI_SOURCE_ENABLED=false \
+  PUBLIC_CHAT_MODEL_EVAL_ENABLED=false \
+  UV_CACHE_DIR=/tmp/cxops-uv-cache \
+  uv run python -m scripts.verify_controlled_eval_model_access
+```
+
+It prints only `http_status`, `metadata_accessible`, and a sanitized
+`error_category`, then exits. An uncertain timeout/network outcome is not
+retried. The key exists only for that process invocation; a later controlled
+evaluation requires another explicit masked entry and separate execution
+approval.
+
 OpenAI's [prepaid billing guidance](https://help.openai.com/en/articles/8264644-setting-up-and-managing-prepaid-api-billing)
 states that prepaid purchases/recharges have a US$5 minimum, auto-recharge can
 be enabled during setup, a configured threshold can trigger a purchase, and
@@ -292,6 +375,44 @@ future preflight must establish that usable existing credit is sufficient and
 that the run will not trigger recharge; otherwise it remains NO-GO.
 
 ## Development-only composition and rollback
+
+### Zero-provider RAG prerequisite
+
+The former activation prerequisite required a successful manual
+`gpt-6-luna` RAG run through the legacy evaluator. That path uses the ordinary
+ChatOpenAI configuration and is outside the controlled reservation ledger, so
+it is not an acceptable prerequisite for this US$0.10 run.
+
+The replacement is `offline-grounded-contract-v1`: a persisted, tenant-scoped
+lexical retrieval/citation contract run. It executes real current knowledge
+lookups, records cases and critical metrics, costs zero provider requests, and
+is explicitly **not** model-quality evidence. A matching baseline and candidate
+must carry the same SHA-256 fixture identity. The ordinary authenticated
+`evaluation.manage` decision remains mandatory and binds the separate
+`gpt-6-luna` activation manifest; neither the runner nor a public request can
+self-approve it.
+
+For a disposable synthetic development tenant, prepare a JSON list whose cases
+contain `id`, `question`, `expected_source_id`, and optional
+`previous_customer_question`, then run:
+
+```sh
+ENVIRONMENT=development python -m scripts.run_offline_rag_prerequisite \
+  --organization-id ORG --subject OPERATOR_SUPPLIED_AUDIT_LABEL \
+  --cases /PRIVATE/PATH/synthetic-rag-cases.json --mode baseline
+
+ENVIRONMENT=development python -m scripts.run_offline_rag_prerequisite \
+  --organization-id ORG --subject OPERATOR_SUPPLIED_AUDIT_LABEL \
+  --cases /PRIVATE/PATH/synthetic-rag-cases.json --mode candidate \
+  --baseline-id BASELINE_ID
+```
+
+The CLI audit label is not authentication and cannot approve activation. The
+commands do not construct a provider client or read a credential. Only an
+authenticated owner with `evaluation.manage` may subsequently review the
+candidate and exact activation manifest through the existing release-decision
+API. A changed fixture, foreign tenant, regressed critical metric, production
+environment, expired evidence, or changed manifest fails closed.
 
 The source contains a disabled process-scoped composition:
 `installed_development_evaluation_provider` installs count and generation only

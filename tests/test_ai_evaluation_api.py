@@ -224,6 +224,8 @@ async def _make_succeeded_run(
     case_count: int = 2,
     input_data: dict | None = None,
     model: str = "test-model",
+    embedding_model: str = "test-embed",
+    corpus_revision: dict | None = None,
 ) -> AIEvaluationRun:
     run = await AIEvaluationRepository.create_run(
         db,
@@ -231,20 +233,38 @@ async def _make_succeeded_run(
         organization_id=organization_id,
         target_type=target_type,
         model=model,
-        embedding_model="test-embed",
+        embedding_model=embedding_model,
         agent_decision_version="2",
         tool_policy_version=1,
-        corpus_revision={"documents": 3},
+        corpus_revision=corpus_revision or {"documents": 3},
         status="running",
         input_data=input_data,
     )
     for index in range(case_count):
+        offline_contract = model == "offline-grounded-contract-v1"
         await AIEvaluationRepository.add_case(
             db,
             run_id=run.run_id,
             organization_id=organization_id,
             case_id=f"c-{index}-{uuid.uuid4().hex[:6]}",
             case_type=target_type,
+            dimensions=(
+                {
+                    "passed": True,
+                    "retrieval_hit": True,
+                    "grounding_correct": True,
+                    "citation_valid": True,
+                }
+                if offline_contract
+                else None
+            ),
+            total_tokens=0 if offline_contract else None,
+            estimated_cost_usd=0 if offline_contract else None,
+            fingerprint=(
+                corpus_revision["offline_contract_fixture_sha256"]
+                if offline_contract and corpus_revision
+                else None
+            ),
         )
     updated = await AIEvaluationRepository.update_run(
         db,
@@ -1086,11 +1106,36 @@ async def test_manage_can_approve_release_decision(client, two_orgs, db):
 
 @pytest.mark.asyncio
 async def test_manage_can_immutably_review_bounded_provider_activation(
-    client, two_orgs, db
+    client, two_orgs, db, monkeypatch
 ):
+    async def _validated(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        "app.services.model_eval_rag_prerequisite.validate_persisted_offline_rag_contract",
+        _validated,
+    )
     org = two_orgs["org_a"]
     run = await _make_succeeded_run(
-        db, organization_id=org.id, pass_rate=0.9, model="gpt-6-luna"
+        db,
+        organization_id=org.id,
+        pass_rate=1.0,
+        metrics={
+            "total_cases": 2,
+            "passed_cases": 2,
+            "retrieval_accuracy": 1.0,
+            "grounding_accuracy": 1.0,
+            "citation_validity": 1.0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+        },
+        model="offline-grounded-contract-v1",
+        embedding_model="none-lexical",
+        corpus_revision={
+            "offline_contract_fixture_sha256": "a" * 64,
+            "offline_contract_corpus_sha256": "b" * 64,
+            "offline_contract_case_count": 2,
+        },
     )
     baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
     manifest = _provider_activation_manifest()
@@ -1103,6 +1148,43 @@ async def test_manage_can_immutably_review_bounded_provider_activation(
     )
     assert response.status_code == 201, response.text
     assert response.json()["comparison_snapshot"]["provider_activation"] == manifest
+
+
+@pytest.mark.asyncio
+async def test_identically_failing_offline_contract_cannot_activate(client, two_orgs, db):
+    org = two_orgs["org_a"]
+    revision = {
+        "offline_contract_fixture_sha256": "a" * 64,
+        "offline_contract_corpus_sha256": "b" * 64,
+        "offline_contract_case_count": 2,
+    }
+    metrics = {
+        "total_cases": 2,
+        "passed_cases": 0,
+        "retrieval_accuracy": 0.0,
+        "grounding_accuracy": 0.0,
+        "citation_validity": 0.0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+    run = await _make_succeeded_run(
+        db,
+        organization_id=org.id,
+        pass_rate=0,
+        metrics=metrics,
+        model="offline-grounded-contract-v1",
+        embedding_model="none-lexical",
+        corpus_revision=revision,
+    )
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=_provider_activation_manifest(),
+    )
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio

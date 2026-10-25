@@ -1252,6 +1252,10 @@ class AIEvaluationService:
                     "provider activation is development-only and requires approval"
                 )
             from app.services.model_eval_controller import EvaluationBlockedError
+            from app.services.model_eval_rag_prerequisite import (
+                is_offline_rag_contract_run,
+                validate_persisted_offline_rag_contract,
+            )
             from app.services.public_chat_model_eval import validate_activation_manifest
 
             try:
@@ -1259,12 +1263,16 @@ class AIEvaluationService:
             except EvaluationBlockedError as exc:
                 raise ValueError(str(exc)) from None
             if (
-                run.target_type != "rag"
-                or run.model != "gpt-6-luna"
-                or run.trigger_source != "manual"
+                not await validate_persisted_offline_rag_contract(
+                    db, organization_id=organization_id, run=run
+                )
+                or not is_offline_rag_contract_run(baseline)
+                or run.corpus_revision != baseline.corpus_revision
+                or baseline.cases_count
+                != run.corpus_revision["offline_contract_case_count"]
             ):
                 raise ValueError(
-                    "provider activation requires a manual gpt-6-luna RAG run"
+                    "provider activation requires matching offline RAG contract baseline and candidate"
                 )
             snapshot["provider_activation"] = validated_activation
         return await AIEvaluationRepository.create_release_decision(

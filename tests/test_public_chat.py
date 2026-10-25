@@ -69,6 +69,7 @@ from app.main import app
 from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
 from app.models.ai_evaluation_baseline import AIEvaluationBaseline
+from app.models.ai_evaluation_case import AIEvaluationCase
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_usage_reservation import AIUsageReservation
@@ -2870,6 +2871,13 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     monkeypatch,
 ):
     """The real route is composable with a fake wire, but never caller-enabled."""
+    async def _validated_contract(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        "app.services.public_chat_model_eval.validate_persisted_offline_rag_contract",
+        _validated_contract,
+    )
     org = await org_scope()
     _, key = await _make_widget_config(db, org, grounded_auto_reply_enabled=True)
     _, chunk_id = await _seed_offline_knowledge(
@@ -2939,11 +2947,26 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         organization_id=org.id,
         target_type="rag",
         status="succeeded",
-        model="gpt-6-luna",
+        model="offline-grounded-contract-v1",
+        embedding_model="none-lexical",
+        corpus_revision={
+            "offline_contract_fixture_sha256": "a" * 64,
+            "offline_contract_corpus_sha256": "b" * 64,
+            "offline_contract_case_count": 1,
+        },
         trigger_source="manual",
         requested_by_subject="owner:test",
         input={"provider_activation": activation},
-        metrics={},
+        pass_rate=1.0,
+        metrics={
+            "total_cases": 1,
+            "passed_cases": 1,
+            "retrieval_accuracy": 1.0,
+            "grounding_accuracy": 1.0,
+            "citation_validity": 1.0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+        },
     )
     db.add(run)
     await db.flush()
@@ -2951,14 +2974,40 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         organization_id=org.id,
         target_type="rag",
         version="controlled-v1",
-        model="gpt-6-luna",
+        model="offline-grounded-contract-v1",
+        embedding_model="none-lexical",
+        corpus_revision={
+            "offline_contract_fixture_sha256": "a" * 64,
+            "offline_contract_corpus_sha256": "b" * 64,
+            "offline_contract_case_count": 1,
+        },
         pass_rate=1.0,
-        metrics={},
-        cases_count=50,
+        metrics=run.metrics,
+        cases_count=1,
         created_by_subject="owner:test",
         promoted=False,
     )
     db.add(baseline)
+    await db.flush()
+    db.add(
+        AIEvaluationCase(
+            run_id=run.id,
+            organization_id=org.id,
+            case_id="offline-contract-case",
+            case_type="rag",
+            expected={},
+            actual={},
+            dimensions={
+                "passed": True,
+                "retrieval_hit": True,
+                "grounding_correct": True,
+                "citation_valid": True,
+            },
+            total_tokens=0,
+            estimated_cost_usd=0,
+            fingerprint="a" * 64,
+        )
+    )
     await db.flush()
     db.add(
         AIEvaluationReleaseDecision(

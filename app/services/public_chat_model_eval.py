@@ -35,6 +35,9 @@ from app.services.model_eval_openai_adapter import (
     GroundedTurn,
     ProviderDisconnectedResponsesAdapter,
 )
+from app.services.model_eval_rag_prerequisite import (
+    validate_persisted_offline_rag_contract,
+)
 from app.services.offline_grounded_chat import offline_grounded_chat
 
 ACTIVATION_PURPOSE = "controlled_public_chat_model_evaluation"
@@ -244,9 +247,9 @@ class PersistedEvaluationActivationGuard:
             ) from None
         if (
             run.status != "succeeded"
-            or run.target_type != "rag"
-            or run.trigger_source != "manual"
-            or run.model != "gpt-6-luna"
+            or not await validate_persisted_offline_rag_contract(
+                db, organization_id=organization_id, run=run
+            )
             or not run.requested_by_subject
             or decision.decision != "approved"
             or not decision.decided_by_subject
