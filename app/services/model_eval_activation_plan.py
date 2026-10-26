@@ -32,6 +32,10 @@ class OperatorActivationPlan:
     all_in_evidence_id: str | None = None
     all_in_evidence_expires_at: str | None = None
     all_in_independently_verified: bool = False
+    frozen_fixture_sha256: str = ""
+    evaluation_spec_sha256: str = ""
+    runner_source_sha256: str = ""
+    reviewed_source_commit: str = ""
 
     @classmethod
     def build(
@@ -52,6 +56,10 @@ class OperatorActivationPlan:
         all_in_evidence_id: str | None = None,
         all_in_evidence_expires_at: datetime | None = None,
         all_in_independently_verified: bool = False,
+        frozen_fixture_sha256: str = "",
+        evaluation_spec_sha256: str = "",
+        runner_source_sha256: str = "",
+        reviewed_source_commit: str = "",
     ) -> OperatorActivationPlan:
         now = datetime.now(UTC)
         if environment != "development":
@@ -125,6 +133,15 @@ class OperatorActivationPlan:
             or all_in_evidence_expires_at.astimezone(UTC) <= now
         ):
             raise ActivationPlanBlocked("all-in evidence is expired")
+        for label, digest in (
+            ("frozen fixture", frozen_fixture_sha256),
+            ("evaluation spec", evaluation_spec_sha256),
+            ("runner source", runner_source_sha256),
+        ):
+            if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ActivationPlanBlocked(f"{label} SHA-256 is invalid")
+        if re.fullmatch(r"[0-9a-f]{40}", reviewed_source_commit) is None:
+            raise ActivationPlanBlocked("reviewed source commit is invalid")
         return cls(
             organization_id=organization_id,
             public_chat_session_ids=public_chat_session_ids,
@@ -147,6 +164,10 @@ class OperatorActivationPlan:
                 if all_in_evidence_expires_at else None
             ),
             all_in_independently_verified=all_in_independently_verified,
+            frozen_fixture_sha256=frozen_fixture_sha256,
+            evaluation_spec_sha256=evaluation_spec_sha256,
+            runner_source_sha256=runner_source_sha256,
+            reviewed_source_commit=reviewed_source_commit,
         )
 
     def render(self) -> dict:
@@ -181,6 +202,10 @@ class OperatorActivationPlan:
         }
         manifest = {
             "purpose": "controlled_public_chat_model_evaluation",
+            "frozen_fixture_sha256": self.frozen_fixture_sha256,
+            "evaluation_spec_sha256": self.evaluation_spec_sha256,
+            "runner_source_sha256": self.runner_source_sha256,
+            "reviewed_source_commit": self.reviewed_source_commit,
             "public_chat_session_ids": list(self.public_chat_session_ids),
             "max_turns": policy.max_turns,
             "max_attempts": policy.max_attempts,

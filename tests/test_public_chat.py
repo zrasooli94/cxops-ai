@@ -2911,6 +2911,10 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
     count_evidence_expires_at = datetime.now(UTC) + timedelta(minutes=30)
     activation = {
         "purpose": "controlled_public_chat_model_evaluation",
+        "frozen_fixture_sha256": "c" * 64,
+        "evaluation_spec_sha256": "d" * 64,
+        "runner_source_sha256": "e" * 64,
+        "reviewed_source_commit": "f" * 40,
         "max_turns": 50,
         "max_attempts": 100,
         "cost_ceiling_usd": 0.10,
@@ -2934,6 +2938,7 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
             "model": "gpt-6-luna",
             "region": "standard",
             "billing_status_claim": "billable",
+            "evidence_url": "https://developers.openai.com/synthetic-test-only",
             "evidence_verification": "independently_verified",
             "explicitly_approved": True,
             "evidence_id": "synthetic-test-evidence",

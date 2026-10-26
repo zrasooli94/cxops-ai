@@ -33,6 +33,39 @@ def _bindings():
     ]
 
 
+def _approved_runtime():
+    expiry = datetime.now(UTC) + timedelta(minutes=30)
+    return (
+        {"synthetic": True},
+        runner.InputTokenCountPolicy(
+            endpoint="https://api.openai.com/v1/responses/input_tokens",
+            model="gpt-6-luna",
+            region="standard",
+            reservation_per_attempt_usd=0,
+            evidence_id="synthetic-reviewed",
+            evidence_expires_at=expiry,
+            billing_status="no_charge",
+            independently_verified=True,
+            explicitly_approved=True,
+        ),
+        runner.EvaluationPolicy(additional_all_in_reserve_usd=0.00484),
+    )
+
+
+@pytest.fixture(autouse=True)
+def stable_source_identity(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_source_identity",
+        lambda: {
+            "frozen_fixture_sha256": "a" * 64,
+            "evaluation_spec_sha256": "b" * 64,
+            "runner_source_sha256": "c" * 64,
+            "reviewed_source_commit": "d" * 40,
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_default_runner_is_preflight_only_and_never_prompts_or_dispatches(
     monkeypatch, capsys
@@ -85,6 +118,7 @@ async def test_live_runner_checks_exact_approval_before_masked_secret_and_rolls_
 
     async def approved(*_args, **_kwargs):
         events.append("approval")
+        return _approved_runtime()
 
     @contextmanager
     def secret():
@@ -162,6 +196,7 @@ async def test_live_interruption_removes_provider_key_client_and_sessions(monkey
 
     async def approved(*_args, **_kwargs):
         events.append("approval")
+        return _approved_runtime()
 
     @contextmanager
     def secret():
@@ -222,6 +257,7 @@ async def test_turn_orchestrator_preserves_frozen_order_and_all_ten_sessions(mon
             "status": "ai_active",
             "reply": f"synthetic:{text}",
             "handoff": False,
+            "_model_eval_request_id": f"request-{client_message_id}",
         }
 
     monkeypatch.setattr(runner.PublicChatService, "send_message", send)
@@ -236,7 +272,12 @@ async def test_turn_orchestrator_preserves_frozen_order_and_all_ten_sessions(mon
             self.calls += 1
             if self.calls % 3 in {1, 2}:
                 return 0
-            return SimpleNamespace(sources=[{"source_id": "synthetic"}])
+            return SimpleNamespace(
+                sources=[{"source_id": "synthetic"}],
+                llm_called=False,
+                model="mocked-gpt-6-luna-contract",
+                request_id="mock-request",
+            )
 
     class DBContext:
         async def __aenter__(self):
@@ -269,6 +310,8 @@ async def test_turn_orchestrator_preserves_frozen_order_and_all_ten_sessions(mon
         f"eval-{turn['turn_id']}" for turn in runner.expanded_turns()
     ]
     assert len({item[0] for item in calls}) == 10
+    assert all(item["provider_path_observed"] is False for item in result["outcomes"])
+    assert all(item["mock_mechanics_observed"] is True for item in result["outcomes"])
 
 
 @pytest.mark.asyncio
@@ -342,7 +385,12 @@ async def test_turn_interruption_persists_partial_failure(monkeypatch):
             self.calls += 1
             if self.calls % 3 in {1, 2}:
                 return 0
-            return SimpleNamespace(sources=[{"source_id": "synthetic"}])
+            return SimpleNamespace(
+                sources=[{"source_id": "synthetic"}],
+                llm_called=False,
+                model="mocked-gpt-6-luna-contract",
+                request_id="mock-request",
+            )
 
     class DBContext:
         async def __aenter__(self):

@@ -1244,7 +1244,7 @@ class PublicChatService:
                 )
                 db.add(AIRequestLog(
                     organization_id=organization_id,
-                    request_id=uuid4().hex,
+                    request_id=model_answer.request_id,
                     feature="public_chat_model_eval",
                     model=(
                         "mocked-gpt-6-luna-contract"
@@ -1270,6 +1270,7 @@ class PublicChatService:
                     "processing_state": "completed",
                     "_organization_id": organization_id,
                     "_session_id": session.id,
+                    "_model_eval_request_id": model_answer.request_id,
                 }
             except Exception:
                 log.exception(

@@ -49,6 +49,12 @@ stale sessions or pre-creating a decision before final authorization would be
 unsafe. The exact manifest and its canonical hash must be shown in the final
 execution record before either activation flag changes.
 
+The manifest also binds the canonical 50-turn fixture SHA-256, the
+evaluation-spec source SHA-256, the runner source SHA-256, and the reviewed Git
+commit. The runner recomputes all four after loading approval and before
+constructing an HTTP client or prompting for a key. Fixture, source, commit, or
+session drift therefore fails closed.
+
 The normal legacy `AIEvaluationService.run_rag_evaluation` provider path is not
 used for this prerequisite because it can generate billable traffic outside the
 controlled ledger. The provider-free contract path described below replaces it
@@ -86,6 +92,14 @@ The server validates every bound field and copies it into the immutable
 decision snapshot; tenant and deciding subject still come exclusively from the
 authenticated context. Ordinary release decisions are unchanged. This records
 review but does not install a provider or execute the evaluation.
+
+Operator evidence labels are proposals, never attestations. The release service
+promotes a proposal only after the complete tuple matches a server-owned
+independent billing-evidence registry. That registry is deliberately empty at
+this checkpoint: case 18041142 is supporting AI Support Agent evidence, not
+independent proof of free counting, and the Malaysia tax/uplift values remain
+planning assumptions. A caller cannot turn either claim into independent
+evidence by changing JSON or CLI flags.
 
 The route-level test is reproducible with:
 
@@ -193,6 +207,10 @@ provider account access, or paid spend.
 5. Obtain explicit owner approval for the provider, model, credential method,
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
+6. Add independently reviewed count-billing and all-in evidence to the
+   server-owned registry in a separately reviewed source change. Caller JSON,
+   CLI values, the case-18041142 screenshot alone, and an authenticated
+   manager's unsupported assertion cannot populate that registry.
 
 ## Operator dry run and go/no-go
 
@@ -212,7 +230,11 @@ python -m scripts.plan_public_chat_model_activation \
   --all-in-evidence-expires-at <FUTURE_ISO_8601_UTC> \
   --count-billing-status no_charge \
   --count-billing-evidence-id <REVIEWED_CASE_18041142_EVIDENCE_ID> \
-  --count-billing-evidence-expires-at <FUTURE_ISO_8601_UTC>
+  --count-billing-evidence-expires-at <FUTURE_ISO_8601_UTC> \
+  --frozen-fixture-sha256 <PRINTED_CANONICAL_FIXTURE_SHA256> \
+  --evaluation-spec-sha256 <REVIEWED_SPEC_SOURCE_SHA256> \
+  --runner-source-sha256 <REVIEWED_RUNNER_SOURCE_SHA256> \
+  --reviewed-source-commit <EXACT_REVIEWED_GIT_COMMIT>
 ```
 
 Use real local identifiers and an expiry between five minutes and two hours in
@@ -230,10 +252,11 @@ an official OpenAI developer URL that explicitly establishes that status;
 absence of published pricing is `unresolved`, never free.
 
 The URL and billing status remain operator-supplied, unverified planner inputs:
-this offline tool cannot certify or persist them. An authenticated
-`evaluation.manage` principal becomes the authoritative attestor only after
-actually reviewing the referenced evidence and approving the exact manifest;
-that action still does not authorize execution. The complete count policy,
+this offline tool cannot certify or persist them. Authentication proves who
+reviewed a manifest, not whether an external billing claim is true. The release
+endpoint rejects the proposal unless its complete evidence tuple is already in
+the server-owned reviewed registry; changing request verification strings
+cannot self-attest it. The complete count policy,
 evidence identity, per-attempt reservation and combined reservation are included
 in the same proposed decision snapshot as the generation limits.
 
@@ -538,8 +561,10 @@ The runner then re-reads and validates that tenant/run/session-bound decision
 before constructing an HTTP client or opening the masked key prompt. A caller
 cannot substitute request flags for the authenticated decision. Evidence ids
 and verification claims printed before that decision are operator proposals,
-not trust anchors; they become usable only when the authenticated reviewer
-approves the exact immutable snapshot.
+not trust anchors. They become usable only after an exact match in the
+server-owned reviewed registry and the authenticated reviewer approves the
+resulting immutable snapshot. The current empty registry makes live execution
+NO-GO before any key prompt or HTTP-client construction.
 
 Only after that recheck does the same process request the existing restricted
 key through `getpass`, install the provider for the context lifetime, execute
@@ -552,8 +577,12 @@ service on disposable PostgreSQL, then verifies persisted transcripts,
 reservations and 50 fixture-linked cases. It does not measure genuine model
 quality. The runner stores a separate tenant-owned
 fixture-linked protocol record (status, handoff, reply presence, citation
-contract enforcement, and no raw customer text); naturalness, factual quality,
-and multilingual quality remain manually scored after the genuine run.
+contract enforcement, exact real-provider observation, and no raw customer
+text). Exact real-provider observation requires the per-turn request identity,
+`llm_called=true`, and model `gpt-6-luna`; stale, question-matched, or mocked
+logs are only mock mechanics and never real-model evidence. Naturalness,
+factual quality, and multilingual quality remain manually scored after the
+genuine run.
 
 ## Public schema evidence (checked 2026-10-22)
 

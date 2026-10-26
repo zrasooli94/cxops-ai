@@ -13,9 +13,11 @@ import argparse
 import asyncio
 import hashlib
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +27,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.ai_usage_reservation import AIUsageReservation
@@ -38,7 +41,10 @@ from app.services.model_eval_development_lifecycle import (
     installed_development_evaluation_provider,
 )
 from app.services.model_eval_operator_secret import operator_entered_api_key
-from app.services.public_chat_model_eval import PersistedEvaluationActivationGuard
+from app.services.public_chat_model_eval import (
+    PersistedEvaluationActivationGuard,
+    validate_activation_manifest,
+)
 from app.services.public_chat_service import PublicChatService
 from app.services.tenant_ai_allowance_service import STATUS_RESERVED
 from scripts.plan_chat_model_evaluation import expanded_turns, validate_mechanical_spec
@@ -46,6 +52,57 @@ from scripts.plan_chat_model_evaluation import expanded_turns, validate_mechanic
 
 class RunnerBlocked(RuntimeError):
     pass
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+EVALUATION_SPEC_PATH = REPOSITORY_ROOT / "scripts/plan_chat_model_evaluation.py"
+RUNNER_SOURCE_PATH = Path(__file__).resolve()
+SOURCE_BOUND_PATHS = (
+    "scripts/run_controlled_chat_model_evaluation.py",
+    "scripts/plan_chat_model_evaluation.py",
+    "app/services/ai_evaluation_service.py",
+    "app/services/model_eval_activation_plan.py",
+    "app/services/model_eval_billing_evidence.py",
+    "app/services/model_eval_controller.py",
+    "app/services/model_eval_development_lifecycle.py",
+    "app/services/model_eval_openai_adapter.py",
+    "app/services/model_eval_openai_http_transport.py",
+    "app/services/model_eval_operator_secret.py",
+    "app/services/public_chat_model_eval.py",
+    "app/services/public_chat_service.py",
+)
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _source_identity() -> dict[str, str]:
+    fixture = json.dumps(
+        expanded_turns(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    source_diff = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", *SOURCE_BOUND_PATHS],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+    )
+    if source_diff.returncode != 0:
+        raise RunnerBlocked(
+            "evaluation source differs from the reviewed Git commit"
+        )
+    return {
+        "frozen_fixture_sha256": hashlib.sha256(fixture.encode()).hexdigest(),
+        "evaluation_spec_sha256": _sha256_file(EVALUATION_SPEC_PATH),
+        "runner_source_sha256": _sha256_file(RUNNER_SOURCE_PATH),
+        "reviewed_source_commit": commit,
+    }
 
 
 @dataclass(frozen=True)
@@ -147,6 +204,7 @@ def _build_plan(
 ) -> tuple[dict[str, Any], InputTokenCountPolicy, EvaluationPolicy]:
     count_expiry = _timestamp(arguments.count_evidence_expires_at)
     all_in_expiry = _timestamp(arguments.all_in_evidence_expires_at)
+    identity = _source_identity()
     plan = OperatorActivationPlan.build(
         environment=settings.environment,
         organization_id=arguments.organization_id,
@@ -157,11 +215,12 @@ def _build_plan(
         count_billing_evidence_url="https://developers.openai.com/api/docs/guides/token-counting",
         count_billing_evidence_id=arguments.count_evidence_id,
         count_billing_evidence_expires_at=count_expiry,
-        count_billing_independently_verified=True,
+        count_billing_independently_verified=False,
         additional_all_in_reserve_usd=arguments.additional_all_in_reserve_usd,
         all_in_evidence_id=arguments.all_in_evidence_id,
         all_in_evidence_expires_at=all_in_expiry,
-        all_in_independently_verified=True,
+        all_in_independently_verified=False,
+        **identity,
     ).render()
     count_policy = InputTokenCountPolicy(
         endpoint=plan["activation_manifest"]["count_policy"]["endpoint"],
@@ -171,8 +230,8 @@ def _build_plan(
         evidence_id=arguments.count_evidence_id,
         evidence_expires_at=count_expiry,
         billing_status="no_charge",
-        independently_verified=True,
-        explicitly_approved=True,
+        independently_verified=False,
+        explicitly_approved=False,
     )
     policy = EvaluationPolicy(
         additional_all_in_reserve_usd=arguments.additional_all_in_reserve_usd
@@ -183,10 +242,79 @@ def _build_plan(
 async def _require_approval(
     arguments: argparse.Namespace,
     bindings: list[SessionBinding],
-    count_policy: InputTokenCountPolicy,
-    policy: EvaluationPolicy,
-) -> None:
+    proposed_manifest: dict[str, Any],
+) -> tuple[dict[str, Any], InputTokenCountPolicy, EvaluationPolicy]:
     async with AsyncSessionLocal() as db:
+        decision = await db.scalar(
+            select(AIEvaluationReleaseDecision)
+            .join(
+                AIEvaluationRun,
+                (AIEvaluationRun.id == AIEvaluationReleaseDecision.candidate_run_id)
+                & (
+                    AIEvaluationRun.organization_id
+                    == AIEvaluationReleaseDecision.organization_id
+                ),
+            )
+            .where(
+                AIEvaluationRun.run_id == arguments.run_id,
+                AIEvaluationRun.organization_id == arguments.organization_id,
+                AIEvaluationReleaseDecision.organization_id
+                == arguments.organization_id,
+                AIEvaluationReleaseDecision.decision == "approved",
+            )
+            .order_by(
+                AIEvaluationReleaseDecision.created_at.desc(),
+                AIEvaluationReleaseDecision.id.desc(),
+            )
+            .limit(1)
+        )
+        manifest = (
+            decision.comparison_snapshot.get("provider_activation")
+            if decision is not None
+            and isinstance(decision.comparison_snapshot, dict)
+            else None
+        )
+        if not isinstance(manifest, dict):
+            raise EvaluationBlockedError("durable evaluation approval is missing")
+        approved_manifest = validate_activation_manifest(manifest)
+        for key in (
+            "frozen_fixture_sha256",
+            "evaluation_spec_sha256",
+            "runner_source_sha256",
+            "reviewed_source_commit",
+            "public_chat_session_ids",
+        ):
+            if approved_manifest.get(key) != proposed_manifest.get(key):
+                raise EvaluationBlockedError(
+                    "approved fixture, source, or session binding changed"
+                )
+        current_identity = _source_identity()
+        if any(
+            approved_manifest.get(key) != value
+            for key, value in current_identity.items()
+        ):
+            raise EvaluationBlockedError(
+                "approved fixture or source changed after review"
+            )
+        approved_count = approved_manifest["count_policy"]
+        count_policy = InputTokenCountPolicy(
+            endpoint=approved_count["endpoint"],
+            model=approved_count["model"],
+            region=approved_count["region"],
+            reservation_per_attempt_usd=approved_count[
+                "reservation_per_attempt_usd"
+            ],
+            evidence_id=approved_count["evidence_id"],
+            evidence_expires_at=_timestamp(approved_count["evidence_expires_at"]),
+            billing_status=approved_count["billing_status_claim"],
+            independently_verified=True,
+            explicitly_approved=True,
+        )
+        policy = EvaluationPolicy(
+            additional_all_in_reserve_usd=approved_manifest[
+                "additional_all_in_reserve_usd"
+            ]
+        )
         for binding in bindings:
             await PersistedEvaluationActivationGuard.require(
                 db,
@@ -196,6 +324,7 @@ async def _require_approval(
                 runtime_count_policy=count_policy,
                 runtime_evaluation_policy=policy,
             )
+    return approved_manifest, count_policy, policy
 
 
 async def _execute_turns(
@@ -260,9 +389,9 @@ async def _execute_turns(
                     .where(
                         AIRequestLog.organization_id == organization_id,
                         AIRequestLog.feature == "public_chat_model_eval",
-                        AIRequestLog.question == turn["prompt"],
+                        AIRequestLog.request_id
+                        == result.get("_model_eval_request_id", ""),
                     )
-                    .order_by(AIRequestLog.id.desc())
                     .limit(1)
                 )
             reply = result.get("reply")
@@ -286,6 +415,13 @@ async def _execute_turns(
                 behavior_ok = bool(result.get("handoff")) or (
                     bool(reply) and provider_log is not None
                 )
+            exact_real_provider_observed = bool(
+                provider_log is not None
+                and provider_log.llm_called is True
+                and provider_log.model == "gpt-6-luna"
+                and provider_log.request_id
+                == result.get("_model_eval_request_id")
+            )
             outcomes.append(
                 {
                     "turn_id": turn["turn_id"],
@@ -294,7 +430,9 @@ async def _execute_turns(
                     "reply_present": reply is not None,
                     "handoff": bool(result.get("handoff")),
                     "protocol_passed": behavior_ok and forbidden_absent,
-                    "provider_path_observed": provider_log is not None,
+                    "provider_path_observed": exact_real_provider_observed,
+                    "mock_mechanics_observed": provider_log is not None
+                    and not exact_real_provider_observed,
                     "citation_contract_enforced": provider_log is not None
                     and bool(provider_log.sources),
                 }
@@ -415,6 +553,9 @@ async def _persist_protocol_results(
                         "provider_path_observed": outcome[
                             "provider_path_observed"
                         ],
+                        "mock_mechanics_observed": outcome[
+                            "mock_mechanics_observed"
+                        ],
                         "quality_measured": False,
                     },
                     fingerprint=hashlib.sha256(
@@ -481,7 +622,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "Record the exact printed manifest through the authenticated evaluation.manage "
             "release-decision API, then press Enter to re-check approval: "
         )
-        await _require_approval(arguments, bindings, count_policy, policy)
+        approved_manifest, count_policy, policy = await _require_approval(
+            arguments, bindings, plan["activation_manifest"]
+        )
         print("approval_status=approved_exact_manifest", file=sys.stderr)
 
         client = NoRetryHttpClient()
@@ -499,7 +642,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                         bindings,
                         organization_id=arguments.organization_id,
                         approved_run_id=arguments.run_id,
-                        activation_manifest=plan["activation_manifest"],
+                        activation_manifest=approved_manifest,
                         embedding_origin=arguments.embedding_origin,
                     )
         finally:

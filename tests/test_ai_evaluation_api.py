@@ -1040,14 +1040,44 @@ def _provider_activation_manifest():
         run_id="api-activation",
         expires_at=expiry,
         count_billing_status="no_charge",
+        count_billing_evidence_url="https://developers.openai.com/api/docs/guides/token-counting",
         count_billing_evidence_id="synthetic-reviewed-count",
         count_billing_evidence_expires_at=expiry,
-        count_billing_independently_verified=True,
+        count_billing_independently_verified=False,
         additional_all_in_reserve_usd=0.01,
         all_in_evidence_id="synthetic-reviewed-all-in",
         all_in_evidence_expires_at=expiry,
-        all_in_independently_verified=True,
+        all_in_independently_verified=False,
+        frozen_fixture_sha256="a" * 64,
+        evaluation_spec_sha256="b" * 64,
+        runner_source_sha256="c" * 64,
+        reviewed_source_commit="d" * 40,
     ).render()["activation_manifest"]
+
+
+@pytest.fixture
+def reviewed_billing_registry(monkeypatch):
+    from app.services.model_eval_billing_evidence import ReviewedBillingEvidence
+
+    monkeypatch.setattr(
+        "app.services.model_eval_billing_evidence.INDEPENDENT_BILLING_EVIDENCE_REGISTRY",
+        (
+            ReviewedBillingEvidence(
+                evidence_id="synthetic-reviewed-count",
+                evidence_url="https://developers.openai.com/api/docs/guides/token-counting",
+                billing_status="no_charge",
+                reservation_per_attempt_usd=0,
+                scope="responses_input_tokens",
+            ),
+            ReviewedBillingEvidence(
+                evidence_id="synthetic-reviewed-all-in",
+                evidence_url="synthetic-test-only",
+                billing_status="reserved",
+                reservation_per_attempt_usd=0.01,
+                scope="all_in_budget",
+            ),
+        ),
+    )
 
 
 async def _make_baseline_for_org(
@@ -1106,8 +1136,9 @@ async def test_manage_can_approve_release_decision(client, two_orgs, db):
 
 @pytest.mark.asyncio
 async def test_manage_can_immutably_review_bounded_provider_activation(
-    client, two_orgs, db, monkeypatch
+    client, two_orgs, db, monkeypatch, reviewed_billing_registry
 ):
+    monkeypatch.setattr(settings, "environment", "development")
     async def _validated(*_args, **_kwargs):
         return True
 
@@ -1147,11 +1178,19 @@ async def test_manage_can_immutably_review_bounded_provider_activation(
         provider_activation=manifest,
     )
     assert response.status_code == 201, response.text
-    assert response.json()["comparison_snapshot"]["provider_activation"] == manifest
+    stored = response.json()["comparison_snapshot"]["provider_activation"]
+    assert stored["count_policy"]["evidence_verification"] == "independently_verified"
+    assert stored["count_policy"]["explicitly_approved"] is True
+    assert stored["all_in_evidence_verification"] == "independently_verified"
+    assert stored["frozen_fixture_sha256"] == manifest["frozen_fixture_sha256"]
+    assert stored["reviewed_source_commit"] == manifest["reviewed_source_commit"]
 
 
 @pytest.mark.asyncio
-async def test_identically_failing_offline_contract_cannot_activate(client, two_orgs, db):
+async def test_identically_failing_offline_contract_cannot_activate(
+    client, two_orgs, db, reviewed_billing_registry, monkeypatch
+):
+    monkeypatch.setattr(settings, "environment", "development")
     org = two_orgs["org_a"]
     revision = {
         "offline_contract_fixture_sha256": "a" * 64,
@@ -1224,7 +1263,9 @@ async def test_changed_or_production_provider_activation_is_rejected(
     two_orgs,
     db,
     monkeypatch,
+    reviewed_billing_registry,
 ):
+    monkeypatch.setattr(settings, "environment", "development")
     org = two_orgs["org_a"]
     run = await _make_succeeded_run(db, organization_id=org.id)
     baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)

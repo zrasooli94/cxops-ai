@@ -20,6 +20,10 @@ def _plan(**overrides):
         "all_in_evidence_id": "synthetic-all-in-evidence",
         "all_in_evidence_expires_at": datetime.now(UTC) + timedelta(minutes=30),
         "all_in_independently_verified": True,
+        "frozen_fixture_sha256": "a" * 64,
+        "evaluation_spec_sha256": "b" * 64,
+        "runner_source_sha256": "c" * 64,
+        "reviewed_source_commit": "d" * 40,
     }
     values.update(overrides)
     return OperatorActivationPlan.build(**values)

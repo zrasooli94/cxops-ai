@@ -7,6 +7,7 @@ activation manifest. The production configuration rejects the feature flag.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -49,6 +50,10 @@ def validate_activation_manifest(manifest: dict) -> dict:
         raise EvaluationBlockedError("evaluation activation manifest is invalid")
     manifest_keys = {
         "purpose",
+        "frozen_fixture_sha256",
+        "evaluation_spec_sha256",
+        "runner_source_sha256",
+        "reviewed_source_commit",
         "public_chat_session_ids",
         "max_turns",
         "max_attempts",
@@ -123,6 +128,17 @@ def validate_activation_manifest(manifest: dict) -> dict:
     }
     valid = (
         all(manifest.get(key) == value for key, value in fixed.items())
+        and all(
+            isinstance(manifest.get(key), str)
+            and len(manifest[key]) == length
+            and all(char in "0123456789abcdef" for char in manifest[key])
+            for key, length in (
+                ("frozen_fixture_sha256", 64),
+                ("evaluation_spec_sha256", 64),
+                ("runner_source_sha256", 64),
+                ("reviewed_source_commit", 40),
+            )
+        )
         and isinstance(sessions, list)
         and len(sessions) == len(set(sessions)) == 10
         and all(
@@ -183,6 +199,7 @@ class ApprovedEvaluationActivation:
     run_id: str
     organization_id: int
     public_chat_session_ids: tuple[int, ...]
+    manifest: dict
 
 
 class PersistedEvaluationActivationGuard:
@@ -230,6 +247,8 @@ class PersistedEvaluationActivationGuard:
             if isinstance(decision.comparison_snapshot, dict)
             else None
         )
+        if isinstance(manifest, dict):
+            manifest = validate_activation_manifest(manifest)
         try:
             expires_at = datetime.fromisoformat(
                 str(manifest["expires_at"]).replace("Z", "+00:00")
@@ -345,6 +364,7 @@ class PersistedEvaluationActivationGuard:
             run_id=run.run_id,
             organization_id=organization_id,
             public_chat_session_ids=tuple(manifest["public_chat_session_ids"]),
+            manifest=json.loads(json.dumps(manifest, ensure_ascii=False, sort_keys=True)),
         )
 
 
@@ -353,6 +373,7 @@ class PublicChatModelAnswer:
     text: str
     source_ids: tuple[str, ...]
     mocked: bool
+    request_id: str
 
 
 class PublicChatModelEvaluationProvider:
@@ -549,8 +570,12 @@ class PublicChatModelEvaluationProvider:
             raise EvaluationBlockedError(
                 "model citations do not match retrieved evidence"
             )
+        request_id = "eval-" + hashlib.sha256(
+            f"{approval.run_id}:{organization_id}:{session_id}:{turn_number}".encode()
+        ).hexdigest()[:48]
         return PublicChatModelAnswer(
             text=str(parsed["answer"]),
             source_ids=source_ids,
             mocked=self.adapter.transport.provider_disconnected,
+            request_id=request_id,
         )

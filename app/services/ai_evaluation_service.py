@@ -1251,6 +1251,9 @@ class AIEvaluationService:
                 raise ValueError(
                     "provider activation is development-only and requires approval"
                 )
+            from app.services.model_eval_billing_evidence import (
+                require_reviewed_billing_evidence,
+            )
             from app.services.model_eval_controller import EvaluationBlockedError
             from app.services.model_eval_rag_prerequisite import (
                 is_offline_rag_contract_run,
@@ -1259,7 +1262,10 @@ class AIEvaluationService:
             from app.services.public_chat_model_eval import validate_activation_manifest
 
             try:
-                validated_activation = validate_activation_manifest(provider_activation)
+                reviewed_activation = require_reviewed_billing_evidence(
+                    provider_activation
+                )
+                validated_activation = validate_activation_manifest(reviewed_activation)
             except EvaluationBlockedError as exc:
                 raise ValueError(str(exc)) from None
             if (
