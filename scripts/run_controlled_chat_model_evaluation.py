@@ -32,6 +32,7 @@ from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
 from app.models.ai_usage_reservation import AIUsageReservation
 from app.services.model_eval_activation_plan import OperatorActivationPlan
+from app.services.model_eval_billing_evidence import require_reviewed_billing_evidence
 from app.services.model_eval_controller import (
     EvaluationBlockedError,
     EvaluationPolicy,
@@ -260,7 +261,6 @@ async def _require_approval(
                 AIEvaluationRun.organization_id == arguments.organization_id,
                 AIEvaluationReleaseDecision.organization_id
                 == arguments.organization_id,
-                AIEvaluationReleaseDecision.decision == "approved",
             )
             .order_by(
                 AIEvaluationReleaseDecision.created_at.desc(),
@@ -268,6 +268,10 @@ async def _require_approval(
             )
             .limit(1)
         )
+        if decision is None or decision.decision != "approved":
+            raise EvaluationBlockedError(
+                "latest durable evaluation decision is not approved"
+            )
         manifest = (
             decision.comparison_snapshot.get("provider_activation")
             if decision is not None
@@ -277,17 +281,13 @@ async def _require_approval(
         if not isinstance(manifest, dict):
             raise EvaluationBlockedError("durable evaluation approval is missing")
         approved_manifest = validate_activation_manifest(manifest)
-        for key in (
-            "frozen_fixture_sha256",
-            "evaluation_spec_sha256",
-            "runner_source_sha256",
-            "reviewed_source_commit",
-            "public_chat_session_ids",
-        ):
-            if approved_manifest.get(key) != proposed_manifest.get(key):
-                raise EvaluationBlockedError(
-                    "approved fixture, source, or session binding changed"
-                )
+        expected_approved_manifest = validate_activation_manifest(
+            require_reviewed_billing_evidence(proposed_manifest)
+        )
+        if approved_manifest != expected_approved_manifest:
+            raise EvaluationBlockedError(
+                "approved manifest differs from the exact printed proposal"
+            )
         current_identity = _source_identity()
         if any(
             approved_manifest.get(key) != value

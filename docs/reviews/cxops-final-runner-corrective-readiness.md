@@ -4,6 +4,8 @@ Date: 2026-10-26 UTC
 
 Scope: corrective follow-up to the independent review at
 `/Users/zakerhussainrasooli/Documents/Codex/2026-10-26/task/cxops-fd79e724-independent-readiness-review.md`.
+The exact-manifest delta also addresses the follow-up review at
+`/Users/zakerhussainrasooli/Documents/Codex/2026-10-26/task/cxops-9a34f046-independent-corrective-review.md`.
 No provider request, credential, deployment, or paid operation was used.
 
 ## Corrected boundaries
@@ -23,6 +25,11 @@ No provider request, credential, deployment, or paid operation was used.
    identity. The runner queries only that exact tenant-owned log and records a
    real-provider observation only for `llm_called=true`, model `gpt-6-luna`, and
    the exact request ID. Mocked/stale logs are never model-quality evidence.
+4. The runner resolves the latest release decision without filtering out
+   rejections. It requires approval and canonical equality between the complete
+   persisted manifest and the complete printed proposal after the sole
+   server-owned evidence-promotion transformation. A newer rejection or drift
+   in any reserve/evidence/expiry/limit field blocks before client/key setup.
 
 ## Reproduction
 
@@ -43,7 +50,8 @@ uv run pytest -q \
   tests/test_model_eval_controller.py
 ```
 
-Measured locally: 196 passed, two pre-existing warnings. The public-chat group
+Measured locally after the exact-manifest correction: 198 passed, two
+pre-existing warnings. The public-chat group
 includes the full 50-turn mocked workflow through the real service and
 PostgreSQL. It proves mechanics and persistence, not genuine model quality.
 

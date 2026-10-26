@@ -52,6 +52,15 @@ def _approved_runtime():
     )
 
 
+def _promote_proposal(manifest):
+    promoted = dict(manifest)
+    promoted["count_policy"] = dict(manifest["count_policy"])
+    promoted["count_policy"]["evidence_verification"] = "independently_verified"
+    promoted["count_policy"]["explicitly_approved"] = True
+    promoted["all_in_evidence_verification"] = "independently_verified"
+    return promoted
+
+
 @pytest.fixture(autouse=True)
 def stable_source_identity(monkeypatch):
     monkeypatch.setattr(
@@ -181,6 +190,71 @@ async def test_denied_approval_never_constructs_client_or_prompts(monkeypatch):
     )
     with pytest.raises(EvaluationBlockedError, match="approval is missing"):
         await runner._run(_args(execute_live=True))
+
+
+@pytest.mark.asyncio
+async def test_approval_rejects_any_nonpromotion_manifest_drift(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "development")
+    proposal, _count_policy, _policy = runner._build_plan(_args(), _bindings())
+    approved = _promote_proposal(proposal["activation_manifest"])
+    approved["count_policy"]["evidence_id"] = "different-approved-evidence"
+    approved["additional_all_in_reserve_usd"] = 0.003
+    approved["combined_reservation_usd"] = 0.0635
+
+    class DB:
+        async def scalar(self, _query):
+            return SimpleNamespace(
+                decision="approved",
+                comparison_snapshot={"provider_activation": approved},
+            )
+
+    class DBContext:
+        async def __aenter__(self):
+            return DB()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(runner, "AsyncSessionLocal", DBContext)
+    monkeypatch.setattr(runner, "require_reviewed_billing_evidence", _promote_proposal)
+    with pytest.raises(
+        EvaluationBlockedError, match="differs from the exact printed proposal"
+    ):
+        await runner._require_approval(
+            _args(), _bindings(), proposal["activation_manifest"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_latest_rejection_supersedes_older_approval_before_runtime(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "development")
+    proposal, _count_policy, _policy = runner._build_plan(_args(), _bindings())
+    guard_calls = 0
+
+    class DB:
+        async def scalar(self, _query):
+            return SimpleNamespace(decision="rejected", comparison_snapshot={})
+
+    class DBContext:
+        async def __aenter__(self):
+            return DB()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def guard(*_args, **_kwargs):
+        nonlocal guard_calls
+        guard_calls += 1
+
+    monkeypatch.setattr(runner, "AsyncSessionLocal", DBContext)
+    monkeypatch.setattr(
+        runner.PersistedEvaluationActivationGuard, "require", guard
+    )
+    with pytest.raises(EvaluationBlockedError, match="latest.*not approved"):
+        await runner._require_approval(
+            _args(), _bindings(), proposal["activation_manifest"]
+        )
+    assert guard_calls == 0
 
 
 @pytest.mark.asyncio

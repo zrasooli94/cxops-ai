@@ -55,6 +55,13 @@ commit. The runner recomputes all four after loading approval and before
 constructing an HTTP client or prompting for a key. Fixture, source, commit, or
 session drift therefore fails closed.
 
+Approval resolution reads the latest applicable release decision regardless of
+outcome; a newer rejection supersedes every older approval before client or key
+setup. The persisted approved manifest must canonically equal the entire
+printed proposal after only the server-owned evidence-promotion transformation.
+Drift in expiry, pricing, evidence, reserve, limits, sessions, or source
+identity is rejected.
+
 The normal legacy `AIEvaluationService.run_rag_evaluation` provider path is not
 used for this prerequisite because it can generate billable traffic outside the
 controlled ledger. The provider-free contract path described below replaces it
