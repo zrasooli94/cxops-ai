@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ai_evaluation_baseline import AIEvaluationBaseline
 from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 
@@ -411,6 +412,27 @@ class AIEvaluationRepository:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def latest_release_decision_for_run(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        candidate_run_id: int,
+    ) -> AIEvaluationReleaseDecision | None:
+        result = await db.execute(
+            select(AIEvaluationReleaseDecision)
+            .where(
+                AIEvaluationReleaseDecision.organization_id == organization_id,
+                AIEvaluationReleaseDecision.candidate_run_id == candidate_run_id,
+            )
+            .order_by(
+                AIEvaluationReleaseDecision.created_at.desc(),
+                AIEvaluationReleaseDecision.id.desc(),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def count_release_decisions_for_tenant(
         db: AsyncSession,
         *,
@@ -422,3 +444,52 @@ class AIEvaluationRepository:
             .where(AIEvaluationReleaseDecision.organization_id == organization_id)
         )
         return int(result.scalar_one())
+
+    # -------------------------------------------- live execution authorization
+
+    @staticmethod
+    async def create_live_authorization(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        candidate_run_id: int,
+        release_decision_id: int,
+        decision: str,
+        authorized_by_subject: str,
+        authorization_snapshot: dict,
+        expires_at: datetime,
+    ) -> AIEvaluationLiveAuthorization:
+        record = AIEvaluationLiveAuthorization(
+            organization_id=organization_id,
+            candidate_run_id=candidate_run_id,
+            release_decision_id=release_decision_id,
+            decision=decision,
+            authorized_by_subject=authorized_by_subject,
+            authorization_snapshot=authorization_snapshot,
+            expires_at=expires_at,
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+    @staticmethod
+    async def latest_live_authorization(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        candidate_run_id: int,
+    ) -> AIEvaluationLiveAuthorization | None:
+        result = await db.execute(
+            select(AIEvaluationLiveAuthorization)
+            .where(
+                AIEvaluationLiveAuthorization.organization_id == organization_id,
+                AIEvaluationLiveAuthorization.candidate_run_id == candidate_run_id,
+            )
+            .order_by(
+                AIEvaluationLiveAuthorization.created_at.desc(),
+                AIEvaluationLiveAuthorization.id.desc(),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()

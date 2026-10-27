@@ -2,6 +2,7 @@ from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
 from app.models.ai_evaluation_baseline import AIEvaluationBaseline
 from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
@@ -40,6 +41,7 @@ from app.models.zendesk_oauth_token import ZendeskOAuthToken
 __all__ = [
     "AIEvaluationBaseline",
     "AIEvaluationCase",
+    "AIEvaluationLiveAuthorization",
     "AIEvaluationReleaseDecision",
     "AIEvaluationRun",
     "AIRequestLog",

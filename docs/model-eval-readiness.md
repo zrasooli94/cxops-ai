@@ -619,6 +619,27 @@ setup and each persisted dispatch recheck. Acceptance and `evaluation.manage`
 approval do not authorize live execution: a later explicit owner authorization
 is still required before setting the two process-scoped flags or entering a key.
 
+That later authorization is code-enforced separately under policy
+`cxops-live-evaluation-authorization-v1`. An authenticated tenant OWNER with
+`evaluation.manage` submits an immutable record to
+`POST /evaluations/runs/{run_id}/live-authorization`, binding the latest release
+decision id, exact approved `provider_activation`, expiry, and this exact
+acknowledgement object:
+
+```json
+{
+  "policy_version": "cxops-live-evaluation-authorization-v1",
+  "statement_sha256": "f7b05f57f1cc58295a95ebfedd6a312bfc74209eee78f7c5385d1a98ad1453ee"
+}
+```
+
+The runner prints the exact statement and digest. It cannot create the record.
+The latest record must be `authorized`, unexpired, same-tenant, and bound to the
+latest approved release decision and byte-canonical manifest. A later `revoked`
+record, a newer release rejection, expiry, tenant/source/session/manifest drift,
+or a missing record blocks before client/key construction and before every
+provider-bound turn.
+
 Only after that recheck does the same process request the existing restricted
 key through `getpass`, install the provider for the context lifetime, execute
 the frozen turns in order, and remove the provider/client on exit. A denied

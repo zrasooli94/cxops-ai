@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_request_log import AIRequestLog
@@ -50,6 +51,11 @@ from app.services.model_eval_controller import (
 from app.services.model_eval_development_lifecycle import (
     installed_development_evaluation_provider,
 )
+from app.services.model_eval_live_authorization import (
+    LIVE_AUTHORIZATION_STATEMENT,
+    live_authorization_request,
+    validate_live_authorization_snapshot,
+)
 from app.services.model_eval_operator_secret import operator_entered_api_key
 from app.services.public_chat_model_eval import (
     PersistedEvaluationActivationGuard,
@@ -68,16 +74,20 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EVALUATION_SPEC_PATH = REPOSITORY_ROOT / "scripts/plan_chat_model_evaluation.py"
 RUNNER_SOURCE_PATH = Path(__file__).resolve()
 SOURCE_BOUND_PATHS = (
+    "alembic/versions/1q1a0001_add_eval_live_authorizations.py",
     "scripts/run_controlled_chat_model_evaluation.py",
     "scripts/plan_chat_model_evaluation.py",
     "app/api/routes/evaluations.py",
     "app/schemas/evaluation.py",
     "app/services/ai_evaluation_service.py",
+    "app/models/ai_evaluation_live_authorization.py",
+    "app/repositories/ai_evaluation_repository.py",
     "app/services/model_eval_activation_plan.py",
     "app/services/model_eval_billing_evidence.py",
     "app/services/model_eval_conditional_billing.py",
     "app/services/model_eval_controller.py",
     "app/services/model_eval_development_lifecycle.py",
+    "app/services/model_eval_live_authorization.py",
     "app/services/model_eval_openai_adapter.py",
     "app/services/model_eval_openai_http_transport.py",
     "app/services/model_eval_operator_secret.py",
@@ -379,6 +389,70 @@ async def _require_approval(
     return approved_manifest, count_policy, policy
 
 
+async def _require_live_authorization(
+    arguments: argparse.Namespace,
+    approved_manifest: dict[str, Any],
+) -> AIEvaluationLiveAuthorization:
+    """Require the latest distinct authorization before key/client/dispatch."""
+    async with AsyncSessionLocal() as db:
+        run = await db.scalar(
+            select(AIEvaluationRun).where(
+                AIEvaluationRun.run_id == arguments.run_id,
+                AIEvaluationRun.organization_id == arguments.organization_id,
+            )
+        )
+        if run is None:
+            raise EvaluationBlockedError("evaluation run is unavailable")
+        release = await db.scalar(
+            select(AIEvaluationReleaseDecision)
+            .where(
+                AIEvaluationReleaseDecision.organization_id
+                == arguments.organization_id,
+                AIEvaluationReleaseDecision.candidate_run_id == run.id,
+            )
+            .order_by(
+                AIEvaluationReleaseDecision.created_at.desc(),
+                AIEvaluationReleaseDecision.id.desc(),
+            )
+            .limit(1)
+        )
+        authorization = await db.scalar(
+            select(AIEvaluationLiveAuthorization)
+            .where(
+                AIEvaluationLiveAuthorization.organization_id
+                == arguments.organization_id,
+                AIEvaluationLiveAuthorization.candidate_run_id == run.id,
+            )
+            .order_by(
+                AIEvaluationLiveAuthorization.created_at.desc(),
+                AIEvaluationLiveAuthorization.id.desc(),
+            )
+            .limit(1)
+        )
+        if release is None or release.decision != "approved":
+            raise EvaluationBlockedError(
+                "latest durable evaluation decision is not approved"
+            )
+        if authorization is None or authorization.decision != "authorized":
+            raise EvaluationBlockedError(
+                "latest live evaluation authorization is not authorized"
+            )
+        if authorization.release_decision_id != release.id:
+            raise EvaluationBlockedError(
+                "live authorization does not bind the latest release decision"
+            )
+        if authorization.organization_id != arguments.organization_id:
+            raise EvaluationBlockedError("live authorization tenant is invalid")
+        validate_live_authorization_snapshot(
+            authorization.authorization_snapshot,
+            manifest=approved_manifest,
+            release_decision_id=release.id,
+            authorized_by_subject=authorization.authorized_by_subject,
+            expires_at=authorization.expires_at,
+        )
+        return authorization
+
+
 async def _execute_turns(
     bindings: list[SessionBinding],
     *,
@@ -386,6 +460,7 @@ async def _execute_turns(
     approved_run_id: str,
     activation_manifest: dict[str, Any],
     embedding_origin: str,
+    require_live_authorization: Any = None,
 ) -> dict[str, Any]:
     by_fixture = {item.fixture_conversation_id: item for item in bindings}
     outcomes: list[dict[str, Any]] = []
@@ -396,8 +471,16 @@ async def _execute_turns(
         ).encode()
     ).hexdigest()
     execution_run_id = f"chat-eval-{uuid4().hex}"
+    live_authorization_check = require_live_authorization or _require_live_authorization
     try:
         for turn in fixture:
+            await live_authorization_check(
+                argparse.Namespace(
+                    organization_id=organization_id,
+                    run_id=approved_run_id,
+                ),
+                activation_manifest,
+            )
             binding = by_fixture[turn["conversation_id"]]
             async with AsyncSessionLocal() as db:
                 result = await PublicChatService.send_message(
@@ -667,6 +750,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "authenticated_subject_supplied_by_server": True,
                 "live_execution_authorized": False,
             },
+            "separate_live_authorization_required": {
+                "statement": LIVE_AUTHORIZATION_STATEMENT,
+                "request": live_authorization_request(),
+                "authenticated_subject_supplied_by_server": True,
+                "release_approval_is_not_live_authorization": True,
+            },
             "cost_assumptions": plan["budget"],
             "real_model_quality_measured": False,
         }
@@ -684,6 +773,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             arguments, bindings, plan["activation_manifest"]
         )
         print("approval_status=approved_exact_manifest", file=sys.stderr)
+
+        await _require_live_authorization(arguments, approved_manifest)
+        print("live_authorization_status=authorized_exact_manifest", file=sys.stderr)
 
         client = NoRetryHttpClient()
         try:

@@ -24,6 +24,10 @@ Live execution: **NO-GO**
 - Latest-decision ordering, expiry, source drift, manifest drift, tenant/session
   checks, durable count/generation reservations, zero SDK retries, citation
   validation, handoff suppression and ambiguous-outcome stops remain in force.
+- Live execution has a distinct immutable record under policy
+  `cxops-live-evaluation-authorization-v1`. Release approval and process flags
+  cannot substitute for it. The latest record is rechecked before client/key
+  construction and before every visitor turn; revocation stops later requests.
 
 ## Preserved evidence
 
@@ -44,12 +48,15 @@ universal free-count statement and does not establish a count charge ceiling.
 On a migrated, isolated loopback PostgreSQL 17 database named
 `cxops_conditional_disposable_test`:
 
-- 211 relevant tests passed.
+- 215 relevant tests passed after adding the distinct live-authorization gate.
 - Coverage includes the verified-registry path, exact conditional acceptance,
   owner-only authorization, changed/expired evidence, insufficient headroom,
   durable conditional count reservation, conflicting/ambiguous reservations,
   latest rejection, interruption/cleanup, tenant/session isolation and the
-  complete 50-turn mocked public-chat workflow.
+  complete 50-turn mocked public-chat workflow. Separate coverage proves that
+  release approval alone cannot reach secret/client setup, exact manifest and
+  tenant drift fail closed, and a newer persisted revocation stops subsequent
+  turns.
 - Two pre-existing warnings remained: one Pydantic v1 validator deprecation and
   one SQLAlchemy connection cleanup warning in the existing public-chat suite.
 - Ruff and `git diff --check` passed on the intended files.
@@ -65,8 +72,12 @@ authorize a credential/provider request.
    `evaluation.manage`, the owner submits the unchanged `provider_activation`
    and exact `conditional_billing_acceptance` object to the existing release
    decision endpoint.
-3. A separate, later owner authorization is still required for the one live
-   development execution, process-scoped flags, and masked key entry.
+3. In a later authenticated owner request, POST the unchanged approved manifest,
+   release-decision id, bounded expiry, decision `authorized`, and the exact
+   live-authorization acknowledgement to
+   `/evaluations/runs/{run_id}/live-authorization`.
+4. Only after that separate record exists and the owner separately authorizes
+   execution may the process-scoped flags and masked key entry be used.
 
 No acceptance, release approval, execution authorization, credential, provider
 request, or expense was created during this implementation.

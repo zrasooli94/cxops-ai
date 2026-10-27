@@ -19,6 +19,7 @@ No evaluator or decision LLM is invoked; all reads/writes go through
 tenant-scoped repository calls.
 """
 
+import json
 import os
 import time
 import uuid
@@ -48,6 +49,7 @@ from app.core.rbac import (
 from app.main import app
 from app.models.ai_evaluation_baseline import AIEvaluationBaseline
 from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_usage_reservation import AIUsageReservation
@@ -179,6 +181,11 @@ async def two_orgs(db):
     }
 
     if org_ids:
+        await db.execute(
+            delete(AIEvaluationLiveAuthorization).where(
+                AIEvaluationLiveAuthorization.organization_id.in_(org_ids)
+            )
+        )
         await db.execute(
             delete(AIEvaluationReleaseDecision).where(
                 AIEvaluationReleaseDecision.organization_id.in_(org_ids)
@@ -1278,6 +1285,76 @@ async def test_manage_can_record_explicit_conditional_billing_acceptance(
         stored["count_policy"]["evidence_verification"]
         == "owner_accepted_uncertainty_not_independently_verified"
     )
+
+    from app.services.model_eval_live_authorization import (
+        live_authorization_request,
+    )
+
+    live_expiry = datetime.now(UTC) + timedelta(minutes=15)
+    live = await client.post(
+        f"/evaluations/runs/{run.run_id}/live-authorization",
+        headers=_auth_headers(USER_ALPHA, tenant_id=org.id),
+        json={
+            "release_decision_id": response.json()["id"],
+            "decision": "authorized",
+            "expires_at": live_expiry.isoformat(),
+            "provider_activation": stored,
+            "authorization": live_authorization_request(),
+        },
+    )
+    assert live.status_code == 201, live.text
+    assert live.json()["decision"] == "authorized"
+    assert live.json()["authorized_by_subject"] == USER_ALPHA
+    assert live.json()["authorization_snapshot"]["provider_activation"] == stored
+
+    wrong_tenant = await client.post(
+        f"/evaluations/runs/{run.run_id}/live-authorization",
+        headers=_auth_headers(USER_BETA, tenant_id=two_orgs["org_b"].id),
+        json={
+            "release_decision_id": response.json()["id"],
+            "decision": "authorized",
+            "expires_at": live_expiry.isoformat(),
+            "provider_activation": stored,
+            "authorization": live_authorization_request(),
+        },
+    )
+    assert wrong_tenant.status_code == 404
+
+    changed = json.loads(json.dumps(stored))
+    changed["max_output_tokens"] = 499
+    drift = await client.post(
+        f"/evaluations/runs/{run.run_id}/live-authorization",
+        headers=_auth_headers(USER_ALPHA, tenant_id=org.id),
+        json={
+            "release_decision_id": response.json()["id"],
+            "decision": "authorized",
+            "expires_at": live_expiry.isoformat(),
+            "provider_activation": changed,
+            "authorization": live_authorization_request(),
+        },
+    )
+    assert drift.status_code == 400
+
+    db.add(
+        OrganizationMembership(
+            subject=USER_SUPERVISOR,
+            organization_id=org.id,
+            role=OrganizationRole.SUPERVISOR,
+        )
+    )
+    await db.commit()
+    non_owner = await client.post(
+        f"/evaluations/runs/{run.run_id}/live-authorization",
+        headers=_auth_headers(USER_SUPERVISOR, tenant_id=org.id),
+        json={
+            "release_decision_id": response.json()["id"],
+            "decision": "authorized",
+            "expires_at": live_expiry.isoformat(),
+            "provider_activation": stored,
+            "authorization": live_authorization_request(),
+        },
+    )
+    assert non_owner.status_code == 403
 
 
 @pytest.mark.asyncio

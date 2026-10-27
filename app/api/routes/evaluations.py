@@ -21,6 +21,8 @@ from app.schemas.evaluation import (
     EvaluationBaselineListResponse,
     EvaluationBaselineRead,
     EvaluationCaseListResponse,
+    EvaluationLiveAuthorizationCreate,
+    EvaluationLiveAuthorizationRead,
     EvaluationReleaseDecisionCreate,
     EvaluationReleaseDecisionListResponse,
     EvaluationReleaseDecisionRead,
@@ -436,6 +438,39 @@ async def create_release_decision(
         raise _value_error_to_http(exc) from None
 
     return _serialize_release_decision(record)
+
+
+@router.post(
+    "/runs/{run_id}/live-authorization",
+    response_model=EvaluationLiveAuthorizationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_live_authorization(
+    run_id: str,
+    data: EvaluationLiveAuthorizationCreate,
+    tenant: CurrentTenant,
+    db: DatabaseSession,
+    authz: EvaluationManageAuthz,
+):
+    if authz.role is not OrganizationRole.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="live evaluation authorization requires the tenant owner",
+        )
+    try:
+        return await AIEvaluationService.record_live_authorization(
+            db,
+            organization_id=tenant.organization_id,
+            candidate_run_id=run_id,
+            release_decision_id=data.release_decision_id,
+            decision=data.decision,
+            authorized_by_subject=authz.subject,
+            expires_at=data.expires_at,
+            provider_activation=data.provider_activation,
+            authorization=data.authorization,
+        )
+    except ValueError as exc:
+        raise _value_error_to_http(exc) from None
 
 
 @router.get(

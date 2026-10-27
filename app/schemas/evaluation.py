@@ -279,6 +279,30 @@ class EvaluationReleaseDecisionListResponse(BaseModel):
     offset: int
 
 
+class EvaluationLiveAuthorizationCreate(BaseModel):
+    release_decision_id: int
+    decision: Literal["authorized", "revoked"]
+    expires_at: datetime
+    provider_activation: dict
+    authorization: dict
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class EvaluationLiveAuthorizationRead(BaseModel):
+    id: int
+    organization_id: int
+    candidate_run_id: int
+    release_decision_id: int
+    decision: str
+    authorized_by_subject: str
+    authorization_snapshot: dict
+    expires_at: datetime
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
 class EvaluationReleaseGateIssue(BaseModel):
     """One release-gate finding (Phase 1J.9A).
 

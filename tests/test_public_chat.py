@@ -70,6 +70,7 @@ from app.models.agent_action_event import AgentActionEvent
 from app.models.agent_run import AgentRun
 from app.models.ai_evaluation_baseline import AIEvaluationBaseline
 from app.models.ai_evaluation_case import AIEvaluationCase
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.ai_usage_reservation import AIUsageReservation
@@ -100,6 +101,9 @@ from app.services.model_eval_controller import (
     InputTokenCountPolicy,
     ModelEvaluationController,
     PersistedPublicChatSessionGuard,
+)
+from app.services.model_eval_live_authorization import (
+    build_live_authorization_snapshot,
 )
 from app.services.model_eval_openai_adapter import ProviderDisconnectedResponsesAdapter
 from app.services.offline_grounded_chat import offline_grounded_chat
@@ -180,6 +184,7 @@ async def db():
 PUBLIC_CHAT_ORG_PREFIX = "public-chat-test-"
 
 _PURGE_TABLES = [
+    "ai_evaluation_live_authorizations",
     "ai_evaluation_release_decisions",
     "ai_evaluation_baselines",
     "ai_evaluation_runs",
@@ -3014,14 +3019,31 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         )
     )
     await db.flush()
+    release = AIEvaluationReleaseDecision(
+        organization_id=org.id,
+        candidate_run_id=run.id,
+        baseline_id=baseline.id,
+        decision="approved",
+        decided_by_subject="owner:test",
+        comparison_snapshot={"synthetic": True, "provider_activation": activation},
+    )
+    db.add(release)
+    await db.flush()
+    live_expiry = datetime.now(UTC) + timedelta(minutes=20)
     db.add(
-        AIEvaluationReleaseDecision(
+        AIEvaluationLiveAuthorization(
             organization_id=org.id,
             candidate_run_id=run.id,
-            baseline_id=baseline.id,
-            decision="approved",
-            decided_by_subject="owner:test",
-            comparison_snapshot={"synthetic": True, "provider_activation": activation},
+            release_decision_id=release.id,
+            decision="authorized",
+            authorized_by_subject="owner:test",
+            authorization_snapshot=build_live_authorization_snapshot(
+                manifest=activation,
+                release_decision_id=release.id,
+                authorized_by_subject="owner:test",
+                expires_at=live_expiry,
+            ),
+            expires_at=live_expiry,
         )
     )
     await db.commit()
@@ -3179,6 +3201,30 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         session_id=session.id,
     )
 
+    # A newer immutable revocation wins immediately for subsequent turns.
+    db.add(
+        AIEvaluationLiveAuthorization(
+            organization_id=org.id,
+            candidate_run_id=run.id,
+            release_decision_id=release.id,
+            decision="revoked",
+            authorized_by_subject="owner:test",
+            authorization_snapshot=build_live_authorization_snapshot(
+                manifest=activation,
+                release_decision_id=release.id,
+                authorized_by_subject="owner:test",
+                expires_at=live_expiry,
+            ),
+            expires_at=live_expiry,
+        )
+    )
+    await db.commit()
+    assert not await provider.targets(
+        db,
+        organization_id=org.id,
+        session_id=session.id,
+    )
+
     # The operator runner drives the complete frozen 10x5 flow through the
     # actual service and persists a separate protocol record. The response wire
     # remains synthetic and therefore proves mechanics, never model quality.
@@ -3206,17 +3252,34 @@ async def test_disabled_model_evaluation_path_requires_durable_session_bound_app
         runner_session_ids.append(runner_row.id)
     runner_activation = json.loads(json.dumps(activation))
     runner_activation["public_chat_session_ids"] = runner_session_ids
+    runner_release = AIEvaluationReleaseDecision(
+        organization_id=org.id,
+        candidate_run_id=run.id,
+        baseline_id=baseline.id,
+        decision="approved",
+        decided_by_subject="owner:synthetic-runner-test",
+        comparison_snapshot={
+            "synthetic": True,
+            "provider_activation": runner_activation,
+        },
+    )
+    db.add(runner_release)
+    await db.flush()
+    runner_live_expiry = datetime.now(UTC) + timedelta(minutes=20)
     db.add(
-        AIEvaluationReleaseDecision(
+        AIEvaluationLiveAuthorization(
             organization_id=org.id,
             candidate_run_id=run.id,
-            baseline_id=baseline.id,
-            decision="approved",
-            decided_by_subject="owner:synthetic-runner-test",
-            comparison_snapshot={
-                "synthetic": True,
-                "provider_activation": runner_activation,
-            },
+            release_decision_id=runner_release.id,
+            decision="authorized",
+            authorized_by_subject="owner:synthetic-runner-test",
+            authorization_snapshot=build_live_authorization_snapshot(
+                manifest=runner_activation,
+                release_decision_id=runner_release.id,
+                authorized_by_subject="owner:synthetic-runner-test",
+                expires_at=runner_live_expiry,
+            ),
+            expires_at=runner_live_expiry,
         )
     )
     await db.commit()

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.ai_evaluation_baseline import AIEvaluationBaseline
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.repositories.ai_evaluation_repository import AIEvaluationRepository
@@ -1313,4 +1314,66 @@ class AIEvaluationService:
             decided_by_subject=decided_by_subject,
             note=note,
             comparison_snapshot=snapshot,
+        )
+
+    @staticmethod
+    async def record_live_authorization(
+        db: AsyncSession,
+        *,
+        organization_id: int,
+        candidate_run_id: str,
+        release_decision_id: int,
+        decision: str,
+        authorized_by_subject: str,
+        expires_at: datetime,
+        provider_activation: dict,
+        authorization: dict,
+    ) -> AIEvaluationLiveAuthorization:
+        """Record a distinct, immutable authorization for one exact live run."""
+        if settings.environment != "development":
+            raise ValueError("live evaluation authorization is development-only")
+        if decision not in {"authorized", "revoked"}:
+            raise ValueError("live authorization decision is invalid")
+        run = await AIEvaluationRepository.get_run_for_tenant(
+            db, run_id=candidate_run_id, organization_id=organization_id
+        )
+        release = await AIEvaluationRepository.get_release_decision_for_tenant(
+            db, organization_id=organization_id, decision_id=release_decision_id
+        )
+        if run is None or release is None or release.candidate_run_id != run.id:
+            raise ValueError("The evaluation run or release decision was not found.")
+        latest = await AIEvaluationRepository.latest_release_decision_for_run(
+            db, organization_id=organization_id, candidate_run_id=run.id
+        )
+        if latest is None or latest.id != release.id or release.decision != "approved":
+            raise ValueError("latest durable evaluation decision is not approved")
+        approved_manifest = release.comparison_snapshot.get("provider_activation")
+        if not isinstance(approved_manifest, dict) or approved_manifest != provider_activation:
+            raise ValueError("live authorization manifest differs from release approval")
+        from app.services.model_eval_controller import EvaluationBlockedError
+        from app.services.model_eval_live_authorization import (
+            build_live_authorization_snapshot,
+            live_authorization_request,
+        )
+
+        if authorization != live_authorization_request():
+            raise ValueError("live authorization acknowledgement is invalid")
+        try:
+            snapshot = build_live_authorization_snapshot(
+                manifest=approved_manifest,
+                release_decision_id=release.id,
+                authorized_by_subject=authorized_by_subject,
+                expires_at=expires_at,
+            )
+        except EvaluationBlockedError as exc:
+            raise ValueError(str(exc)) from None
+        return await AIEvaluationRepository.create_live_authorization(
+            db,
+            organization_id=organization_id,
+            candidate_run_id=run.id,
+            release_decision_id=release.id,
+            decision=decision,
+            authorized_by_subject=authorized_by_subject,
+            authorization_snapshot=snapshot,
+            expires_at=expires_at,
         )

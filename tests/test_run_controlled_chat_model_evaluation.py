@@ -64,6 +64,10 @@ def _promote_proposal(manifest):
     )
 
 
+async def _live_authorized(*_args, **_kwargs):
+    return SimpleNamespace(decision="authorized")
+
+
 @pytest.fixture(autouse=True)
 def stable_source_identity(monkeypatch):
     monkeypatch.setattr(
@@ -132,6 +136,10 @@ async def test_live_runner_checks_exact_approval_before_masked_secret_and_rolls_
         events.append("approval")
         return _approved_runtime()
 
+    async def live_authorized(*_args, **_kwargs):
+        events.append("live-authorization")
+        return SimpleNamespace(decision="authorized")
+
     @contextmanager
     def secret():
         events.append("secret")
@@ -153,6 +161,7 @@ async def test_live_runner_checks_exact_approval_before_masked_secret_and_rolls_
         return {"turns_attempted": 50}
 
     monkeypatch.setattr(runner, "_require_approval", approved)
+    monkeypatch.setattr(runner, "_require_live_authorization", live_authorized)
     monkeypatch.setattr(runner, "operator_entered_api_key", secret)
     monkeypatch.setattr(runner, "NoRetryHttpClient", Client)
     monkeypatch.setattr(runner, "installed_development_evaluation_provider", lifecycle)
@@ -162,6 +171,7 @@ async def test_live_runner_checks_exact_approval_before_masked_secret_and_rolls_
     assert result == {"turns_attempted": 50}
     assert events == [
         "approval",
+        "live-authorization",
         "secret",
         "provider-installed",
         "50-turn-orchestrator",
@@ -192,6 +202,36 @@ async def test_denied_approval_never_constructs_client_or_prompts(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("client must not be built")),
     )
     with pytest.raises(EvaluationBlockedError, match="approval is missing"):
+        await runner._run(_args(execute_live=True))
+
+
+@pytest.mark.asyncio
+async def test_release_approval_without_live_authorization_never_prompts(monkeypatch):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", True)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", True)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(runner, "_close_sessions", lambda _items: _async(None))
+    monkeypatch.setattr(runner.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(runner.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    monkeypatch.setattr(runner, "_require_approval", lambda *_a, **_k: _async(_approved_runtime()))
+
+    async def missing(*_args, **_kwargs):
+        raise EvaluationBlockedError("latest live evaluation authorization is not authorized")
+
+    monkeypatch.setattr(runner, "_require_live_authorization", missing)
+    monkeypatch.setattr(
+        runner,
+        "operator_entered_api_key",
+        lambda: (_ for _ in ()).throw(AssertionError("secret must not be requested")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "NoRetryHttpClient",
+        lambda: (_ for _ in ()).throw(AssertionError("client must not be built")),
+    )
+    with pytest.raises(EvaluationBlockedError, match="live evaluation authorization"):
         await runner._run(_args(execute_live=True))
 
 
@@ -280,6 +320,10 @@ async def test_live_interruption_removes_provider_key_client_and_sessions(monkey
         events.append("approval")
         return _approved_runtime()
 
+    async def live_authorized(*_args, **_kwargs):
+        events.append("live-authorization")
+        return SimpleNamespace(decision="authorized")
+
     @contextmanager
     def secret():
         events.append("secret")
@@ -309,6 +353,7 @@ async def test_live_interruption_removes_provider_key_client_and_sessions(monkey
         return []
 
     monkeypatch.setattr(runner, "_require_approval", approved)
+    monkeypatch.setattr(runner, "_require_live_authorization", live_authorized)
     monkeypatch.setattr(runner, "operator_entered_api_key", secret)
     monkeypatch.setattr(runner, "NoRetryHttpClient", Client)
     monkeypatch.setattr(runner, "installed_development_evaluation_provider", lifecycle)
@@ -319,6 +364,7 @@ async def test_live_interruption_removes_provider_key_client_and_sessions(monkey
         await runner._run(_args(execute_live=True))
     assert events == [
         "approval",
+        "live-authorization",
         "secret",
         "provider-installed",
         "interrupted",
@@ -343,6 +389,7 @@ async def test_turn_orchestrator_preserves_frozen_order_and_all_ten_sessions(mon
         }
 
     monkeypatch.setattr(runner.PublicChatService, "send_message", send)
+    monkeypatch.setattr(runner, "_require_live_authorization", _live_authorized)
     monkeypatch.setattr(
         runner, "_persist_protocol_results", lambda **_kwargs: _async(None)
     )
@@ -385,6 +432,7 @@ async def test_turn_orchestrator_preserves_frozen_order_and_all_ten_sessions(mon
         approved_run_id="offline-rag-candidate",
         activation_manifest={"synthetic": True},
         embedding_origin="http://127.0.0.1:3000",
+        require_live_authorization=_live_authorized,
     )
     assert result["turns_attempted"] == 50
     assert result["sessions"] == 10
@@ -449,6 +497,7 @@ async def test_ambiguous_reservation_stops_after_first_turn_and_persists_failure
             approved_run_id="offline-rag-candidate",
             activation_manifest={"synthetic": True},
             embedding_origin="http://127.0.0.1:3000",
+            require_live_authorization=_live_authorized,
         )
     assert calls == 1
     assert persisted[0]["succeeded"] is False
@@ -507,9 +556,82 @@ async def test_turn_interruption_persists_partial_failure(monkeypatch):
             approved_run_id="offline-rag-candidate",
             activation_manifest={"synthetic": True},
             embedding_origin="http://127.0.0.1:3000",
+            require_live_authorization=_live_authorized,
         )
     assert persisted[0]["succeeded"] is False
     assert persisted[0]["error_category"] == "interrupted"
+    assert len(persisted[0]["outcomes"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_revocation_during_run_stops_before_next_request(monkeypatch):
+    checks = 0
+    sends = 0
+    persisted = []
+
+    async def authorize(*_args, **_kwargs):
+        nonlocal checks
+        checks += 1
+        if checks > 1:
+            raise EvaluationBlockedError(
+                "latest live evaluation authorization is not authorized"
+            )
+
+    async def send(*_args, **_kwargs):
+        nonlocal sends
+        sends += 1
+        return {
+            "status": "ai_active",
+            "reply": "synthetic",
+            "handoff": False,
+            "_model_eval_request_id": "mock-request",
+        }
+
+    class Scalar:
+        calls = 0
+
+        async def scalar(self, _query):
+            self.calls += 1
+            if self.calls % 3 in {1, 2}:
+                return 0
+            return SimpleNamespace(
+                sources=[{"source_id": "synthetic"}],
+                llm_called=False,
+                model="mocked-gpt-6-luna-contract",
+                request_id="mock-request",
+            )
+
+    class DBContext:
+        async def __aenter__(self):
+            return Scalar()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def persist(**kwargs):
+        persisted.append(kwargs)
+
+    monkeypatch.setattr(runner, "AsyncSessionLocal", DBContext)
+    monkeypatch.setattr(runner.PublicChatService, "send_message", send)
+    monkeypatch.setattr(runner, "_persist_protocol_results", persist)
+    seen = list(dict.fromkeys(turn["conversation_id"] for turn in runner.expanded_turns()))
+    bindings = [
+        runner.SessionBinding(conversation_id, index, f"token-{index}")
+        for index, conversation_id in enumerate(seen, 1)
+    ]
+
+    with pytest.raises(EvaluationBlockedError, match="live evaluation authorization"):
+        await runner._execute_turns(
+            bindings,
+            organization_id=7,
+            approved_run_id="offline-rag-candidate",
+            activation_manifest={"synthetic": True},
+            embedding_origin="http://127.0.0.1:3000",
+            require_live_authorization=authorize,
+        )
+    assert checks == 2
+    assert sends == 1
+    assert persisted[0]["succeeded"] is False
     assert len(persisted[0]["outcomes"]) == 1
 
 

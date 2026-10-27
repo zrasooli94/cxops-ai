@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.ai_evaluation_live_authorization import AIEvaluationLiveAuthorization
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
 from app.models.conversation_message import ConversationMessage
@@ -34,6 +35,9 @@ from app.services.model_eval_controller import (
     ExactInputTokenCountTransport,
     InputTokenCountPolicy,
     ModelEvaluationController,
+)
+from app.services.model_eval_live_authorization import (
+    validate_live_authorization_snapshot,
 )
 from app.services.model_eval_openai_adapter import (
     DisconnectedResponsesEvaluationTransport,
@@ -436,6 +440,33 @@ class PersistedEvaluationActivationGuard:
                 raise EvaluationBlockedError(
                     "conditional billing acceptance subject is invalid"
                 )
+        live_authorization = await db.scalar(
+            select(AIEvaluationLiveAuthorization)
+            .where(
+                AIEvaluationLiveAuthorization.organization_id == organization_id,
+                AIEvaluationLiveAuthorization.candidate_run_id == run.id,
+            )
+            .order_by(
+                AIEvaluationLiveAuthorization.created_at.desc(),
+                AIEvaluationLiveAuthorization.id.desc(),
+            )
+            .limit(1)
+        )
+        if (
+            live_authorization is None
+            or live_authorization.decision != "authorized"
+            or live_authorization.release_decision_id != decision.id
+        ):
+            raise EvaluationBlockedError(
+                "latest live evaluation authorization is not authorized"
+            )
+        validate_live_authorization_snapshot(
+            live_authorization.authorization_snapshot,
+            manifest=manifest,
+            release_decision_id=decision.id,
+            authorized_by_subject=live_authorization.authorized_by_subject,
+            expires_at=live_authorization.expires_at,
+        )
         return ApprovedEvaluationActivation(
             run_id=run.run_id,
             organization_id=organization_id,
