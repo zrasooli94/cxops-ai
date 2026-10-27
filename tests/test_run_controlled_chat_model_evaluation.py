@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -231,7 +232,7 @@ async def test_resume_claims_exact_hold_before_live_gates(monkeypatch, tmp_path)
     monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
     prepared_args = _args(prepare_review_hold=True)
     plan, _count, _policy = runner._build_plan(prepared_args, _bindings())
-    hold_path = runner._write_review_hold(
+    hold_path, _state_sha256 = runner._write_review_hold(
         arguments=prepared_args,
         bindings=_bindings(),
         manifest=plan["activation_manifest"],
@@ -285,6 +286,133 @@ async def test_resume_claims_exact_hold_before_live_gates(monkeypatch, tmp_path)
     assert events == list(range(1, 11))
     assert cleaned == list(range(1, 11))
     assert list(tmp_path.iterdir()) == []
+
+
+def test_review_hold_rejects_symlinked_parent_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "environment", "development")
+    redirected = tmp_path / "redirected"
+    redirected.mkdir(mode=0o700)
+    symlink = tmp_path / "hold-link"
+    symlink.symlink_to(redirected, target_is_directory=True)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", symlink)
+    args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(args, _bindings())
+
+    with pytest.raises(runner.RunnerBlocked, match="unavailable or unsafe"):
+        runner._write_review_hold(
+            arguments=args,
+            bindings=_bindings(),
+            manifest=plan["activation_manifest"],
+        )
+
+    assert list(redirected.iterdir()) == []
+
+
+def test_review_hold_rejects_unexpected_parent_permissions(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "environment", "development")
+    unsafe = tmp_path / "group-readable"
+    unsafe.mkdir(mode=0o755)
+    unsafe.chmod(0o755)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", unsafe)
+    args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(args, _bindings())
+
+    with pytest.raises(runner.RunnerBlocked, match="ownership or permissions"):
+        runner._write_review_hold(
+            arguments=args,
+            bindings=_bindings(),
+            manifest=plan["activation_manifest"],
+        )
+
+    assert list(unsafe.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_plain_hold_deletion_keeps_cleanup_ownership(monkeypatch, tmp_path):
+    cleaned = []
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(
+        runner,
+        "_close_sessions",
+        lambda items: _async(cleaned.extend(item.session_id for item in items) or []),
+    )
+    original_wait = runner._wait_for_review_hold
+
+    async def delete_then_wait(*, path, state_sha256, arguments):
+        runner._remove_review_hold_file(path)
+        return await original_wait(
+            path=path,
+            state_sha256=state_sha256,
+            arguments=arguments,
+            poll_seconds=0,
+        )
+
+    monkeypatch.setattr(runner, "_wait_for_review_hold", delete_then_wait)
+
+    result = await runner._run(_args(prepare_review_hold=True))
+
+    assert result["status"] == "review_hold_cancelled_or_deleted"
+    assert cleaned == list(range(1, 11))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_simultaneous_review_hold_claim_has_exactly_one_winner(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(args, _bindings())
+    hold_path, _state_sha256 = runner._write_review_hold(
+        arguments=args,
+        bindings=_bindings(),
+        manifest=plan["activation_manifest"],
+    )
+
+    def claim():
+        try:
+            return runner._load_claimed_review_hold(hold_path)
+        except runner.RunnerBlocked as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: claim(), range(2)))
+    winners = [item for item in results if isinstance(item, tuple)]
+    losers = [item for item in results if isinstance(item, runner.RunnerBlocked)]
+
+    assert len(winners) == 1
+    assert len(losers) == 1
+    claimed = winners[0][0]
+    assert claimed.name == runner._claimed_hold_name(hold_path)
+    assert [item.name for item in tmp_path.iterdir()] == [claimed.name]
+    runner._remove_review_hold_file(claimed)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_is_reported_without_exposing_tokens(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(runner, "_close_sessions", lambda _items: _async([1]))
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_review_hold",
+        lambda **_kwargs: _async("expired"),
+    )
+
+    await runner._run(_args(prepare_review_hold=True))
+
+    captured = capsys.readouterr()
+    assert "cleanup_warning_count=1" in captured.err
+    assert "token-1" not in captured.out
+    assert "token-1" not in captured.err
 
 
 @pytest.mark.asyncio

@@ -247,19 +247,86 @@ def _review_hold_path(manifest_digest: str) -> Path:
     return REVIEW_HOLD_DIRECTORY / f"{manifest_digest}.json"
 
 
+def _open_review_hold_directory(*, create: bool) -> int:
+    if create:
+        try:
+            os.mkdir(REVIEW_HOLD_DIRECTORY, 0o700)
+        except FileExistsError:
+            pass
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(REVIEW_HOLD_DIRECTORY, flags)
+    except OSError as exc:
+        raise RunnerBlocked("review hold directory is unavailable or unsafe") from exc
+    details = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or details.st_uid != os.getuid()
+        or stat.S_IMODE(details.st_mode) != 0o700
+    ):
+        os.close(descriptor)
+        raise RunnerBlocked("review hold directory ownership or permissions are invalid")
+    return descriptor
+
+
+def _claimed_hold_name(path: Path) -> str:
+    return f".{path.name}.claimed"
+
+
+def _claim_lock_name(path: Path) -> str:
+    return f".{path.name}.claim-lock"
+
+
+def _remove_review_hold_file(path: Path) -> None:
+    descriptor = _open_review_hold_directory(create=False)
+    try:
+        os.unlink(path.name, dir_fd=descriptor)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _read_review_hold_file(path: Path) -> bytes:
+    descriptor = _open_review_hold_directory(create=False)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        file_descriptor = os.open(path.name, flags, dir_fd=descriptor)
+        try:
+            details = os.fstat(file_descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_uid != os.getuid()
+                or stat.S_IMODE(details.st_mode) != 0o600
+            ):
+                raise RunnerBlocked(
+                    "review hold ownership or permissions are invalid"
+                )
+            with os.fdopen(file_descriptor, "rb") as stream:
+                file_descriptor = -1
+                return stream.read()
+        finally:
+            if file_descriptor >= 0:
+                os.close(file_descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_review_hold(
     *,
     arguments: argparse.Namespace,
     bindings: list[SessionBinding],
     manifest: dict[str, Any],
-) -> Path:
+) -> tuple[Path, str]:
     """Persist only the short-lived local session capability needed to resume.
 
     The path and manifest are safe to print; raw session tokens stay in the
     owner-only file and are removed by claim, cancellation, or expiry cleanup.
     """
-    REVIEW_HOLD_DIRECTORY.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(REVIEW_HOLD_DIRECTORY, 0o700)
     digest = _canonical_manifest_digest(manifest)
     path = _review_hold_path(digest)
     payload = {
@@ -279,32 +346,35 @@ def _write_review_hold(
             for item in bindings
         ],
     }
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    encoded = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    directory_descriptor = _open_review_hold_directory(create=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path.name, flags, 0o600, dir_fd=directory_descriptor)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
     except BaseException:
-        path.unlink(missing_ok=True)
+        try:
+            os.unlink(path.name, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            pass
         raise
-    return path
-
-
-def _validate_hold_file(path: Path) -> None:
-    details = path.lstat()
-    if not stat.S_ISREG(details.st_mode):
-        raise RunnerBlocked("review hold is not a regular file")
-    if details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) != 0o600:
-        raise RunnerBlocked("review hold ownership or permissions are invalid")
+    finally:
+        os.close(directory_descriptor)
+    return path, hashlib.sha256(encoded).hexdigest()
 
 
 def _load_claimed_review_hold(
     path: Path,
 ) -> tuple[Path, list[SessionBinding], dict[str, Any], dict[str, Any]]:
     """Atomically claim a hold so only one later process can resume it."""
-    _validate_hold_file(path)
-    original_bytes = path.read_bytes()
+    original_bytes = _read_review_hold_file(path)
     try:
         payload = json.loads(original_bytes)
         if payload.get("version") != REVIEW_HOLD_VERSION:
@@ -330,17 +400,41 @@ def _load_claimed_review_hold(
             raise RunnerBlocked("review hold session binding is invalid")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RunnerBlocked("review hold payload is invalid") from exc
-    claimed = path.with_name(f".{path.name}.claimed-{os.getpid()}")
+    claimed = path.with_name(_claimed_hold_name(path))
+    directory_descriptor = _open_review_hold_directory(create=False)
+    lock_descriptor = -1
     try:
-        os.link(path, claimed)
-        path.unlink()
+        lock_descriptor = os.open(
+            _claim_lock_name(path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        try:
+            os.stat(claimed.name, dir_fd=directory_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RunnerBlocked("review hold is already claimed")
+        os.rename(
+            path.name,
+            claimed.name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
     except FileExistsError:
         raise RunnerBlocked("review hold is already claimed") from None
     except FileNotFoundError:
         raise RunnerBlocked("review hold is unavailable") from None
-    _validate_hold_file(claimed)
-    if claimed.read_bytes() != original_bytes:
-        claimed.unlink(missing_ok=True)
+    finally:
+        if lock_descriptor >= 0:
+            os.close(lock_descriptor)
+            try:
+                os.unlink(_claim_lock_name(path), dir_fd=directory_descriptor)
+            except FileNotFoundError:
+                pass
+        os.close(directory_descriptor)
+    if _read_review_hold_file(claimed) != original_bytes:
         raise RunnerBlocked("review hold changed while being claimed")
     return claimed, bindings, manifest, payload
 
@@ -370,13 +464,28 @@ async def _latest_release_decision(
 
 
 async def _wait_for_review_hold(
-    *, path: Path, arguments: argparse.Namespace, poll_seconds: float = 1.0
+    *,
+    path: Path,
+    state_sha256: str,
+    arguments: argparse.Namespace,
+    poll_seconds: float = 1.0,
 ) -> str:
     """Hold until claimed, rejected, expired, or interrupted by the operator."""
     expiry = _timestamp(arguments.expires_at)
     while True:
-        if not path.exists():
+        try:
+            _read_review_hold_file(path)
+        except FileNotFoundError:
+            claimed = path.with_name(_claimed_hold_name(path))
+            try:
+                claimed_bytes = _read_review_hold_file(claimed)
+            except (FileNotFoundError, RunnerBlocked):
+                return "cancelled_or_deleted"
+            if hashlib.sha256(claimed_bytes).hexdigest() != state_sha256:
+                return "invalid_claim"
             return "claimed_for_separately_authorized_resume"
+        except RunnerBlocked:
+            return "invalid_hold"
         if datetime.now(UTC) >= expiry:
             return "expired"
         if (
@@ -892,6 +1001,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     bindings: list[SessionBinding] = []
     hold_path: Path | None = None
     claimed_path: Path | None = None
+    hold_state_sha256: str | None = None
     saved_manifest: dict[str, Any] | None = None
     cleanup_owned = True
     if arguments.resume_review_hold is not None:
@@ -905,7 +1015,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             or hold_payload.get("expires_at") != arguments.expires_at
         ):
             await _close_sessions(bindings)
-            claimed_path.unlink(missing_ok=True)
+            _remove_review_hold_file(claimed_path)
             raise RunnerBlocked("review hold invocation differs from prepared binding")
     else:
         bindings = await _create_sessions(arguments)
@@ -958,7 +1068,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "real_model_quality_measured": False,
         }
         if arguments.prepare_review_hold:
-            hold_path = _write_review_hold(
+            hold_path, hold_state_sha256 = _write_review_hold(
                 arguments=arguments,
                 bindings=bindings,
                 manifest=plan["activation_manifest"],
@@ -970,14 +1080,19 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         if arguments.prepare_review_hold:
             try:
                 outcome = await _wait_for_review_hold(
-                    path=hold_path, arguments=arguments
+                    path=hold_path,
+                    state_sha256=hold_state_sha256,
+                    arguments=arguments,
                 )
             except KeyboardInterrupt:
                 outcome = "cancelled"
             if outcome == "claimed_for_separately_authorized_resume":
                 cleanup_owned = False
             else:
-                hold_path.unlink(missing_ok=True)
+                _remove_review_hold_file(hold_path)
+                _remove_review_hold_file(
+                    hold_path.with_name(_claimed_hold_name(hold_path))
+                )
             return {
                 "status": f"review_hold_{outcome}",
                 "activation_manifest_sha256": preview[
@@ -1028,9 +1143,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         )
         if cleanup_owned:
             if hold_path is not None:
-                hold_path.unlink(missing_ok=True)
+                _remove_review_hold_file(hold_path)
+                _remove_review_hold_file(
+                    hold_path.with_name(_claimed_hold_name(hold_path))
+                )
             if claimed_path is not None:
-                claimed_path.unlink(missing_ok=True)
+                _remove_review_hold_file(claimed_path)
         if cleanup_failures:
             print(
                 f"cleanup_warning_count={len(cleanup_failures)}",
