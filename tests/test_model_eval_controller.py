@@ -167,6 +167,7 @@ def _counted_controller(
     organization_id=1,
     count_policy=None,
     evaluation_policy=None,
+    session_guard=None,
 ):
     return ModelEvaluationController(
         policy=evaluation_policy or EvaluationPolicy(),
@@ -177,7 +178,7 @@ def _counted_controller(
         explicitly_approved=True,
         approved_run_id="approved-eval",
         approved_organization_id=organization_id,
-        session_guard=_AllowActiveSession(),
+        session_guard=session_guard or _AllowActiveSession(),
     )
 
 
@@ -336,6 +337,55 @@ async def test_count_reserves_before_count_then_exact_count_gates_generation(db)
     ).order_by(AIUsageReservation.reservation_key))).scalars().all()
     assert len(reservations) == 2
     assert all(item.status == "settled" for item in reservations)
+
+
+@pytest.mark.asyncio
+async def test_revocation_after_count_reservation_blocks_before_count_dispatch(db):
+    organization = Organization(name=f"Eval count revocation {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+
+    class RevokeAfterEntry:
+        checks = 0
+
+        async def assert_generation_allowed(self, _db, **_kwargs):
+            self.checks += 1
+            if self.checks == 2:
+                raise EvaluationBlockedError("live authorization revoked before count")
+
+    guard = RevokeAfterEntry()
+    count_transport = _DisconnectedCountTransport(organization.id, result=12)
+    generation_transport = _Transport()
+    controller = _counted_controller(
+        generation_transport,
+        count_transport,
+        organization_id=organization.id,
+        session_guard=guard,
+    )
+
+    with pytest.raises(EvaluationBlockedError, match="revoked before count"):
+        await controller.attempt(
+            db,
+            organization_id=organization.id,
+            run_id="approved-eval",
+            turn_number=1,
+            retry_number=0,
+            serialized_input="bounded full request",
+            public_chat_session_id=101,
+            canonical_request_payload=_canonical_payload("bounded full request"),
+        )
+
+    assert guard.checks == 2
+    assert count_transport.calls == []
+    assert generation_transport.calls == []
+    reservation = await db.scalar(
+        select(AIUsageReservation).where(
+            AIUsageReservation.organization_id == organization.id,
+            AIUsageReservation.reservation_key.like("model-eval-count:%"),
+        )
+    )
+    assert reservation is not None
+    assert reservation.status == "settled"
 
 
 @pytest.mark.asyncio

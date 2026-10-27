@@ -358,6 +358,7 @@ class ModelEvaluationController:
             attempt_suffix=attempt_suffix,
             serialized_input=serialized_input,
             canonical_request_payload=canonical_request_payload,
+            public_chat_session_id=public_chat_session_id,
         )
         if admitted_input_tokens > self.policy.max_input_tokens:
             raise EvaluationBlockedError("full Responses request exceeds token cap")
@@ -507,6 +508,7 @@ class ModelEvaluationController:
         attempt_suffix: str,
         serialized_input: str,
         canonical_request_payload: dict[str, Any] | None,
+        public_chat_session_id: int,
     ) -> int:
         if self.count_transport is None or self.count_policy is None:
             assert self.count_tokens is not None
@@ -615,6 +617,20 @@ class ModelEvaluationController:
             )
         )
         await db.commit()
+        try:
+            await self.session_guard.assert_generation_allowed(
+                db,
+                organization_id=organization_id,
+                session_id=public_chat_session_id,
+            )
+        except EvaluationBlockedError:
+            await db.execute(
+                update(AIUsageReservation)
+                .where(AIUsageReservation.reservation_key == key)
+                .values(status=STATUS_SETTLED, settled_at=datetime.now(UTC))
+            )
+            await db.commit()
+            raise
         try:
             async with asyncio.timeout(self.DISCONNECTED_TRANSPORT_TIMEOUT_SECONDS):
                 count_result = await self.count_transport.count(
