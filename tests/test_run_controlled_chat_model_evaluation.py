@@ -9,7 +9,12 @@ from app.services.model_eval_controller import EvaluationBlockedError
 from scripts import run_controlled_chat_model_evaluation as runner
 
 
-def _args(*, execute_live: bool = False):
+def _args(
+    *,
+    execute_live: bool = False,
+    prepare_review_hold: bool = False,
+    resume_review_hold=None,
+):
     expiry = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
     return SimpleNamespace(
         organization_id=7,
@@ -23,6 +28,8 @@ def _args(*, execute_live: bool = False):
         all_in_evidence_expires_at=expiry,
         additional_all_in_reserve_usd=0.00484,
         execute_live=execute_live,
+        prepare_review_hold=prepare_review_hold,
+        resume_review_hold=resume_review_hold,
     )
 
 
@@ -116,6 +123,168 @@ async def test_default_runner_is_preflight_only_and_never_prompts_or_dispatches(
     assert "token-1" not in output
     assert "API key" not in output
     assert cleanup == list(range(1, 11))
+
+
+@pytest.mark.asyncio
+async def test_review_hold_prints_exact_manifest_without_tokens_and_cleans_on_expiry(
+    monkeypatch, capsys, tmp_path
+):
+    cleanup = []
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(
+        runner,
+        "_close_sessions",
+        lambda items: _async(cleanup.extend(item.session_id for item in items) or []),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_review_hold",
+        lambda **_kwargs: _async("expired"),
+    )
+
+    result = await runner._run(_args(prepare_review_hold=True))
+
+    output = capsys.readouterr().out
+    assert result["status"] == "review_hold_expired"
+    assert "provider_disabled_review_hold" in output
+    assert "activation_manifest_sha256" in output
+    assert "token-1" not in output
+    assert cleanup == list(range(1, 11))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_review_hold_claim_preserves_exact_sessions_for_later_resume(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(runner, "_close_sessions", lambda _items: _async([]))
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_review_hold",
+        lambda **_kwargs: _async("claimed_for_separately_authorized_resume"),
+    )
+    args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(args, _bindings())
+    expected_digest = runner._canonical_manifest_digest(plan["activation_manifest"])
+
+    result = await runner._run(args)
+    hold_path = tmp_path / f"{expected_digest}.json"
+
+    assert result["status"] == "review_hold_claimed_for_separately_authorized_resume"
+    assert hold_path.exists()
+    assert hold_path.stat().st_mode & 0o777 == 0o600
+    claimed, bindings, manifest, payload = runner._load_claimed_review_hold(hold_path)
+    try:
+        assert [item.session_id for item in bindings] == list(range(1, 11))
+        assert manifest == plan["activation_manifest"]
+        assert payload["organization_id"] == 7
+    finally:
+        claimed.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_review_hold_rejection_and_interruption_cleanup(monkeypatch, tmp_path):
+    cleanup = []
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(
+        runner,
+        "_close_sessions",
+        lambda items: _async(cleanup.extend(item.session_id for item in items) or []),
+    )
+    outcomes = iter(("rejected", KeyboardInterrupt()))
+
+    async def wait(**_kwargs):
+        outcome = next(outcomes)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(runner, "_wait_for_review_hold", wait)
+
+    rejected = await runner._run(_args(prepare_review_hold=True))
+    interrupted = await runner._run(_args(prepare_review_hold=True))
+
+    assert rejected["status"] == "review_hold_rejected"
+    assert interrupted["status"] == "review_hold_cancelled"
+    assert cleanup == list(range(1, 11)) * 2
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_resume_claims_exact_hold_before_live_gates(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", True)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", True)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    prepared_args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(prepared_args, _bindings())
+    hold_path = runner._write_review_hold(
+        arguments=prepared_args,
+        bindings=_bindings(),
+        manifest=plan["activation_manifest"],
+    )
+    resume_args = _args(
+        execute_live=True,
+        resume_review_hold=hold_path,
+    )
+    resume_args.expires_at = prepared_args.expires_at
+    resume_args.count_evidence_expires_at = prepared_args.count_evidence_expires_at
+    resume_args.all_in_evidence_expires_at = prepared_args.all_in_evidence_expires_at
+    cleaned = []
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_close_sessions",
+        lambda items: _async(cleaned.extend(item.session_id for item in items) or []),
+    )
+    monkeypatch.setattr(runner.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(runner.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    monkeypatch.setattr(
+        runner, "_require_approval", lambda *_a, **_k: _async(_approved_runtime())
+    )
+    monkeypatch.setattr(runner, "_require_live_authorization", _live_authorized)
+
+    @contextmanager
+    def secret():
+        yield "synthetic-never-networked-key"
+
+    class Client:
+        async def aclose(self):
+            return None
+
+    @asynccontextmanager
+    async def lifecycle(**_kwargs):
+        yield object()
+
+    async def execute(bindings, **_kwargs):
+        events.extend(item.session_id for item in bindings)
+        return {"turns_attempted": 50}
+
+    monkeypatch.setattr(runner, "operator_entered_api_key", secret)
+    monkeypatch.setattr(runner, "NoRetryHttpClient", Client)
+    monkeypatch.setattr(runner, "installed_development_evaluation_provider", lifecycle)
+    monkeypatch.setattr(runner, "_execute_turns", execute)
+
+    result = await runner._run(resume_args)
+
+    assert result == {"turns_attempted": 50}
+    assert events == list(range(1, 11))
+    assert cleaned == list(range(1, 11))
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

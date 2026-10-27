@@ -13,6 +13,8 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -73,6 +75,8 @@ class RunnerBlocked(RuntimeError):
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EVALUATION_SPEC_PATH = REPOSITORY_ROOT / "scripts/plan_chat_model_evaluation.py"
 RUNNER_SOURCE_PATH = Path(__file__).resolve()
+REVIEW_HOLD_DIRECTORY = Path("/tmp/cxops-model-eval-review-holds")
+REVIEW_HOLD_VERSION = 1
 SOURCE_BOUND_PATHS = (
     "alembic/versions/1q1a0001_add_eval_live_authorizations.py",
     "scripts/run_controlled_chat_model_evaluation.py",
@@ -176,6 +180,16 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="continue after authenticated approval and prompt for the key",
     )
+    parser.add_argument(
+        "--prepare-review-hold",
+        action="store_true",
+        help="create an expiring provider-disabled manifest and hold its sessions",
+    )
+    parser.add_argument(
+        "--resume-review-hold",
+        type=Path,
+        help="claim an exact previously prepared hold for a separately authorized run",
+    )
     return parser.parse_args()
 
 
@@ -220,6 +234,160 @@ async def _close_sessions(bindings: list[SessionBinding]) -> list[int]:
             failures.append(binding.session_id)
             continue
     return failures
+
+
+def _canonical_manifest_digest(manifest: dict[str, Any]) -> str:
+    payload = json.dumps(
+        manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _review_hold_path(manifest_digest: str) -> Path:
+    return REVIEW_HOLD_DIRECTORY / f"{manifest_digest}.json"
+
+
+def _write_review_hold(
+    *,
+    arguments: argparse.Namespace,
+    bindings: list[SessionBinding],
+    manifest: dict[str, Any],
+) -> Path:
+    """Persist only the short-lived local session capability needed to resume.
+
+    The path and manifest are safe to print; raw session tokens stay in the
+    owner-only file and are removed by claim, cancellation, or expiry cleanup.
+    """
+    REVIEW_HOLD_DIRECTORY.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(REVIEW_HOLD_DIRECTORY, 0o700)
+    digest = _canonical_manifest_digest(manifest)
+    path = _review_hold_path(digest)
+    payload = {
+        "version": REVIEW_HOLD_VERSION,
+        "manifest_digest": digest,
+        "manifest": manifest,
+        "organization_id": arguments.organization_id,
+        "run_id": arguments.run_id,
+        "embedding_origin": arguments.embedding_origin,
+        "expires_at": arguments.expires_at,
+        "bindings": [
+            {
+                "fixture_conversation_id": item.fixture_conversation_id,
+                "session_id": item.session_id,
+                "token": item.token,
+            }
+            for item in bindings
+        ],
+    }
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _validate_hold_file(path: Path) -> None:
+    details = path.lstat()
+    if not stat.S_ISREG(details.st_mode):
+        raise RunnerBlocked("review hold is not a regular file")
+    if details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) != 0o600:
+        raise RunnerBlocked("review hold ownership or permissions are invalid")
+
+
+def _load_claimed_review_hold(
+    path: Path,
+) -> tuple[Path, list[SessionBinding], dict[str, Any], dict[str, Any]]:
+    """Atomically claim a hold so only one later process can resume it."""
+    _validate_hold_file(path)
+    original_bytes = path.read_bytes()
+    try:
+        payload = json.loads(original_bytes)
+        if payload.get("version") != REVIEW_HOLD_VERSION:
+            raise RunnerBlocked("review hold version is unsupported")
+        manifest = payload.get("manifest")
+        if not isinstance(manifest, dict):
+            raise RunnerBlocked("review hold manifest is missing")
+        digest = _canonical_manifest_digest(manifest)
+        if payload.get("manifest_digest") != digest or path.name != f"{digest}.json":
+            raise RunnerBlocked("review hold manifest digest is invalid")
+        expiry = _timestamp(str(payload.get("expires_at", "")))
+        if expiry <= datetime.now(UTC):
+            raise RunnerBlocked("review hold is expired")
+        bindings = [
+            SessionBinding(
+                fixture_conversation_id=str(item["fixture_conversation_id"]),
+                session_id=int(item["session_id"]),
+                token=str(item["token"]),
+            )
+            for item in payload.get("bindings", [])
+        ]
+        if len(bindings) != 10 or any(not item.token for item in bindings):
+            raise RunnerBlocked("review hold session binding is invalid")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RunnerBlocked("review hold payload is invalid") from exc
+    claimed = path.with_name(f".{path.name}.claimed-{os.getpid()}")
+    try:
+        os.link(path, claimed)
+        path.unlink()
+    except FileExistsError:
+        raise RunnerBlocked("review hold is already claimed") from None
+    except FileNotFoundError:
+        raise RunnerBlocked("review hold is unavailable") from None
+    _validate_hold_file(claimed)
+    if claimed.read_bytes() != original_bytes:
+        claimed.unlink(missing_ok=True)
+        raise RunnerBlocked("review hold changed while being claimed")
+    return claimed, bindings, manifest, payload
+
+
+async def _latest_release_decision(
+    *, organization_id: int, run_id: str
+) -> str | None:
+    async with AsyncSessionLocal() as db:
+        return await db.scalar(
+            select(AIEvaluationReleaseDecision.decision)
+            .join(
+                AIEvaluationRun,
+                (AIEvaluationRun.id == AIEvaluationReleaseDecision.candidate_run_id)
+                & (AIEvaluationRun.organization_id == organization_id),
+            )
+            .where(
+                AIEvaluationRun.run_id == run_id,
+                AIEvaluationRun.organization_id == organization_id,
+                AIEvaluationReleaseDecision.organization_id == organization_id,
+            )
+            .order_by(
+                AIEvaluationReleaseDecision.created_at.desc(),
+                AIEvaluationReleaseDecision.id.desc(),
+            )
+            .limit(1)
+        )
+
+
+async def _wait_for_review_hold(
+    *, path: Path, arguments: argparse.Namespace, poll_seconds: float = 1.0
+) -> str:
+    """Hold until claimed, rejected, expired, or interrupted by the operator."""
+    expiry = _timestamp(arguments.expires_at)
+    while True:
+        if not path.exists():
+            return "claimed_for_separately_authorized_resume"
+        if datetime.now(UTC) >= expiry:
+            return "expired"
+        if (
+            await _latest_release_decision(
+                organization_id=arguments.organization_id,
+                run_id=arguments.run_id,
+            )
+            == "rejected"
+        ):
+            return "rejected"
+        await asyncio.sleep(poll_seconds)
 
 
 def _build_plan(
@@ -704,6 +872,12 @@ async def _persist_protocol_results(
 async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     if settings.environment != "development":
         raise RunnerBlocked("controlled evaluation is development-only")
+    if arguments.prepare_review_hold and arguments.resume_review_hold is not None:
+        raise RunnerBlocked("review hold preparation and resume are mutually exclusive")
+    if arguments.prepare_review_hold and arguments.execute_live:
+        raise RunnerBlocked("review hold preparation cannot execute live")
+    if arguments.resume_review_hold is not None and not arguments.execute_live:
+        raise RunnerBlocked("review hold resume requires separately authorized live mode")
     if not arguments.execute_live and (
         settings.model_eval_openai_source_enabled
         or settings.public_chat_model_eval_enabled
@@ -715,9 +889,30 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     ):
         raise RunnerBlocked("live continuation requires both process-scoped flags")
 
-    bindings = await _create_sessions(arguments)
+    bindings: list[SessionBinding] = []
+    hold_path: Path | None = None
+    claimed_path: Path | None = None
+    saved_manifest: dict[str, Any] | None = None
+    cleanup_owned = True
+    if arguments.resume_review_hold is not None:
+        claimed_path, bindings, saved_manifest, hold_payload = (
+            _load_claimed_review_hold(arguments.resume_review_hold)
+        )
+        if (
+            hold_payload.get("organization_id") != arguments.organization_id
+            or hold_payload.get("run_id") != arguments.run_id
+            or hold_payload.get("embedding_origin") != arguments.embedding_origin
+            or hold_payload.get("expires_at") != arguments.expires_at
+        ):
+            await _close_sessions(bindings)
+            claimed_path.unlink(missing_ok=True)
+            raise RunnerBlocked("review hold invocation differs from prepared binding")
+    else:
+        bindings = await _create_sessions(arguments)
     try:
         plan, count_policy, policy = _build_plan(arguments, bindings)
+        if saved_manifest is not None and plan["activation_manifest"] != saved_manifest:
+            raise RunnerBlocked("review hold manifest or source changed after preparation")
         fixture_json = json.dumps(
             expanded_turns(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
         )
@@ -742,6 +937,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "sdk_retries": 0,
             },
             "activation_manifest": plan["activation_manifest"],
+            "activation_manifest_sha256": _canonical_manifest_digest(
+                plan["activation_manifest"]
+            ),
             "approval_status": "not_checked",
             "evidence_status": "operator_proposal_pending_authenticated_review",
             "conditional_billing_acceptance_required": {
@@ -759,7 +957,34 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "cost_assumptions": plan["budget"],
             "real_model_quality_measured": False,
         }
+        if arguments.prepare_review_hold:
+            hold_path = _write_review_hold(
+                arguments=arguments,
+                bindings=bindings,
+                manifest=plan["activation_manifest"],
+            )
+            preview["mode"] = "provider_disabled_review_hold"
+            preview["review_hold_path"] = str(hold_path)
+            preview["automatic_execution"] = False
         print(json.dumps(preview, indent=2, ensure_ascii=False, sort_keys=True))
+        if arguments.prepare_review_hold:
+            try:
+                outcome = await _wait_for_review_hold(
+                    path=hold_path, arguments=arguments
+                )
+            except KeyboardInterrupt:
+                outcome = "cancelled"
+            if outcome == "claimed_for_separately_authorized_resume":
+                cleanup_owned = False
+            else:
+                hold_path.unlink(missing_ok=True)
+            return {
+                "status": f"review_hold_{outcome}",
+                "activation_manifest_sha256": preview[
+                    "activation_manifest_sha256"
+                ],
+                "cleanup_pending": cleanup_owned,
+            }
         if not arguments.execute_live:
             return {"status": "preflight_complete_no_provider_access", **preview}
 
@@ -798,7 +1023,14 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         finally:
             await client.aclose()
     finally:
-        cleanup_failures = await _close_sessions(bindings)
+        cleanup_failures = (
+            await _close_sessions(bindings) if cleanup_owned and bindings else []
+        )
+        if cleanup_owned:
+            if hold_path is not None:
+                hold_path.unlink(missing_ok=True)
+            if claimed_path is not None:
+                claimed_path.unlink(missing_ok=True)
         if cleanup_failures:
             print(
                 f"cleanup_warning_count={len(cleanup_failures)}",

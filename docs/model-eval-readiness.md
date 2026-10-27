@@ -531,6 +531,26 @@ ENVIRONMENT=development uv run python -m scripts.run_controlled_chat_model_evalu
   --additional-all-in-reserve-usd 0.00484
 ```
 
+For an owner-reviewable manifest whose exact synthetic sessions must survive
+until a separately authorized invocation, add `--prepare-review-hold`. The
+process keeps both provider flags false, writes the otherwise unrecoverable
+one-time session capabilities to an owner-only mode-0600 file under
+`/tmp/cxops-model-eval-review-holds`, prints only its non-secret path and the
+canonical manifest digest, and waits. It never checks approval, constructs a
+provider client, prompts for a key, or transitions automatically. The holder
+closes all sessions and removes the file on rejection, expiry, Ctrl-C, or
+ordinary cancellation; it reports bounded cleanup failures.
+
+After the exact manifest is independently reviewed and all separately required
+records and execution authorization exist, the same full command may be run in
+the separately authorized live environment with `--execute-live
+--resume-review-hold <PRINTED_PATH>`. Resume atomically claims the mode-0600
+file, re-derives and byte-compares the manifest and source identity, and reuses
+the same ten session ids. A changed source, argument, expiry, manifest,
+permission, tenant, run, or session binding fails closed and cleans up. The raw
+session capabilities are never printed or accepted through command arguments.
+The hold path is local development state, not an approval or authorization.
+
 The preflight reports `approval_status: not_checked`, does not prompt for a key,
 and performs no provider request. Fresh session tokens remain process-local and
 are never printed. Its illustrative sessions are closed in `finally`; a live
