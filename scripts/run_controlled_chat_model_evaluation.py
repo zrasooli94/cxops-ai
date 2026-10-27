@@ -499,6 +499,14 @@ async def _wait_for_review_hold(
     """Hold until claimed, rejected, expired, or interrupted by the operator."""
     expiry = _timestamp(arguments.expires_at)
     while True:
+        if (
+            await _latest_release_decision(
+                organization_id=arguments.organization_id,
+                run_id=arguments.run_id,
+            )
+            == "rejected"
+        ):
+            return "rejected"
         try:
             _read_review_hold_file(path)
         except FileNotFoundError:
@@ -528,14 +536,6 @@ async def _wait_for_review_hold(
             return "invalid_hold"
         if datetime.now(UTC) >= expiry:
             return "expired"
-        if (
-            await _latest_release_decision(
-                organization_id=arguments.organization_id,
-                run_id=arguments.run_id,
-            )
-            == "rejected"
-        ):
-            return "rejected"
         await asyncio.sleep(poll_seconds)
 
 

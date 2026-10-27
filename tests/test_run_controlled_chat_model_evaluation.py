@@ -89,6 +89,11 @@ def stable_source_identity(monkeypatch):
             "reviewed_source_commit": "d" * 40,
         },
     )
+    monkeypatch.setattr(
+        runner,
+        "_latest_release_decision",
+        lambda **_kwargs: _async(None),
+    )
 
 
 @pytest.mark.asyncio
@@ -478,6 +483,51 @@ async def test_holder_does_not_transfer_ownership_before_claim_ack(monkeypatch, 
     runner._remove_review_hold_file(
         hold_path.with_name(runner._claim_ack_name(hold_path))
     )
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_rejection_cleans_incomplete_claim_before_expiry(monkeypatch, tmp_path):
+    cleaned = []
+    decision_checks = 0
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(
+        runner,
+        "_close_sessions",
+        lambda items: _async(cleaned.extend(item.session_id for item in items) or []),
+    )
+    original_wait = runner._wait_for_review_hold
+
+    async def rejected():
+        nonlocal decision_checks
+        decision_checks += 1
+        return "rejected"
+
+    async def claim_without_ack_then_wait(*, path, state_sha256, arguments):
+        runner._load_claimed_review_hold(path)
+        monkeypatch.setattr(
+            runner,
+            "_latest_release_decision",
+            lambda **_kwargs: rejected(),
+        )
+        return await original_wait(
+            path=path,
+            state_sha256=state_sha256,
+            arguments=arguments,
+            poll_seconds=0,
+        )
+
+    monkeypatch.setattr(runner, "_wait_for_review_hold", claim_without_ack_then_wait)
+
+    result = await runner._run(_args(prepare_review_hold=True))
+
+    assert result["status"] == "review_hold_rejected"
+    assert decision_checks == 1
+    assert cleaned == list(range(1, 11))
     assert list(tmp_path.iterdir()) == []
 
 
