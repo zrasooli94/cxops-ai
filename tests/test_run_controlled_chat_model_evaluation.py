@@ -1,3 +1,4 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
@@ -388,6 +389,95 @@ def test_simultaneous_review_hold_claim_has_exactly_one_winner(monkeypatch, tmp_
     assert claimed.name == runner._claimed_hold_name(hold_path)
     assert [item.name for item in tmp_path.iterdir()] == [claimed.name]
     runner._remove_review_hold_file(claimed)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [runner.RunnerBlocked("verify failed"), KeyboardInterrupt()])
+async def test_post_rename_failure_keeps_holder_cleanup_ownership(
+    monkeypatch, tmp_path, failure
+):
+    cleaned = []
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "model_eval_openai_source_enabled", False)
+    monkeypatch.setattr(settings, "public_chat_model_eval_enabled", False)
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    monkeypatch.setattr(runner, "_create_sessions", lambda _args: _async(_bindings()))
+    monkeypatch.setattr(
+        runner,
+        "_close_sessions",
+        lambda items: _async(cleaned.extend(item.session_id for item in items) or []),
+    )
+    original_wait = runner._wait_for_review_hold
+    original_read = runner._read_review_hold_file
+
+    async def interrupted_claim_then_expire(*, path, state_sha256, arguments):
+        reads = 0
+
+        def fail_after_rename(target):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                raise failure
+            return original_read(target)
+
+        monkeypatch.setattr(runner, "_read_review_hold_file", fail_after_rename)
+        with pytest.raises(type(failure)):
+            runner._load_claimed_review_hold(path)
+        monkeypatch.setattr(runner, "_read_review_hold_file", original_read)
+        arguments.expires_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        return await original_wait(
+            path=path,
+            state_sha256=state_sha256,
+            arguments=arguments,
+            poll_seconds=0,
+        )
+
+    monkeypatch.setattr(
+        runner, "_wait_for_review_hold", interrupted_claim_then_expire
+    )
+
+    result = await runner._run(_args(prepare_review_hold=True))
+
+    assert result["status"] == "review_hold_expired"
+    assert cleaned == list(range(1, 11))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_holder_does_not_transfer_ownership_before_claim_ack(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(args, _bindings())
+    hold_path, state_sha256 = runner._write_review_hold(
+        arguments=args,
+        bindings=_bindings(),
+        manifest=plan["activation_manifest"],
+    )
+    claimed, _bindings_loaded, _manifest, _payload = (
+        runner._load_claimed_review_hold(hold_path)
+    )
+
+    pending = asyncio.create_task(
+        runner._wait_for_review_hold(
+            path=hold_path,
+            state_sha256=state_sha256,
+            arguments=args,
+            poll_seconds=0.01,
+        )
+    )
+    await asyncio.sleep(0.03)
+    assert not pending.done()
+
+    runner._acknowledge_review_hold_claim(claimed)
+    assert await asyncio.wait_for(pending, timeout=1) == (
+        "claimed_for_separately_authorized_resume"
+    )
+    runner._remove_review_hold_file(claimed)
+    runner._remove_review_hold_file(
+        hold_path.with_name(runner._claim_ack_name(hold_path))
+    )
     assert list(tmp_path.iterdir()) == []
 
 

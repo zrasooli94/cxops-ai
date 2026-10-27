@@ -279,6 +279,10 @@ def _claim_lock_name(path: Path) -> str:
     return f".{path.name}.claim-lock"
 
 
+def _claim_ack_name(path: Path) -> str:
+    return f".{path.name}.claim-ack"
+
+
 def _remove_review_hold_file(path: Path) -> None:
     descriptor = _open_review_hold_directory(create=False)
     try:
@@ -314,6 +318,28 @@ def _read_review_hold_file(path: Path) -> bytes:
                 os.close(file_descriptor)
     finally:
         os.close(descriptor)
+
+
+def _acknowledge_review_hold_claim(claimed: Path) -> None:
+    """Complete ownership transfer only after the guarded runner lifecycle starts."""
+    state_sha256 = hashlib.sha256(_read_review_hold_file(claimed)).hexdigest()
+    directory_descriptor = _open_review_hold_directory(create=False)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(
+        _claim_ack_name(claimed.with_name(claimed.name.removeprefix(".").removesuffix(".claimed"))),
+        flags,
+        0o600,
+        dir_fd=directory_descriptor,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(state_sha256.encode("ascii"))
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(directory_descriptor)
 
 
 def _write_review_hold(
@@ -479,9 +505,23 @@ async def _wait_for_review_hold(
             claimed = path.with_name(_claimed_hold_name(path))
             try:
                 claimed_bytes = _read_review_hold_file(claimed)
-            except (FileNotFoundError, RunnerBlocked):
+            except FileNotFoundError:
                 return "cancelled_or_deleted"
+            except RunnerBlocked:
+                return "invalid_claim"
+            ack = path.with_name(_claim_ack_name(path))
+            try:
+                ack_bytes = _read_review_hold_file(ack)
+            except FileNotFoundError:
+                if datetime.now(UTC) >= expiry:
+                    return "expired"
+                await asyncio.sleep(poll_seconds)
+                continue
+            except RunnerBlocked:
+                return "invalid_claim"
             if hashlib.sha256(claimed_bytes).hexdigest() != state_sha256:
+                return "invalid_claim"
+            if ack_bytes != state_sha256.encode("ascii"):
                 return "invalid_claim"
             return "claimed_for_separately_authorized_resume"
         except RunnerBlocked:
@@ -1023,6 +1063,8 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         plan, count_policy, policy = _build_plan(arguments, bindings)
         if saved_manifest is not None and plan["activation_manifest"] != saved_manifest:
             raise RunnerBlocked("review hold manifest or source changed after preparation")
+        if claimed_path is not None:
+            _acknowledge_review_hold_claim(claimed_path)
         fixture_json = json.dumps(
             expanded_turns(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
         )
@@ -1093,6 +1135,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 _remove_review_hold_file(
                     hold_path.with_name(_claimed_hold_name(hold_path))
                 )
+                _remove_review_hold_file(
+                    hold_path.with_name(_claim_ack_name(hold_path))
+                )
             return {
                 "status": f"review_hold_{outcome}",
                 "activation_manifest_sha256": preview[
@@ -1147,8 +1192,17 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 _remove_review_hold_file(
                     hold_path.with_name(_claimed_hold_name(hold_path))
                 )
+                _remove_review_hold_file(
+                    hold_path.with_name(_claim_ack_name(hold_path))
+                )
             if claimed_path is not None:
                 _remove_review_hold_file(claimed_path)
+                original = claimed_path.with_name(
+                    claimed_path.name.removeprefix(".").removesuffix(".claimed")
+                )
+                _remove_review_hold_file(
+                    original.with_name(_claim_ack_name(original))
+                )
         if cleanup_failures:
             print(
                 f"cleanup_warning_count={len(cleanup_failures)}",
