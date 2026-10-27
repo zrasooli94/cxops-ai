@@ -103,18 +103,34 @@ class InputTokenCountPolicy:
     billing_status: str = "billable"
     independently_verified: bool = False
     explicitly_approved: bool = False
+    conditional_policy_version: str | None = None
+    conditional_evidence_sha256: str | None = None
 
     def validate(self, *, expected_model: str) -> None:
-        if (
+        independently_reviewed = (
+            self.independently_verified
+            and self.billing_status in {"billable", "no_charge"}
+            and self.conditional_policy_version is None
+            and self.conditional_evidence_sha256 is None
+        )
+        conditionally_accepted = (
             not self.independently_verified
-            or not self.explicitly_approved
+            and self.billing_status == "unknown"
+            and self.conditional_policy_version == "cxops-count-uncertainty-v1"
+            and self.conditional_evidence_sha256
+            == "2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d"
+            and self.reservation_per_attempt_usd == 0.00030
+        )
+        if (
+            not self.explicitly_approved
+            or not (independently_reviewed or conditionally_accepted)
             or self.endpoint != "https://api.openai.com/v1/responses/input_tokens"
             or self.model != expected_model
             or self.region != "standard"
             or not self.evidence_id.strip()
             or self.evidence_expires_at.tzinfo is None
             or self.evidence_expires_at.astimezone(UTC) <= datetime.now(UTC)
-            or self.billing_status not in {"billable", "no_charge"}
+            or self.billing_status not in {"billable", "no_charge", "unknown"}
             or not isfinite(self.reservation_per_attempt_usd)
             or (
                 self.billing_status == "billable"
@@ -123,6 +139,10 @@ class InputTokenCountPolicy:
             or (
                 self.billing_status == "no_charge"
                 and self.reservation_per_attempt_usd != 0
+            )
+            or (
+                self.billing_status == "unknown"
+                and self.reservation_per_attempt_usd != 0.00030
             )
         ):
             raise EvaluationBlockedError(

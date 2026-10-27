@@ -33,6 +33,15 @@ from app.models.ai_request_log import AIRequestLog
 from app.models.ai_usage_reservation import AIUsageReservation
 from app.services.model_eval_activation_plan import OperatorActivationPlan
 from app.services.model_eval_billing_evidence import require_reviewed_billing_evidence
+from app.services.model_eval_conditional_billing import (
+    ALL_IN_EVIDENCE_ID,
+    CONDITIONAL_BILLING_POLICY,
+    CONDITIONAL_BILLING_POLICY_VERSION,
+    COUNT_EVIDENCE_ID,
+    OWNER_ACCEPTANCE_STATEMENT,
+    conditional_acceptance_request,
+    require_conditional_billing_acceptance,
+)
 from app.services.model_eval_controller import (
     EvaluationBlockedError,
     EvaluationPolicy,
@@ -61,9 +70,12 @@ RUNNER_SOURCE_PATH = Path(__file__).resolve()
 SOURCE_BOUND_PATHS = (
     "scripts/run_controlled_chat_model_evaluation.py",
     "scripts/plan_chat_model_evaluation.py",
+    "app/api/routes/evaluations.py",
+    "app/schemas/evaluation.py",
     "app/services/ai_evaluation_service.py",
     "app/services/model_eval_activation_plan.py",
     "app/services/model_eval_billing_evidence.py",
+    "app/services/model_eval_conditional_billing.py",
     "app/services/model_eval_controller.py",
     "app/services/model_eval_development_lifecycle.py",
     "app/services/model_eval_openai_adapter.py",
@@ -206,13 +218,25 @@ def _build_plan(
     count_expiry = _timestamp(arguments.count_evidence_expires_at)
     all_in_expiry = _timestamp(arguments.all_in_evidence_expires_at)
     identity = _source_identity()
+    if arguments.count_evidence_id != COUNT_EVIDENCE_ID:
+        raise RunnerBlocked("count evidence does not match the conditional policy")
+    if arguments.all_in_evidence_id != ALL_IN_EVIDENCE_ID:
+        raise RunnerBlocked("all-in evidence does not match the conditional policy")
+    if (
+        arguments.additional_all_in_reserve_usd
+        != CONDITIONAL_BILLING_POLICY.malaysia_tax_planning_allowance_usd
+    ):
+        raise RunnerBlocked("tax planning allowance does not match the conditional policy")
     plan = OperatorActivationPlan.build(
         environment=settings.environment,
         organization_id=arguments.organization_id,
         public_chat_session_ids=tuple(item.session_id for item in bindings),
         run_id=arguments.run_id,
         expires_at=_timestamp(arguments.expires_at),
-        count_billing_status="no_charge",
+        count_billing_status="unknown",
+        count_cost_reservation_per_attempt_usd=(
+            CONDITIONAL_BILLING_POLICY.count_reservation_per_attempt_usd
+        ),
         count_billing_evidence_url="https://developers.openai.com/api/docs/guides/token-counting",
         count_billing_evidence_id=arguments.count_evidence_id,
         count_billing_evidence_expires_at=count_expiry,
@@ -221,18 +245,25 @@ def _build_plan(
         all_in_evidence_id=arguments.all_in_evidence_id,
         all_in_evidence_expires_at=all_in_expiry,
         all_in_independently_verified=False,
+        conditional_billing_policy_version=CONDITIONAL_BILLING_POLICY_VERSION,
         **identity,
     ).render()
     count_policy = InputTokenCountPolicy(
         endpoint=plan["activation_manifest"]["count_policy"]["endpoint"],
         model="gpt-6-luna",
         region="standard",
-        reservation_per_attempt_usd=0,
+        reservation_per_attempt_usd=(
+            CONDITIONAL_BILLING_POLICY.count_reservation_per_attempt_usd
+        ),
         evidence_id=arguments.count_evidence_id,
         evidence_expires_at=count_expiry,
-        billing_status="no_charge",
+        billing_status="unknown",
         independently_verified=False,
         explicitly_approved=False,
+        conditional_policy_version=CONDITIONAL_BILLING_POLICY_VERSION,
+        conditional_evidence_sha256=(
+            CONDITIONAL_BILLING_POLICY.support_evidence_sha256
+        ),
     )
     policy = EvaluationPolicy(
         additional_all_in_reserve_usd=arguments.additional_all_in_reserve_usd
@@ -281,9 +312,18 @@ async def _require_approval(
         if not isinstance(manifest, dict):
             raise EvaluationBlockedError("durable evaluation approval is missing")
         approved_manifest = validate_activation_manifest(manifest)
-        expected_approved_manifest = validate_activation_manifest(
-            require_reviewed_billing_evidence(proposed_manifest)
-        )
+        if proposed_manifest.get("conditional_billing_policy") is not None:
+            expected_approved_manifest = validate_activation_manifest(
+                require_conditional_billing_acceptance(
+                    proposed_manifest,
+                    acceptance=conditional_acceptance_request(),
+                    accepted_by_subject=decision.decided_by_subject,
+                )
+            )
+        else:
+            expected_approved_manifest = validate_activation_manifest(
+                require_reviewed_billing_evidence(proposed_manifest)
+            )
         if approved_manifest != expected_approved_manifest:
             raise EvaluationBlockedError(
                 "approved manifest differs from the exact printed proposal"
@@ -307,8 +347,20 @@ async def _require_approval(
             evidence_id=approved_count["evidence_id"],
             evidence_expires_at=_timestamp(approved_count["evidence_expires_at"]),
             billing_status=approved_count["billing_status_claim"],
-            independently_verified=True,
+            independently_verified=(
+                approved_count["evidence_verification"] == "independently_verified"
+            ),
             explicitly_approved=True,
+            conditional_policy_version=(
+                CONDITIONAL_BILLING_POLICY_VERSION
+                if approved_manifest.get("conditional_billing_policy") is not None
+                else None
+            ),
+            conditional_evidence_sha256=(
+                CONDITIONAL_BILLING_POLICY.support_evidence_sha256
+                if approved_manifest.get("conditional_billing_policy") is not None
+                else None
+            ),
         )
         policy = EvaluationPolicy(
             additional_all_in_reserve_usd=approved_manifest[
@@ -609,6 +661,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "activation_manifest": plan["activation_manifest"],
             "approval_status": "not_checked",
             "evidence_status": "operator_proposal_pending_authenticated_review",
+            "conditional_billing_acceptance_required": {
+                "statement": OWNER_ACCEPTANCE_STATEMENT,
+                "request": conditional_acceptance_request(),
+                "authenticated_subject_supplied_by_server": True,
+                "live_execution_authorized": False,
+            },
             "cost_assumptions": plan["budget"],
             "real_model_quality_measured": False,
         }

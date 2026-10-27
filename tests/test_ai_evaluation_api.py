@@ -64,6 +64,7 @@ TEST_AUDIENCE = "test-eval-api-audience"
 USER_ALPHA = "user-alpha"
 USER_BETA = "user-beta"
 USER_VIEWER = "user-viewer"
+USER_SUPERVISOR = "user-supervisor"
 
 X_TENANT = "X-CXOps-Organization-ID"
 
@@ -1055,6 +1056,39 @@ def _provider_activation_manifest():
     ).render()["activation_manifest"]
 
 
+def _conditional_provider_activation_manifest():
+    from app.services.model_eval_activation_plan import OperatorActivationPlan
+    from app.services.model_eval_conditional_billing import (
+        ALL_IN_EVIDENCE_ID,
+        CONDITIONAL_BILLING_POLICY_VERSION,
+        COUNT_EVIDENCE_ID,
+    )
+
+    expiry = datetime.now(UTC) + timedelta(minutes=30)
+    return OperatorActivationPlan.build(
+        environment="development",
+        organization_id=1,
+        public_chat_session_ids=tuple(range(101, 111)),
+        run_id="api-conditional-activation",
+        expires_at=expiry,
+        count_billing_status="unknown",
+        count_cost_reservation_per_attempt_usd=0.00030,
+        count_billing_evidence_url=(
+            "https://developers.openai.com/api/docs/guides/token-counting"
+        ),
+        count_billing_evidence_id=COUNT_EVIDENCE_ID,
+        count_billing_evidence_expires_at=expiry,
+        additional_all_in_reserve_usd=0.00484,
+        all_in_evidence_id=ALL_IN_EVIDENCE_ID,
+        all_in_evidence_expires_at=expiry,
+        conditional_billing_policy_version=CONDITIONAL_BILLING_POLICY_VERSION,
+        frozen_fixture_sha256="a" * 64,
+        evaluation_spec_sha256="b" * 64,
+        runner_source_sha256="c" * 64,
+        reviewed_source_commit="d" * 40,
+    ).render()["activation_manifest"]
+
+
 @pytest.fixture
 def reviewed_billing_registry(monkeypatch):
     from app.services.model_eval_billing_evidence import ReviewedBillingEvidence
@@ -1184,6 +1218,136 @@ async def test_manage_can_immutably_review_bounded_provider_activation(
     assert stored["all_in_evidence_verification"] == "independently_verified"
     assert stored["frozen_fixture_sha256"] == manifest["frozen_fixture_sha256"]
     assert stored["reviewed_source_commit"] == manifest["reviewed_source_commit"]
+
+
+@pytest.mark.asyncio
+async def test_manage_can_record_explicit_conditional_billing_acceptance(
+    client, two_orgs, db, monkeypatch
+):
+    from app.services.model_eval_conditional_billing import (
+        conditional_acceptance_request,
+    )
+
+    monkeypatch.setattr(settings, "environment", "development")
+
+    async def _validated(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        "app.services.model_eval_rag_prerequisite.validate_persisted_offline_rag_contract",
+        _validated,
+    )
+    org = two_orgs["org_a"]
+    run = await _make_succeeded_run(
+        db,
+        organization_id=org.id,
+        pass_rate=1.0,
+        metrics={
+            "total_cases": 2,
+            "passed_cases": 2,
+            "retrieval_accuracy": 1.0,
+            "grounding_accuracy": 1.0,
+            "citation_validity": 1.0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+        },
+        model="offline-grounded-contract-v1",
+        embedding_model="none-lexical",
+        corpus_revision={
+            "offline_contract_fixture_sha256": "a" * 64,
+            "offline_contract_corpus_sha256": "b" * 64,
+            "offline_contract_case_count": 2,
+        },
+    )
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=_conditional_provider_activation_manifest(),
+        conditional_billing_acceptance=conditional_acceptance_request(),
+    )
+    assert response.status_code == 201, response.text
+    stored = response.json()["comparison_snapshot"]["provider_activation"]
+    assert stored["count_policy"]["billing_status_claim"] == "unknown"
+    assert stored["count_policy"]["reservation_all_attempts_usd"] == 0.03
+    assert stored["combined_reservation_usd"] == 0.09534
+    assert stored["conditional_billing_policy"]["accepted_by_subject"] == USER_ALPHA
+    assert (
+        stored["count_policy"]["evidence_verification"]
+        == "owner_accepted_uncertainty_not_independently_verified"
+    )
+
+
+@pytest.mark.asyncio
+async def test_conditional_policy_requires_exact_authenticated_acceptance(
+    client, two_orgs, db, monkeypatch
+):
+    monkeypatch.setattr(settings, "environment", "development")
+
+    async def _validated(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        "app.services.model_eval_rag_prerequisite.validate_persisted_offline_rag_contract",
+        _validated,
+    )
+    org = two_orgs["org_a"]
+    run = await _make_succeeded_run(
+        db,
+        organization_id=org.id,
+        pass_rate=1.0,
+        model="offline-grounded-contract-v1",
+        embedding_model="none-lexical",
+        corpus_revision={
+            "offline_contract_fixture_sha256": "a" * 64,
+            "offline_contract_corpus_sha256": "b" * 64,
+            "offline_contract_case_count": 0,
+        },
+    )
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        provider_activation=_conditional_provider_activation_manifest(),
+    )
+    assert response.status_code == 400
+    assert "explicit conditional billing acceptance is required" in response.text
+
+
+@pytest.mark.asyncio
+async def test_non_owner_manager_cannot_accept_conditional_billing(
+    client, two_orgs, db
+):
+    from app.services.model_eval_conditional_billing import (
+        conditional_acceptance_request,
+    )
+
+    org = two_orgs["org_a"]
+    db.add(
+        OrganizationMembership(
+            subject=USER_SUPERVISOR,
+            organization_id=org.id,
+            role=OrganizationRole.SUPERVISOR,
+        )
+    )
+    await db.commit()
+    run = await _make_succeeded_run(db, organization_id=org.id, pass_rate=1.0)
+    baseline = await _make_baseline_for_org(db, organization_id=org.id, run=run)
+    response = await _post_release_decision(
+        client,
+        run=run,
+        baseline=baseline,
+        organization_id=org.id,
+        sub=USER_SUPERVISOR,
+        provider_activation=_conditional_provider_activation_manifest(),
+        conditional_billing_acceptance=conditional_acceptance_request(),
+    )
+    assert response.status_code == 403
+    assert "requires the tenant owner" in response.text
 
 
 @pytest.mark.asyncio

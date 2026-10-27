@@ -114,6 +114,29 @@ def _verified_count_policy(**changes):
     return InputTokenCountPolicy(**values)
 
 
+def _conditionally_accepted_count_policy(**changes):
+    values = {
+        "endpoint": "https://api.openai.com/v1/responses/input_tokens",
+        "model": "gpt-6-luna",
+        "region": "standard",
+        "reservation_per_attempt_usd": 0.00030,
+        "evidence_id": (
+            "paul-support-2026-10-27-sha256:"
+            "2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d"
+        ),
+        "evidence_expires_at": datetime.now(UTC) + timedelta(minutes=30),
+        "billing_status": "unknown",
+        "independently_verified": False,
+        "explicitly_approved": True,
+        "conditional_policy_version": "cxops-count-uncertainty-v1",
+        "conditional_evidence_sha256": (
+            "2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d"
+        ),
+    }
+    values.update(changes)
+    return InputTokenCountPolicy(**values)
+
+
 class _AllowActiveSession:
     async def assert_generation_allowed(self, _db, **_kwargs):
         return None
@@ -137,9 +160,16 @@ def _controller(transport, *, organization_id=1, **changes):
     )
 
 
-def _counted_controller(generation_transport, count_transport, *, organization_id=1, count_policy=None):
+def _counted_controller(
+    generation_transport,
+    count_transport,
+    *,
+    organization_id=1,
+    count_policy=None,
+    evaluation_policy=None,
+):
     return ModelEvaluationController(
-        policy=EvaluationPolicy(),
+        policy=evaluation_policy or EvaluationPolicy(),
         exact_token_counter=None,
         count_policy=count_policy or _verified_count_policy(),
         count_transport=count_transport,
@@ -149,6 +179,94 @@ def _counted_controller(generation_transport, count_transport, *, organization_i
         approved_organization_id=organization_id,
         session_guard=_AllowActiveSession(),
     )
+
+
+@pytest.mark.asyncio
+async def test_conditional_count_reserve_is_durable_and_keeps_positive_headroom(db):
+    organization = Organization(name=f"Conditional eval {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    count_transport = _DisconnectedCountTransport(organization.id, result=12)
+    generation_transport = _InspectingTransport(organization.id)
+    controller = _counted_controller(
+        generation_transport,
+        count_transport,
+        organization_id=organization.id,
+        count_policy=_conditionally_accepted_count_policy(),
+        evaluation_policy=EvaluationPolicy(additional_all_in_reserve_usd=0.00484),
+    )
+    assert await controller.attempt(
+        db,
+        organization_id=organization.id,
+        run_id="approved-eval",
+        turn_number=1,
+        retry_number=0,
+        serialized_input="bounded full request",
+        public_chat_session_id=101,
+        canonical_request_payload=_canonical_payload("bounded full request"),
+    ) == "mocked response"
+    reservations = list(
+        await db.scalars(
+            select(AIUsageReservation)
+            .where(AIUsageReservation.organization_id == organization.id)
+            .order_by(AIUsageReservation.reservation_key)
+        )
+    )
+    assert [float(item.estimated_cost_usd) for item in reservations] == pytest.approx(
+        [0.00030, 0.000605]
+    )
+    assert all(item.status == "settled" for item in reservations)
+
+
+@pytest.mark.asyncio
+async def test_conditional_uncertain_count_blocks_conflicting_dispatch(db):
+    organization = Organization(name=f"Conditional conflict {uuid.uuid4().hex}")
+    db.add(organization)
+    await db.commit()
+    count_transport = _DisconnectedCountTransport(
+        organization.id, error=TimeoutError("uncertain count outcome")
+    )
+    generation_transport = _Transport()
+    controller = _counted_controller(
+        generation_transport,
+        count_transport,
+        organization_id=organization.id,
+        count_policy=_conditionally_accepted_count_policy(),
+        evaluation_policy=EvaluationPolicy(additional_all_in_reserve_usd=0.00484),
+    )
+    args = {
+        "organization_id": organization.id,
+        "run_id": "approved-eval",
+        "turn_number": 1,
+        "retry_number": 0,
+        "serialized_input": "bounded full request",
+        "public_chat_session_id": 101,
+        "canonical_request_payload": _canonical_payload("bounded full request"),
+    }
+    with pytest.raises(AmbiguousModelOutcome, match="count outcome"):
+        await controller.attempt(db, **args)
+    async with AsyncSessionLocal() as other_db:
+        with pytest.raises(EvaluationBlockedError, match="reconciliation"):
+            await controller.attempt(
+                other_db,
+                **{
+                    **args,
+                    "turn_number": 2,
+                    "serialized_input": "different request",
+                    "canonical_request_payload": _canonical_payload(
+                        "different request"
+                    ),
+                },
+            )
+    reservation = await db.scalar(
+        select(AIUsageReservation).where(
+            AIUsageReservation.organization_id == organization.id
+        )
+    )
+    assert reservation is not None
+    assert reservation.status == "reserved"
+    assert float(reservation.estimated_cost_usd) == pytest.approx(0.00030)
+    assert generation_transport.calls == []
 
 
 def _canonical_payload(serialized_input: str) -> dict:

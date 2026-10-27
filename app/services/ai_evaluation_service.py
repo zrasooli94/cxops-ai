@@ -1186,6 +1186,7 @@ class AIEvaluationService:
         decided_by_subject: str,
         note: str | None = None,
         provider_activation: dict | None = None,
+        conditional_billing_acceptance: dict | None = None,
     ) -> AIEvaluationReleaseDecision:
         """Record one immutable human release decision (Phase 1J.8A).
 
@@ -1254,6 +1255,9 @@ class AIEvaluationService:
             from app.services.model_eval_billing_evidence import (
                 require_reviewed_billing_evidence,
             )
+            from app.services.model_eval_conditional_billing import (
+                require_conditional_billing_acceptance,
+            )
             from app.services.model_eval_controller import EvaluationBlockedError
             from app.services.model_eval_rag_prerequisite import (
                 is_offline_rag_contract_run,
@@ -1262,9 +1266,24 @@ class AIEvaluationService:
             from app.services.public_chat_model_eval import validate_activation_manifest
 
             try:
-                reviewed_activation = require_reviewed_billing_evidence(
-                    provider_activation
-                )
+                if provider_activation.get("conditional_billing_policy") is not None:
+                    if conditional_billing_acceptance is None:
+                        raise EvaluationBlockedError(
+                            "explicit conditional billing acceptance is required"
+                        )
+                    reviewed_activation = require_conditional_billing_acceptance(
+                        provider_activation,
+                        acceptance=conditional_billing_acceptance,
+                        accepted_by_subject=decided_by_subject,
+                    )
+                else:
+                    if conditional_billing_acceptance is not None:
+                        raise EvaluationBlockedError(
+                            "conditional billing acceptance does not match this manifest"
+                        )
+                    reviewed_activation = require_reviewed_billing_evidence(
+                        provider_activation
+                    )
                 validated_activation = validate_activation_manifest(reviewed_activation)
             except EvaluationBlockedError as exc:
                 raise ValueError(str(exc)) from None
@@ -1281,6 +1300,10 @@ class AIEvaluationService:
                     "provider activation requires matching offline RAG contract baseline and candidate"
                 )
             snapshot["provider_activation"] = validated_activation
+        elif conditional_billing_acceptance is not None:
+            raise ValueError(
+                "conditional billing acceptance requires a provider activation manifest"
+            )
         return await AIEvaluationRepository.create_release_decision(
             db,
             organization_id=organization_id,

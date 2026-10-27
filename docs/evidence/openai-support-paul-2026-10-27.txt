@@ -1,0 +1,102 @@
+CXOps AI — OpenAI Support Specialist clarification
+Preservation note (not part of email): The following is the full message body provided by the account owner in ChatGPT on October 27, 2026. Attribution in the body: Paul, OpenAI Support Specialist. It discusses case #18041142 and case #18371210. This record preserves the user-provided wording; original email headers, DKIM, sending address, and account-specific applicability have not been independently authenticated. The original user paste contained a display/markdown artifact after the Input pricing bullet; no substantive text has been omitted.
+
+----- BEGIN USER-PROVIDED SUPPORT RESPONSE -----
+
+Hello,
+
+Thank you for following up with OpenAI Support.
+
+This is Paul, a Support Specialist, and I’m taking over your case regarding the billing behavior of `POST /v1/responses/input_tokens` and your planned GPT-6 Luna API evaluation.
+
+I reviewed the guidance provided in both Case #18041142 and Case #18371210, and I want to clarify the discrepancy directly.
+
+The earlier statement that `POST /v1/responses/input_tokens` is completely free under every outcome—including failed, rejected, timed-out, or duplicate requests—was more definitive than the currently published documentation supports.
+
+Here is the current documented position:
+
+1. `POST /v1/responses/input_tokens`
+
+The token-counting endpoint is documented as a way to calculate the exact number of input tokens a Responses API request would use before sending the request to the model.
+
+The current API pricing documentation does not list a separate per-request price for `POST /v1/responses/input_tokens`.
+
+However, the documentation also does not provide an explicit blanket statement guaranteeing that every successful, failed, rejected, timed-out, or duplicate counting request will always result in zero prepaid-credit deduction under every circumstance.
+
+For that reason, we should not describe the endpoint as having an unconditional “free under all failure modes” guarantee unless such a guarantee is explicitly documented.
+
+The authoritative token-counting documentation is:
+
+https://developers.openai.com/api/docs/guides/token-counting
+
+API reference:
+
+https://developers.openai.com/api/reference/resources/responses/subresources/input_tokens/methods/count
+
+2. GPT-6 Luna generation pricing
+
+For GPT-6 Luna using Standard processing, the current published rates are:
+
+- Input: $0.10 per 1 million tokens
+- Output: $0.50 per 1 million tokens
+- Cached input: $0.01 per 1 million tokens
+
+These rates apply to actual model usage rather than the token-count result itself.
+
+Current pricing:
+
+https://developers.openai.com/api/docs/pricing
+
+GPT-6 Luna model information:
+
+https://developers.openai.com/api/docs/models/gpt-6-luna
+
+For standard global processing, the documentation does not identify the regional-processing 10% uplift as applicable. That uplift applies to eligible regional/data-residency processing.
+
+3. Failed, timed-out, or ambiguous generation requests
+
+There is no general rule in the public documentation stating that every failed generation request is automatically free.
+
+API pricing is based on the usage associated with the request. Therefore, if a request reaches model processing and usage is recorded before an error, timeout, or interruption, you should not assume that the request incurred zero usage.
+
+For an ambiguous request, the safest way to determine the actual charge is to review the usage information returned by the API where available and compare it with the API Usage Dashboard.
+
+A request that fails should therefore not automatically be treated as either billable or non-billable solely from the client-side error message.
+
+4. Malaysia billing and taxes
+
+The published model rates are API usage rates before any applicable taxes.
+
+OpenAI’s public billing documentation does not provide a fixed Malaysia-specific tax percentage that we can apply universally to every API account. Applicable taxes depend on the billing information associated with the API organization and any applicable Tax ID.
+
+Your Billing history, receipts, or invoices are the appropriate source for the actual tax amount charged to your account.
+
+If you are using GPT-6 Luna with Standard global processing and are not using separately billable tools, storage, regional processing, or other paid capabilities, the model's applicable token usage is the primary API usage charge, with any applicable taxes added through billing.
+
+5. US$0.10 absolute spending limit
+
+Your understanding here is correct: a US$0.10 hard spend limit cannot be treated as an absolute all-in maximum.
+
+OpenAI documents that hard spend-limit enforcement is not instantaneous. A small amount of additional usage may be processed while the limit state propagates, so actual recorded spend can slightly exceed the configured hard limit.
+
+Documentation:
+
+https://developers.openai.com/api/docs/guides/spend-limits
+
+Therefore, if your evaluation must never exceed US$0.10 under any circumstances, the API spend-limit setting alone cannot provide that absolute guarantee.
+
+For a small controlled evaluation, you can minimize exposure by limiting the number of generation requests and setting conservative output-token limits, then monitoring actual usage through the Usage Dashboard.
+
+This clarification reflects the OpenAI documentation available as of October 27, 2026. The public token-counting documentation does not currently publish a separate effective date for a specific pricing guarantee for `POST /v1/responses/input_tokens`.
+
+I hope this resolves the conflicting guidance between the two cases and gives you a clearer basis for your controlled API evaluation.
+
+If you have any other questions or concerns, please let us know. We're here to help.
+
+Best,
+
+Paul
+
+OpenAI Support
+
+----- END USER-PROVIDED SUPPORT RESPONSE -----

@@ -214,10 +214,11 @@ provider account access, or paid spend.
 5. Obtain explicit owner approval for the provider, model, credential method,
    50-turn case set, and US$0.10 hard ceiling before any metadata or generation
    request.
-6. Add independently reviewed count-billing and all-in evidence to the
-   server-owned registry in a separately reviewed source change. Caller JSON,
-   CLI values, the case-18041142 screenshot alone, and an authenticated
-   manager's unsupported assertion cannot populate that registry.
+6. Use either independently reviewed count/all-in evidence from the unchanged
+   server-owned registry, or the separate conditional policy described below.
+   The conditional path never promotes uncertain counting charges to
+   independently verified pricing and requires explicit authenticated owner
+   acceptance of its exact source-owned statement.
 
 ## Operator dry run and go/no-go
 
@@ -523,9 +524,9 @@ ENVIRONMENT=development uv run python -m scripts.run_controlled_chat_model_evalu
   --embedding-origin <EXACT_LOCAL_ALLOWED_ORIGIN> \
   --run-id <OFFLINE_RAG_CANDIDATE_RUN_ID> \
   --expires-at <UTC_5_TO_120_MINUTES_FROM_NOW> \
-  --count-evidence-id <REVIEWED_COUNT_EVIDENCE_ID> \
+  --count-evidence-id paul-support-2026-10-27-sha256:2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d \
   --count-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
-  --all-in-evidence-id <REVIEWED_ALL_IN_BUDGET_EVIDENCE_ID> \
+  --all-in-evidence-id malaysia-owner-planning-assumptions-2026-10-27 \
   --all-in-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
   --additional-all-in-reserve-usd 0.00484
 ```
@@ -551,9 +552,9 @@ uv run python -m scripts.run_controlled_chat_model_evaluation \
   --embedding-origin <EXACT_LOCAL_ALLOWED_ORIGIN> \
   --run-id <OFFLINE_RAG_CANDIDATE_RUN_ID> \
   --expires-at <UTC_5_TO_120_MINUTES_FROM_NOW> \
-  --count-evidence-id <REVIEWED_COUNT_EVIDENCE_ID> \
+  --count-evidence-id paul-support-2026-10-27-sha256:2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d \
   --count-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
-  --all-in-evidence-id <REVIEWED_ALL_IN_BUDGET_EVIDENCE_ID> \
+  --all-in-evidence-id malaysia-owner-planning-assumptions-2026-10-27 \
   --all-in-evidence-expires-at <UTC_FUTURE_TIMESTAMP> \
   --additional-all-in-reserve-usd 0.00484 \
   --execute-live
@@ -570,8 +571,53 @@ cannot substitute request flags for the authenticated decision. Evidence ids
 and verification claims printed before that decision are operator proposals,
 not trust anchors. They become usable only after an exact match in the
 server-owned reviewed registry and the authenticated reviewer approves the
-resulting immutable snapshot. The current empty registry makes live execution
-NO-GO before any key prompt or HTTP-client construction.
+resulting immutable snapshot. The independent registry remains empty. The
+alternative conditional policy also remains NO-GO until the exact manifest is
+explicitly accepted and approved through the authenticated workflow; the runner
+cannot create either action.
+
+### Conditional billing-uncertainty policy (development only)
+
+Policy version `cxops-count-uncertainty-v1` preserves counting charges as
+**unknown**. It allocates US$0.00030 to each of the separate 100 maximum count
+attempts, for a shared local uncertainty reserve of US$0.03000. This is not a
+verified price, a per-request provider ceiling, or an invoice guarantee. The
+existing generation reservation is US$0.06050 and the Malaysia tax planning
+allowance remains US$0.00484 exactly once, producing US$0.09534 total local
+reservation and US$0.00466 positive headroom below US$0.10.
+
+The policy binds the full tenant/run/ten-session manifest, fixture/spec/runner
+source identity, expiry, budget breakdown, the original case screenshot digest,
+and Paul response digest
+`2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d`.
+Paul's complete owner-supplied wording and its authentication limits are
+preserved in
+[`docs/evidence/openai-support-paul-2026-10-27.txt`](evidence/openai-support-paul-2026-10-27.txt).
+It corrects the earlier universal free-count claim: published documentation
+does not guarantee zero charge for every count outcome. The source is attributed
+to Paul, OpenAI Support Specialist, but the supplied text has no authenticated
+email headers, DKIM, sending address, or independently verified account scope.
+
+An authenticated owner with `evaluation.manage` must submit the printed
+`provider_activation` plus a separate `conditional_billing_acceptance` object
+whose four fields exactly match the runner output:
+
+```json
+{
+  "accepted": true,
+  "policy_version": "cxops-count-uncertainty-v1",
+  "support_evidence_sha256": "2096759e3e6e2dfa5842f393810536086466abd43d6dc204f070479fe346c63d",
+  "owner_acceptance_statement_sha256": "9a6de33e84d12797c34aab883fb67d7e8fd5d0a220c0b804c5237a4fa657be06"
+}
+```
+
+The server supplies the authenticated subject and persists it inside the
+immutable approved manifest. Caller-provided subjects, verification labels, or
+changed evidence/reserves are rejected. A newer rejection, expiration, policy
+drift, source drift, session mismatch, or manifest change blocks both initial
+setup and each persisted dispatch recheck. Acceptance and `evaluation.manage`
+approval do not authorize live execution: a later explicit owner authorization
+is still required before setting the two process-scoped flags or entering a key.
 
 Only after that recheck does the same process request the existing restricted
 key through `getpass`, install the provider for the context lifetime, execute

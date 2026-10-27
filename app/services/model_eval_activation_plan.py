@@ -9,6 +9,10 @@ from math import isfinite
 from typing import Literal
 from urllib.parse import urlparse
 
+from app.services.model_eval_conditional_billing import (
+    CONDITIONAL_BILLING_POLICY,
+    CONDITIONAL_BILLING_POLICY_VERSION,
+)
 from app.services.model_eval_controller import EvaluationPolicy
 
 
@@ -22,7 +26,7 @@ class OperatorActivationPlan:
     public_chat_session_ids: tuple[int, ...]
     run_id: str
     expires_at: str
-    count_billing_status: Literal["unresolved", "billable", "no_charge"] = "unresolved"
+    count_billing_status: Literal["unresolved", "billable", "no_charge", "unknown"] = "unresolved"
     count_cost_reservation_per_attempt_usd: float | None = None
     count_billing_evidence_url: str | None = None
     count_billing_evidence_id: str | None = None
@@ -32,6 +36,7 @@ class OperatorActivationPlan:
     all_in_evidence_id: str | None = None
     all_in_evidence_expires_at: str | None = None
     all_in_independently_verified: bool = False
+    conditional_billing_policy_version: str | None = None
     frozen_fixture_sha256: str = ""
     evaluation_spec_sha256: str = ""
     runner_source_sha256: str = ""
@@ -56,6 +61,7 @@ class OperatorActivationPlan:
         all_in_evidence_id: str | None = None,
         all_in_evidence_expires_at: datetime | None = None,
         all_in_independently_verified: bool = False,
+        conditional_billing_policy_version: str | None = None,
         frozen_fixture_sha256: str = "",
         evaluation_spec_sha256: str = "",
         runner_source_sha256: str = "",
@@ -81,20 +87,39 @@ class OperatorActivationPlan:
         expiry = expires_at.astimezone(UTC)
         if expiry <= now + timedelta(minutes=5) or expiry > now + timedelta(hours=2):
             raise ActivationPlanBlocked("expiry must be 5 minutes to 2 hours from now")
-        if count_billing_status not in {"unresolved", "billable", "no_charge"}:
+        if count_billing_status not in {
+            "unresolved",
+            "billable",
+            "no_charge",
+            "unknown",
+        }:
             raise ActivationPlanBlocked("count billing status is invalid")
-        if count_billing_status == "billable":
+        if count_billing_status in {"billable", "unknown"}:
             if (
                 count_cost_reservation_per_attempt_usd is None
                 or count_cost_reservation_per_attempt_usd <= 0
                 or not isfinite(count_cost_reservation_per_attempt_usd)
             ):
                 raise ActivationPlanBlocked(
-                    "billable counting requires a positive per-attempt reservation"
+                    "billable or unknown counting requires a positive reservation"
                 )
         elif count_cost_reservation_per_attempt_usd is not None:
             raise ActivationPlanBlocked(
                 "a count reservation is only valid with verified billable status"
+            )
+        if conditional_billing_policy_version is not None and (
+            conditional_billing_policy_version
+            != CONDITIONAL_BILLING_POLICY_VERSION
+            or count_billing_status != "unknown"
+            or count_cost_reservation_per_attempt_usd
+            != CONDITIONAL_BILLING_POLICY.count_reservation_per_attempt_usd
+            or count_billing_independently_verified
+            or all_in_independently_verified
+            or additional_all_in_reserve_usd
+            != CONDITIONAL_BILLING_POLICY.malaysia_tax_planning_allowance_usd
+        ):
+            raise ActivationPlanBlocked(
+                "conditional billing policy differs from the source-owned policy"
             )
         if count_billing_status == "unresolved":
             if count_billing_evidence_url is not None:
@@ -164,6 +189,7 @@ class OperatorActivationPlan:
                 if all_in_evidence_expires_at else None
             ),
             all_in_independently_verified=all_in_independently_verified,
+            conditional_billing_policy_version=conditional_billing_policy_version,
             frozen_fixture_sha256=frozen_fixture_sha256,
             evaluation_spec_sha256=evaluation_spec_sha256,
             runner_source_sha256=runner_source_sha256,
@@ -191,7 +217,11 @@ class OperatorActivationPlan:
             "evidence_verification": (
                 "independently_verified"
                 if self.count_billing_independently_verified
-                else "operator_supplied_unverified_by_dry_run"
+                else (
+                    "owner_acceptance_pending_not_independently_verified"
+                    if self.conditional_billing_policy_version
+                    else "operator_supplied_unverified_by_dry_run"
+                )
             ),
             "evidence_id": self.count_billing_evidence_id,
             "evidence_expires_at": self.count_billing_evidence_expires_at,
@@ -222,8 +252,18 @@ class OperatorActivationPlan:
             "all_in_evidence_id": self.all_in_evidence_id,
             "all_in_evidence_expires_at": self.all_in_evidence_expires_at,
             "all_in_evidence_verification": (
-                "independently_verified" if self.all_in_independently_verified
-                else "operator_supplied_unverified_by_dry_run"
+                "independently_verified"
+                if self.all_in_independently_verified
+                else (
+                    "owner_acceptance_pending_not_independently_verified"
+                    if self.conditional_billing_policy_version
+                    else "operator_supplied_unverified_by_dry_run"
+                )
+            ),
+            "conditional_billing_policy": (
+                CONDITIONAL_BILLING_POLICY.as_manifest(expires_at=self.expires_at)
+                if self.conditional_billing_policy_version
+                else None
             ),
             "count_policy": count_policy,
             "combined_reservation_usd": round(combined, 6),
@@ -234,7 +274,10 @@ class OperatorActivationPlan:
             "provider account/model access is not verified",
             "owner execution approval is not recorded",
         ]
-        if not self.count_billing_independently_verified:
+        if (
+            not self.count_billing_independently_verified
+            and not self.conditional_billing_policy_version
+        ):
             blockers.insert(
                 0, "count billing evidence requires independent verification"
             )
@@ -249,13 +292,21 @@ class OperatorActivationPlan:
             self.additional_all_in_reserve_usd is None
             or not self.all_in_evidence_id
             or not self.all_in_evidence_expires_at
-            or not self.all_in_independently_verified
+            or (
+                not self.all_in_independently_verified
+                and not self.conditional_billing_policy_version
+            )
         ):
             blockers.insert(
                 0, "verified all-in surcharge, tax, and ancillary reserve is required"
             )
         if self.count_billing_status == "unresolved":
             blockers.insert(0, "authoritative input-token count billing is unresolved")
+        if self.conditional_billing_policy_version:
+            blockers.insert(
+                0,
+                "conditional billing uncertainty requires authenticated owner acceptance",
+            )
         if not headroom_ok:
             blockers.insert(
                 0, "combined count and generation reservation lacks budget headroom"

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AIEvaluationBudget, CurrentTenant, RequireCapability
 from app.core.database import get_db
-from app.core.rbac import AuthorizationContext, Capability
+from app.core.rbac import AuthorizationContext, Capability, OrganizationRole
 from app.repositories.ai_evaluation_repository import AIEvaluationRepository
 from app.schemas.evaluation import (
     EvalAgentCaseInputs,
@@ -412,6 +412,14 @@ async def create_release_decision(
     db: DatabaseSession,
     authz: EvaluationManageAuthz,
 ):
+    if (
+        data.conditional_billing_acceptance is not None
+        and authz.role is not OrganizationRole.OWNER
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="conditional billing uncertainty requires the tenant owner",
+        )
     try:
         record = await AIEvaluationService.record_release_decision(
             db,
@@ -422,6 +430,7 @@ async def create_release_decision(
             decided_by_subject=authz.subject,
             note=data.note,
             provider_activation=data.provider_activation,
+            conditional_billing_acceptance=data.conditional_billing_acceptance,
         )
     except ValueError as exc:
         raise _value_error_to_http(exc) from None

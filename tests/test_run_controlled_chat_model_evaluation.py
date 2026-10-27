@@ -17,9 +17,9 @@ def _args(*, execute_live: bool = False):
         embedding_origin="http://127.0.0.1:3000",
         run_id="offline-rag-candidate",
         expires_at=expiry,
-        count_evidence_id="case-18041142-reviewed-screenshot",
+        count_evidence_id=runner.COUNT_EVIDENCE_ID,
         count_evidence_expires_at=expiry,
-        all_in_evidence_id="synthetic-reviewed-budget-evidence",
+        all_in_evidence_id=runner.ALL_IN_EVIDENCE_ID,
         all_in_evidence_expires_at=expiry,
         additional_all_in_reserve_usd=0.00484,
         execute_live=execute_live,
@@ -41,24 +41,27 @@ def _approved_runtime():
             endpoint="https://api.openai.com/v1/responses/input_tokens",
             model="gpt-6-luna",
             region="standard",
-            reservation_per_attempt_usd=0,
-            evidence_id="synthetic-reviewed",
+            reservation_per_attempt_usd=0.00030,
+            evidence_id=runner.COUNT_EVIDENCE_ID,
             evidence_expires_at=expiry,
-            billing_status="no_charge",
-            independently_verified=True,
+            billing_status="unknown",
+            independently_verified=False,
             explicitly_approved=True,
+            conditional_policy_version=runner.CONDITIONAL_BILLING_POLICY_VERSION,
+            conditional_evidence_sha256=(
+                runner.CONDITIONAL_BILLING_POLICY.support_evidence_sha256
+            ),
         ),
         runner.EvaluationPolicy(additional_all_in_reserve_usd=0.00484),
     )
 
 
 def _promote_proposal(manifest):
-    promoted = dict(manifest)
-    promoted["count_policy"] = dict(manifest["count_policy"])
-    promoted["count_policy"]["evidence_verification"] = "independently_verified"
-    promoted["count_policy"]["explicitly_approved"] = True
-    promoted["all_in_evidence_verification"] = "independently_verified"
-    return promoted
+    return runner.require_conditional_billing_acceptance(
+        manifest,
+        acceptance=runner.conditional_acceptance_request(),
+        accepted_by_subject="authenticated-owner",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -205,6 +208,7 @@ async def test_approval_rejects_any_nonpromotion_manifest_drift(monkeypatch):
         async def scalar(self, _query):
             return SimpleNamespace(
                 decision="approved",
+                decided_by_subject="authenticated-owner",
                 comparison_snapshot={"provider_activation": approved},
             )
 
@@ -216,9 +220,9 @@ async def test_approval_rejects_any_nonpromotion_manifest_drift(monkeypatch):
             return False
 
     monkeypatch.setattr(runner, "AsyncSessionLocal", DBContext)
-    monkeypatch.setattr(runner, "require_reviewed_billing_evidence", _promote_proposal)
     with pytest.raises(
-        EvaluationBlockedError, match="differs from the exact printed proposal"
+        EvaluationBlockedError,
+        match="not approved|differs from the exact printed proposal",
     ):
         await runner._require_approval(
             _args(), _bindings(), proposal["activation_manifest"]
@@ -233,7 +237,11 @@ async def test_latest_rejection_supersedes_older_approval_before_runtime(monkeyp
 
     class DB:
         async def scalar(self, _query):
-            return SimpleNamespace(decision="rejected", comparison_snapshot={})
+            return SimpleNamespace(
+                decision="rejected",
+                decided_by_subject="authenticated-owner",
+                comparison_snapshot={},
+            )
 
     class DBContext:
         async def __aenter__(self):

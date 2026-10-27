@@ -24,6 +24,10 @@ from app.models.public_chat import PublicChatSession
 from app.repositories.conversation_message_repository import (
     ConversationMessageRepository,
 )
+from app.services.model_eval_conditional_billing import (
+    CONDITIONAL_BILLING_POLICY,
+    require_current_conditional_billing_manifest,
+)
 from app.services.model_eval_controller import (
     EvaluationBlockedError,
     EvaluationPolicy,
@@ -87,7 +91,10 @@ def validate_activation_manifest(manifest: dict) -> dict:
         "reservation_per_attempt_usd",
         "reservation_all_attempts_usd",
     }
-    if set(manifest) != manifest_keys or not isinstance(
+    if frozenset(manifest) not in {
+        frozenset(manifest_keys),
+        frozenset({*manifest_keys, "conditional_billing_policy"}),
+    } or not isinstance(
         manifest.get("count_policy"), dict
     ):
         raise EvaluationBlockedError("evaluation activation manifest is invalid")
@@ -112,6 +119,7 @@ def validate_activation_manifest(manifest: dict) -> dict:
             "evaluation activation manifest is invalid"
         ) from None
     billing = count.get("billing_status_claim")
+    conditional = manifest.get("conditional_billing_policy") is not None
     fixed = {
         "purpose": ACTIVATION_PURPOSE,
         "max_turns": 50,
@@ -148,8 +156,12 @@ def validate_activation_manifest(manifest: dict) -> dict:
         and count.get("endpoint") == "https://api.openai.com/v1/responses/input_tokens"
         and count.get("model") == "gpt-6-luna"
         and count.get("region") == "standard"
-        and billing in {"billable", "no_charge"}
-        and count.get("evidence_verification") == "independently_verified"
+        and billing in {"billable", "no_charge", "unknown"}
+        and count.get("evidence_verification")
+        in {
+            "independently_verified",
+            "owner_accepted_uncertainty_not_independently_verified",
+        }
         and count.get("explicitly_approved") is True
         and bool(str(count.get("evidence_id", "")).strip())
         and isinstance(reservation, (int, float))
@@ -157,13 +169,22 @@ def validate_activation_manifest(manifest: dict) -> dict:
         and (
             (billing == "billable" and reservation > 0)
             or (billing == "no_charge" and reservation == 0)
+            or (
+                billing == "unknown"
+                and reservation
+                == CONDITIONAL_BILLING_POLICY.count_reservation_per_attempt_usd
+            )
         )
         and count.get("reservation_all_attempts_usd") == round(reservation * 100, 6)
         and isinstance(additional, (int, float))
         and not isinstance(additional, bool)
         and additional >= 0
         and bool(str(manifest.get("all_in_evidence_id", "")).strip())
-        and manifest.get("all_in_evidence_verification") == "independently_verified"
+        and manifest.get("all_in_evidence_verification")
+        in {
+            "independently_verified",
+            "owner_accepted_planning_assumption_not_independently_verified",
+        }
         and manifest.get("combined_reservation_usd")
         == round(0.0605 + reservation * 100 + additional, 6)
         and all(
@@ -173,6 +194,23 @@ def validate_activation_manifest(manifest: dict) -> dict:
     )
     if not valid:
         raise EvaluationBlockedError("evaluation activation manifest is not approved")
+    if conditional:
+        require_current_conditional_billing_manifest(manifest)
+        if (
+            billing != "unknown"
+            or count.get("evidence_verification")
+            != "owner_accepted_uncertainty_not_independently_verified"
+            or manifest.get("all_in_evidence_verification")
+            != "owner_accepted_planning_assumption_not_independently_verified"
+        ):
+            raise EvaluationBlockedError(
+                "conditional billing manifest is not approved"
+            )
+    elif (
+        count.get("evidence_verification") != "independently_verified"
+        or manifest.get("all_in_evidence_verification") != "independently_verified"
+    ):
+        raise EvaluationBlockedError("evaluation billing evidence is not approved")
     return json.loads(json.dumps(manifest, ensure_ascii=False, sort_keys=True))
 
 
@@ -299,8 +337,13 @@ class PersistedEvaluationActivationGuard:
             != "https://api.openai.com/v1/responses/input_tokens"
             or count_policy.get("model") != "gpt-6-luna"
             or count_policy.get("region") != "standard"
-            or count_policy.get("billing_status_claim") not in {"billable", "no_charge"}
-            or count_policy.get("evidence_verification") != "independently_verified"
+            or count_policy.get("billing_status_claim")
+            not in {"billable", "no_charge", "unknown"}
+            or count_policy.get("evidence_verification")
+            not in {
+                "independently_verified",
+                "owner_accepted_uncertainty_not_independently_verified",
+            }
             or count_policy.get("explicitly_approved") is not True
             or not str(count_policy.get("evidence_id", "")).strip()
             or not isinstance(
@@ -314,6 +357,11 @@ class PersistedEvaluationActivationGuard:
             or (
                 count_policy["billing_status_claim"] == "no_charge"
                 and count_policy["reservation_per_attempt_usd"] != 0
+            )
+            or (
+                count_policy["billing_status_claim"] == "unknown"
+                and count_policy["reservation_per_attempt_usd"]
+                != CONDITIONAL_BILLING_POLICY.count_reservation_per_attempt_usd
             )
             or count_policy.get("reservation_all_attempts_usd")
             != round(
@@ -337,7 +385,11 @@ class PersistedEvaluationActivationGuard:
                 6,
             )
             or not str(manifest.get("all_in_evidence_id", "")).strip()
-            or manifest.get("all_in_evidence_verification") != "independently_verified"
+            or manifest.get("all_in_evidence_verification")
+            not in {
+                "independently_verified",
+                "owner_accepted_planning_assumption_not_independently_verified",
+            }
             or runtime_evaluation_policy.additional_all_in_reserve_usd
             != manifest["additional_all_in_reserve_usd"]
             or runtime_count_policy.endpoint != count_policy["endpoint"]
@@ -350,7 +402,22 @@ class PersistedEvaluationActivationGuard:
             or runtime_count_policy.evidence_id != count_policy["evidence_id"]
             or runtime_count_policy.evidence_expires_at.astimezone(UTC)
             != count_evidence_expires_at.astimezone(UTC)
-            or runtime_count_policy.independently_verified is not True
+            or runtime_count_policy.independently_verified
+            != (
+                count_policy.get("evidence_verification") == "independently_verified"
+            )
+            or runtime_count_policy.conditional_policy_version
+            != (
+                CONDITIONAL_BILLING_POLICY.version
+                if manifest.get("conditional_billing_policy") is not None
+                else None
+            )
+            or runtime_count_policy.conditional_evidence_sha256
+            != (
+                CONDITIONAL_BILLING_POLICY.support_evidence_sha256
+                if manifest.get("conditional_billing_policy") is not None
+                else None
+            )
             or runtime_count_policy.explicitly_approved is not True
             or count_evidence_expires_at.tzinfo is None
             or count_evidence_expires_at <= datetime.now(UTC)
@@ -360,6 +427,15 @@ class PersistedEvaluationActivationGuard:
             or expires_at <= datetime.now(UTC)
         ):
             raise EvaluationBlockedError("evaluation activation is not approved")
+        if manifest.get("conditional_billing_policy") is not None:
+            require_current_conditional_billing_manifest(manifest)
+            if (
+                manifest["conditional_billing_policy"].get("accepted_by_subject")
+                != decision.decided_by_subject
+            ):
+                raise EvaluationBlockedError(
+                    "conditional billing acceptance subject is invalid"
+                )
         return ApprovedEvaluationActivation(
             run_id=run.run_id,
             organization_id=organization_id,
