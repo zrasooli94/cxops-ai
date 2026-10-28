@@ -58,6 +58,26 @@ def _reviewed_commit() -> str:
     return commit
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _validated_destination(path: Path) -> Path:
+    destination = path.expanduser().resolve(strict=False)
+    recovery = PERSISTENT_HOLD_DIRECTORY.expanduser().resolve(strict=False)
+    if (
+        destination == recovery
+        or _is_within(destination, recovery)
+        or _is_within(recovery, destination)
+    ):
+        raise SystemExit("runtime destination must not overlap persistent recovery state")
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--destination", type=Path, required=True)
@@ -76,7 +96,7 @@ def main() -> int:
         raise SystemExit("hold directory must use the fixed persistent path")
     if args.db_host != "127.0.0.1":
         raise SystemExit("database host must be literal loopback 127.0.0.1")
-    destination = args.destination.resolve()
+    destination = _validated_destination(args.destination)
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(destination, 0o700)
     if destination.is_symlink() or not stat.S_ISDIR(destination.lstat().st_mode):

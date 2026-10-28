@@ -247,6 +247,42 @@ def test_packaging_update_preserves_persistent_recovery_state(
     assert stat_mode(recovery) == 0o600
 
 
+@pytest.mark.parametrize("relationship", ["equal", "ancestor", "descendant", "symlink"])
+def test_packager_rejects_recovery_overlap_before_filesystem_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relationship: str
+) -> None:
+    application_support = tmp_path / "Application Support/CXOps"
+    holds = application_support / "ReviewHolds"
+    holds.mkdir(parents=True, mode=0o700)
+    recovery = holds / "synthetic-recovery.json"
+    recovery.write_bytes(b"must-remain-byte-identical")
+    recovery.chmod(0o600)
+    before_hash = hashlib.sha256(recovery.read_bytes()).hexdigest()
+    before_mode = stat_mode(holds)
+    if relationship == "equal":
+        destination = holds
+    elif relationship == "ancestor":
+        destination = application_support
+    elif relationship == "descendant":
+        destination = holds / "runtime"
+    else:
+        destination = tmp_path / "recovery-alias"
+        destination.symlink_to(holds, target_is_directory=True)
+    monkeypatch.setattr(packager, "PERSISTENT_HOLD_DIRECTORY", holds)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["package", "--destination", str(destination), "--hold-directory", str(holds)],
+    )
+    with pytest.raises(SystemExit, match="must not overlap"):
+        packager.main()
+    assert hashlib.sha256(recovery.read_bytes()).hexdigest() == before_hash
+    assert stat_mode(holds) == before_mode
+    assert sorted(path.name for path in holds.iterdir()) == ["synthetic-recovery.json"]
+    if relationship == "descendant":
+        assert not destination.exists()
+
+
 def test_reviewed_commit_requires_exact_hash_and_pinned_git(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
