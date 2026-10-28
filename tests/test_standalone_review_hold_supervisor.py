@@ -103,6 +103,12 @@ def test_config_integrity_version_and_loopback_are_fail_closed(tmp_path: Path) -
     with pytest.raises(standalone.SupervisorBlocked, match="loopback"):
         standalone._load_config(path)
 
+    config = _config(tmp_path)
+    config["db_host"] = "example.invalid"
+    path.write_text(json.dumps(config))
+    with pytest.raises(standalone.SupervisorBlocked, match="database host"):
+        standalone._load_config(path)
+
 
 def test_standalone_source_has_only_stdlib_and_no_provider_path() -> None:
     source_path = Path(standalone.__file__)
@@ -190,6 +196,47 @@ def test_packager_emits_private_documents_independent_runtime(
     assert stat_mode(destination) == 0o700
     assert stat_mode(destination / "config.json") == 0o600
     assert stat_mode(destination / "supervisor.py") == 0o600
+    assert stat_mode(destination / "logs" / "supervisor.out.log") == 0o600
+    assert stat_mode(destination / "logs" / "supervisor.err.log") == 0o600
+
+
+def test_packager_rejects_non_loopback_database_before_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "runtime"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "package",
+            "--destination",
+            str(destination),
+            "--db-host",
+            "example.invalid",
+        ],
+    )
+    with pytest.raises(SystemExit, match="literal loopback"):
+        packager.main()
+    assert not destination.exists()
+
+
+def test_reviewed_commit_requires_exact_hash_and_pinned_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        stdout = "not-a-commit\n"
+
+    def fake_run(arguments: list[str], **_kwargs: object) -> Result:
+        calls.append(arguments)
+        return Result()
+
+    monkeypatch.setattr(packager, "_verified_git", lambda: "/usr/bin/git")
+    monkeypatch.setattr(packager.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit, match="commit identity"):
+        packager._reviewed_commit()
+    assert calls == [["/usr/bin/git", "rev-parse", "HEAD"]]
 
 
 def stat_mode(path: Path) -> int:

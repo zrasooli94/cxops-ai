@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -23,14 +24,29 @@ BOUND_PATHS = (
     "app/services/model_eval_review_hold_supervisor.py",
 )
 LABEL = "com.cxops.model-eval-review-supervisor"
+GIT = Path("/usr/bin/git")
+
+
+def _verified_git() -> str:
+    info = GIT.stat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != 0
+        or info.st_mode & 0o022
+    ):
+        raise SystemExit("pinned Git executable is unsafe")
+    return str(GIT)
 
 
 def _reviewed_commit() -> str:
+    git = _verified_git()
     commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
+        [git, "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
     ).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise SystemExit("reviewed Git commit identity is invalid")
     dirty = subprocess.run(
-        ["git", "status", "--porcelain", "--", *BOUND_PATHS],
+        [git, "status", "--porcelain", "--", *BOUND_PATHS],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -52,6 +68,8 @@ def main() -> int:
     parser.add_argument("--backend-close-url", default="http://127.0.0.1:8000/public/chat/sessions/close")
     parser.add_argument("--psql", type=Path, default=Path("/opt/homebrew/bin/psql"))
     args = parser.parse_args()
+    if args.db_host != "127.0.0.1":
+        raise SystemExit("database host must be literal loopback 127.0.0.1")
     destination = args.destination.resolve()
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(destination, 0o700)
@@ -83,6 +101,11 @@ def main() -> int:
     logs = destination / "logs"
     logs.mkdir(mode=0o700, exist_ok=True)
     os.chmod(logs, 0o700)
+    for log_name in ("supervisor.out.log", "supervisor.err.log"):
+        log_path = logs / log_name
+        descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(descriptor)
+        os.chmod(log_path, 0o600)
     plist = {
         "Label": LABEL,
         "ProgramArguments": [

@@ -384,6 +384,8 @@ def _load_config(path: Path) -> dict[str, Any]:
         raise SupervisorBlocked("standalone supervisor is development-only")
     if config.get("provider_enabled") is not False:
         raise SupervisorBlocked("provider must remain disabled")
+    if config.get("db_host") != "127.0.0.1":
+        raise SupervisorBlocked("database host must be literal loopback")
     close_url = urlsplit(str(config.get("backend_close_url", "")))
     if (
         close_url.scheme != "http"
