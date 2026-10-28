@@ -59,6 +59,10 @@ from app.services.model_eval_live_authorization import (
     validate_live_authorization_snapshot,
 )
 from app.services.model_eval_operator_secret import operator_entered_api_key
+from app.services.model_eval_review_hold_lease import (
+    ReviewHoldLease,
+    acquire_review_hold_lease,
+)
 from app.services.public_chat_model_eval import (
     PersistedEvaluationActivationGuard,
     validate_activation_manifest,
@@ -95,8 +99,11 @@ SOURCE_BOUND_PATHS = (
     "app/services/model_eval_openai_adapter.py",
     "app/services/model_eval_openai_http_transport.py",
     "app/services/model_eval_operator_secret.py",
+    "app/services/model_eval_review_hold_lease.py",
+    "app/services/model_eval_review_hold_supervisor.py",
     "app/services/public_chat_model_eval.py",
     "app/services/public_chat_service.py",
+    "scripts/monitor_model_eval_review_holds.py",
 )
 
 
@@ -275,6 +282,10 @@ def _claimed_hold_name(path: Path) -> str:
     return f".{path.name}.claimed"
 
 
+def _cleanup_hold_name(path: Path) -> str:
+    return f".{path.name}.cleanup"
+
+
 def _claim_lock_name(path: Path) -> str:
     return f".{path.name}.claim-lock"
 
@@ -398,7 +409,11 @@ def _write_review_hold(
 
 def _load_claimed_review_hold(
     path: Path,
-) -> tuple[Path, list[SessionBinding], dict[str, Any], dict[str, Any]]:
+    *,
+    acquire_owner_lease: bool = False,
+) -> tuple[Path, list[SessionBinding], dict[str, Any], dict[str, Any]] | tuple[
+    Path, list[SessionBinding], dict[str, Any], dict[str, Any], ReviewHoldLease
+]:
     """Atomically claim a hold so only one later process can resume it."""
     original_bytes = _read_review_hold_file(path)
     try:
@@ -429,6 +444,7 @@ def _load_claimed_review_hold(
     claimed = path.with_name(_claimed_hold_name(path))
     directory_descriptor = _open_review_hold_directory(create=False)
     lock_descriptor = -1
+    owner_lease: ReviewHoldLease | None = None
     try:
         lock_descriptor = os.open(
             _claim_lock_name(path),
@@ -442,6 +458,12 @@ def _load_claimed_review_hold(
             pass
         else:
             raise RunnerBlocked("review hold is already claimed")
+        if acquire_owner_lease:
+            owner_lease = acquire_review_hold_lease(
+                directory_descriptor, digest, blocking=False
+            )
+            if owner_lease is None:
+                raise RunnerBlocked("review hold is owned by another process")
         os.rename(
             path.name,
             claimed.name,
@@ -449,9 +471,17 @@ def _load_claimed_review_hold(
             dst_dir_fd=directory_descriptor,
         )
     except FileExistsError:
+        if owner_lease is not None:
+            owner_lease.close()
         raise RunnerBlocked("review hold is already claimed") from None
     except FileNotFoundError:
+        if owner_lease is not None:
+            owner_lease.close()
         raise RunnerBlocked("review hold is unavailable") from None
+    except BaseException:
+        if owner_lease is not None:
+            owner_lease.close()
+        raise
     finally:
         if lock_descriptor >= 0:
             os.close(lock_descriptor)
@@ -461,7 +491,13 @@ def _load_claimed_review_hold(
                 pass
         os.close(directory_descriptor)
     if _read_review_hold_file(claimed) != original_bytes:
+        if owner_lease is not None:
+            owner_lease.close()
         raise RunnerBlocked("review hold changed while being claimed")
+    if acquire_owner_lease:
+        if owner_lease is None:  # Defensive; acquisition above must succeed.
+            raise RunnerBlocked("review hold owner lease is unavailable")
+        return claimed, bindings, manifest, payload, owner_lease
     return claimed, bindings, manifest, payload
 
 
@@ -510,6 +546,15 @@ async def _wait_for_review_hold(
         try:
             _read_review_hold_file(path)
         except FileNotFoundError:
+            cleanup = path.with_name(_cleanup_hold_name(path))
+            try:
+                _read_review_hold_file(cleanup)
+            except FileNotFoundError:
+                pass
+            except RunnerBlocked:
+                return "invalid_cleanup"
+            else:
+                return "cleanup_owned_by_supervisor"
             claimed = path.with_name(_claimed_hold_name(path))
             try:
                 claimed_bytes = _read_review_hold_file(claimed)
@@ -1043,10 +1088,13 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     claimed_path: Path | None = None
     hold_state_sha256: str | None = None
     saved_manifest: dict[str, Any] | None = None
+    owner_lease: ReviewHoldLease | None = None
     cleanup_owned = True
     if arguments.resume_review_hold is not None:
-        claimed_path, bindings, saved_manifest, hold_payload = (
-            _load_claimed_review_hold(arguments.resume_review_hold)
+        claimed_path, bindings, saved_manifest, hold_payload, owner_lease = (
+            _load_claimed_review_hold(
+                arguments.resume_review_hold, acquire_owner_lease=True
+            )
         )
         if (
             hold_payload.get("organization_id") != arguments.organization_id
@@ -1056,6 +1104,8 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         ):
             await _close_sessions(bindings)
             _remove_review_hold_file(claimed_path)
+            if owner_lease is not None:
+                owner_lease.close()
             raise RunnerBlocked("review hold invocation differs from prepared binding")
     else:
         bindings = await _create_sessions(arguments)
@@ -1128,7 +1178,10 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 )
             except KeyboardInterrupt:
                 outcome = "cancelled"
-            if outcome == "claimed_for_separately_authorized_resume":
+            if outcome in {
+                "claimed_for_separately_authorized_resume",
+                "cleanup_owned_by_supervisor",
+            }:
                 cleanup_owned = False
             else:
                 _remove_review_hold_file(hold_path)
@@ -1208,6 +1261,10 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 f"cleanup_warning_count={len(cleanup_failures)}",
                 file=sys.stderr,
             )
+        if owner_lease is not None:
+            owner_lease.close()
+            # Lease pathnames are persistent synchronization objects. Unlinking
+            # after unlock can split contenders across two inodes.
 
 
 def main() -> None:

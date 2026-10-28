@@ -13,6 +13,37 @@ Token admission must count the fully serialized system instructions, all linked
 history, retrieved evidence, current message, and response framing; prompt-only
 byte checks are fixture sanity checks and cannot admit a real request.
 
+## Provider-disabled review-hold supervisor
+
+The development-only review hold is monitored by
+`scripts/monitor_model_eval_review_holds.py`. This process has no provider,
+HTTP, credential, approval, or session-creation imports. It requires
+`ENVIRONMENT=development`, rejects either model-evaluation flag being true,
+and rejects provider-key environment variables.
+
+The monitor serializes ownership with an owner-only advisory lease. A live,
+separately authorized runner holds the same lease from claim through cleanup,
+so the monitor cannot race a legitimate claimant. Expired, rejected,
+source-drifted, or abandoned holds are atomically renamed to an owner-only
+`.cleanup` state before database cleanup begins. That makes the manifest
+unusable immediately. If PostgreSQL is unavailable or cleanup is interrupted,
+the `.cleanup` file remains and is retried after monitor restart. Session close
+is capability, tenant, and session bound and idempotent.
+
+The supported user LaunchAgent label is
+`com.cxops.model-eval-review-supervisor`, installed at
+`~/Library/LaunchAgents/com.cxops.model-eval-review-supervisor.plist`. It runs
+only the monitor and must keep both provider flags false. Its stdout contains
+only manifest digest, lifecycle status, and cleanup-failure count; it never
+logs capability tokens. The source tree does not install or enable it
+automatically.
+
+Real sleep, logout, reboot, and database-outage transitions are not exercised
+on the owner's Mac. Offline tests simulate restart, abrupt loss, concurrent
+monitors, expiry, rejection, source drift, and delayed cleanup. An inert
+installed monitor with no active hold verifies launchd independence and restart
+behavior only; it is not evidence that a future hold or provider run existed.
+
 ## Frozen offline plan identity
 
 The source-only evaluation plan was frozen on 2026-10-25 at repository

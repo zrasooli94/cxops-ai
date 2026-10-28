@@ -291,7 +291,9 @@ async def test_resume_claims_exact_hold_before_live_gates(monkeypatch, tmp_path)
     assert result == {"turns_attempted": 50}
     assert events == list(range(1, 11))
     assert cleaned == list(range(1, 11))
-    assert list(tmp_path.iterdir()) == []
+    assert [path.name for path in tmp_path.iterdir()] == [
+        f".{runner._canonical_manifest_digest(plan['activation_manifest'])}.owner-lock"
+    ]
 
 
 def test_review_hold_rejects_symlinked_parent_before_writing(monkeypatch, tmp_path):
