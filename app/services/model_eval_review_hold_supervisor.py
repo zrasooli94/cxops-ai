@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,11 +22,14 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.ai_evaluation_release_decision import AIEvaluationReleaseDecision
 from app.models.ai_evaluation_run import AIEvaluationRun
+from app.models.public_chat import PublicChatSession
 from app.services.model_eval_review_hold_lease import acquire_review_hold_lease
 from app.services.public_chat_service import PublicChatService
 
 HOLD_VERSION = 1
 EXPECTED_BINDING_COUNT = 10
+RUN_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+FIXTURE_CONVERSATION_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 
 class UnsafeReviewHold(RuntimeError):
@@ -64,6 +68,49 @@ def _canonical_digest(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _positive_int(value: object, *, field: str) -> int:
+    if type(value) is not int or value < 1:
+        raise UnsafeReviewHold(f"{field} must be a positive integer")
+    return value
+
+
+def _strict_bindings(payload: dict[str, Any]) -> tuple[HeldSession, ...]:
+    raw_bindings = payload.get("bindings")
+    if not isinstance(raw_bindings, list) or len(raw_bindings) != EXPECTED_BINDING_COUNT:
+        raise UnsafeReviewHold("hold session bindings are invalid")
+    bindings: list[HeldSession] = []
+    for raw in raw_bindings:
+        if not isinstance(raw, dict) or set(raw) != {
+            "fixture_conversation_id",
+            "session_id",
+            "token",
+        }:
+            raise UnsafeReviewHold("hold session bindings are invalid")
+        fixture_id = raw["fixture_conversation_id"]
+        token = raw["token"]
+        if not isinstance(fixture_id, str) or not FIXTURE_CONVERSATION_ID.fullmatch(
+            fixture_id
+        ):
+            raise UnsafeReviewHold("hold fixture identity is invalid")
+        if not isinstance(token, str) or not 1 <= len(token) <= 4096:
+            raise UnsafeReviewHold("hold session token is invalid")
+        bindings.append(
+            HeldSession(
+                fixture_conversation_id=fixture_id,
+                session_id=_positive_int(raw["session_id"], field="session id"),
+                token=token,
+            )
+        )
+    if (
+        len({binding.fixture_conversation_id for binding in bindings})
+        != EXPECTED_BINDING_COUNT
+        or len({binding.session_id for binding in bindings})
+        != EXPECTED_BINDING_COUNT
+    ):
+        raise UnsafeReviewHold("hold session bindings are invalid")
+    return tuple(bindings)
+
+
 def _parse_hold(path: Path) -> ParsedHold:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -90,39 +137,43 @@ def _parse_hold(path: Path) -> ParsedHold:
     base_name = base_name.removeprefix(".").removesuffix(".json")
     if stored_digest != digest or base_name != digest:
         raise UnsafeReviewHold("hold digest is invalid")
-    bindings = tuple(
-        HeldSession(
-            fixture_conversation_id=str(item["fixture_conversation_id"]),
-            session_id=int(item["session_id"]),
-            token=str(item["token"]),
-        )
-        for item in payload.get("bindings", [])
+    bindings = _strict_bindings(payload)
+    organization_id = _positive_int(
+        payload.get("organization_id"), field="organization id"
     )
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or RUN_ID.fullmatch(run_id) is None:
+        raise UnsafeReviewHold("hold run identity is invalid")
+    session_ids = manifest.get("public_chat_session_ids")
     if (
-        len(bindings) != EXPECTED_BINDING_COUNT
-        or len({binding.session_id for binding in bindings}) != EXPECTED_BINDING_COUNT
-        or any(not binding.token for binding in bindings)
-    ):
-        raise UnsafeReviewHold("hold session bindings are invalid")
-    organization_id = int(manifest["organization_id"])
-    run_id = str(manifest["run_id"])
-    if (
-        int(payload.get("organization_id", -1)) != organization_id
-        or str(payload.get("run_id", "")) != run_id
-        or tuple(manifest.get("public_chat_session_ids", ()))
-        != tuple(binding.session_id for binding in bindings)
+        not isinstance(session_ids, list)
+        or len(session_ids) != EXPECTED_BINDING_COUNT
+        or any(type(item) is not int or item < 1 for item in session_ids)
+        or len(set(session_ids)) != EXPECTED_BINDING_COUNT
+        or tuple(session_ids) != tuple(binding.session_id for binding in bindings)
     ):
         raise UnsafeReviewHold("hold tenant, run, or session binding drifted")
-    expiry = datetime.fromisoformat(str(payload["expires_at"]).replace("Z", "+00:00"))
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=UTC)
+    payload_expiry = payload.get("expires_at")
+    manifest_expiry_value = manifest.get("expires_at")
+    if not isinstance(payload_expiry, str) or not isinstance(
+        manifest_expiry_value, str
+    ):
+        raise UnsafeReviewHold("hold expiry is invalid")
+    expiry = datetime.fromisoformat(payload_expiry.replace("Z", "+00:00"))
     manifest_expiry = datetime.fromisoformat(
-        str(manifest.get("expires_at", "")).replace("Z", "+00:00")
+        manifest_expiry_value.replace("Z", "+00:00")
     )
-    if manifest_expiry.tzinfo is None:
-        manifest_expiry = manifest_expiry.replace(tzinfo=UTC)
-    if manifest_expiry.astimezone(UTC) != expiry.astimezone(UTC):
+    if (
+        expiry.tzinfo is None
+        or manifest_expiry.tzinfo is None
+        or manifest_expiry.astimezone(UTC) != expiry.astimezone(UTC)
+    ):
         raise UnsafeReviewHold("hold expiry drifted from the immutable manifest")
+    reviewed_commit = manifest.get("reviewed_source_commit")
+    if not isinstance(reviewed_commit, str) or re.fullmatch(
+        r"[0-9a-f]{40}", reviewed_commit
+    ) is None:
+        raise UnsafeReviewHold("hold reviewed source identity is invalid")
     return ParsedHold(
         path=path,
         payload=payload,
@@ -187,6 +238,38 @@ class ReviewHoldSupervisor:
                 )
                 .limit(1)
             )
+
+    async def _verify_database_binding(self, hold: ParsedHold) -> None:
+        expected_tokens = {
+            binding.session_id: hashlib.sha256(binding.token.encode()).hexdigest()
+            for binding in hold.bindings
+        }
+        async with AsyncSessionLocal() as db:
+            run = await db.scalar(
+                select(AIEvaluationRun).where(
+                    AIEvaluationRun.organization_id == hold.organization_id,
+                    AIEvaluationRun.run_id == hold.run_id,
+                )
+            )
+            if run is None or run.status != "succeeded":
+                raise UnsafeReviewHold("hold evaluation run binding is unavailable")
+            result = await db.scalars(
+                select(PublicChatSession).where(
+                    PublicChatSession.organization_id == hold.organization_id,
+                    PublicChatSession.id.in_(tuple(expected_tokens)),
+                )
+            )
+            sessions = list(result.all())
+        if len(sessions) != EXPECTED_BINDING_COUNT:
+            raise UnsafeReviewHold("hold session database binding is unavailable")
+        for session in sessions:
+            if (
+                expected_tokens.get(session.id) != session.token_hash
+                or session.status != "ai_active"
+                or session.expires_at.tzinfo is None
+                or session.expires_at.astimezone(UTC) < hold.expires_at
+            ):
+                raise UnsafeReviewHold("hold session database binding is invalid")
 
     async def _close_exact_sessions(self, hold: ParsedHold) -> tuple[int, ...]:
         failures: list[int] = []
@@ -308,8 +391,10 @@ class ReviewHoldSupervisor:
                     reason = "expired"
                 elif manifest.get("reviewed_source_commit") != self.current_source_commit():
                     reason = "source_drift"
-                elif await self._latest_decision(hold) == "rejected":
-                    reason = "rejected"
+                else:
+                    await self._verify_database_binding(hold)
+                    if await self._latest_decision(hold) == "rejected":
+                        reason = "rejected"
                 if reason is not None:
                     events.append(await self._transition_to_cleanup(path, reason=reason))
                 else:

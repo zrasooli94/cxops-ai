@@ -7,8 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import settings
+from app.services import model_eval_review_hold_supervisor as app_supervisor
 from app.services.model_eval_controller import EvaluationBlockedError
 from scripts import run_controlled_chat_model_evaluation as runner
+from scripts import standalone_review_hold_supervisor as standalone_supervisor
 
 
 def _args(
@@ -196,6 +198,63 @@ async def test_review_hold_claim_preserves_exact_sessions_for_later_resume(
         assert payload["organization_id"] == 7
     finally:
         claimed.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_actual_runner_hold_is_accepted_by_both_supervisors(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(runner, "REVIEW_HOLD_DIRECTORY", tmp_path)
+    args = _args(prepare_review_hold=True)
+    plan, _count, _policy = runner._build_plan(args, _bindings())
+    manifest = plan["activation_manifest"]
+    hold_path, _state_sha256 = runner._write_review_hold(
+        arguments=args,
+        bindings=_bindings(),
+        manifest=manifest,
+    )
+
+    app_hold = app_supervisor._parse_hold(hold_path)
+    standalone_hold = standalone_supervisor._parse_hold(hold_path)
+    assert app_hold.organization_id == standalone_hold.organization_id == 7
+    assert app_hold.run_id == standalone_hold.run_id == "offline-rag-candidate"
+    assert "organization_id" not in manifest
+    assert "run_id" not in manifest
+    assert app_hold.digest == standalone_hold.digest == runner._canonical_manifest_digest(
+        manifest
+    )
+
+    async def valid_database_binding(_hold):
+        return None
+
+    async def no_decision(_hold):
+        return None
+
+    repository_supervisor = app_supervisor.ReviewHoldSupervisor(
+        tmp_path, current_source_commit=lambda: "d" * 40
+    )
+    monkeypatch.setattr(
+        repository_supervisor, "_verify_database_binding", valid_database_binding
+    )
+    monkeypatch.setattr(repository_supervisor, "_latest_decision", no_decision)
+    repository_events = await repository_supervisor.reconcile_once()
+    assert repository_events[0].status == "active"
+
+    packaged_supervisor = standalone_supervisor.StandaloneSupervisor(
+        {
+            "hold_directory": str(tmp_path),
+            "psql_path": "/synthetic/psql",
+            "backend_close_url": "http://127.0.0.1:8000/public/chat/sessions/close",
+            "reviewed_source_commit": "d" * 40,
+        }
+    )
+    monkeypatch.setattr(
+        packaged_supervisor, "_verify_database_binding", lambda _hold: None
+    )
+    monkeypatch.setattr(packaged_supervisor, "_latest_decision", lambda _hold: None)
+    packaged_events = packaged_supervisor.reconcile_once()
+    assert packaged_events == [{"digest": app_hold.digest, "status": "active"}]
+    runner._remove_review_hold_file(hold_path)
 
 
 @pytest.mark.asyncio

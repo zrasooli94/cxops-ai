@@ -30,7 +30,8 @@ PERSISTENT_HOLD_DIRECTORY = Path.home() / "Library/Application Support/CXOps/Rev
 UTC = timezone.utc
 HOLD_VERSION = 1
 EXPECTED_BINDINGS = 10
-RUN_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
+RUN_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+FIXTURE_CONVERSATION_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 
 class SupervisorBlocked(RuntimeError):
@@ -79,6 +80,47 @@ def _canonical_digest(manifest: dict[str, Any]) -> str:
         manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode()
     return hashlib.sha256(body).hexdigest()
+
+
+def _positive_int(value: object, *, field: str) -> int:
+    if type(value) is not int or value < 1:
+        raise SupervisorBlocked(f"{field} must be a positive integer")
+    return value
+
+
+def _strict_bindings(payload: dict[str, Any]) -> tuple[Binding, ...]:
+    raw_bindings = payload.get("bindings")
+    if not isinstance(raw_bindings, list) or len(raw_bindings) != EXPECTED_BINDINGS:
+        raise SupervisorBlocked("session bindings invalid")
+    bindings: list[Binding] = []
+    for raw in raw_bindings:
+        if not isinstance(raw, dict) or set(raw) != {
+            "fixture_conversation_id",
+            "session_id",
+            "token",
+        }:
+            raise SupervisorBlocked("session bindings invalid")
+        fixture_id = raw["fixture_conversation_id"]
+        token = raw["token"]
+        if not isinstance(fixture_id, str) or not FIXTURE_CONVERSATION_ID.fullmatch(
+            fixture_id
+        ):
+            raise SupervisorBlocked("fixture identity invalid")
+        if not isinstance(token, str) or not 1 <= len(token) <= 4096:
+            raise SupervisorBlocked("session token invalid")
+        bindings.append(
+            Binding(
+                fixture_conversation_id=fixture_id,
+                session_id=_positive_int(raw["session_id"], field="session id"),
+                token=token,
+            )
+        )
+    if (
+        len({item.fixture_conversation_id for item in bindings}) != EXPECTED_BINDINGS
+        or len({item.session_id for item in bindings}) != EXPECTED_BINDINGS
+    ):
+        raise SupervisorBlocked("session bindings invalid")
+    return tuple(bindings)
 
 
 def _read_json_regular(path: Path, *, maximum_bytes: int = 1_000_000) -> dict[str, Any]:
@@ -164,34 +206,31 @@ def _parse_hold(path: Path) -> Hold:
     name = name.removeprefix(".").removesuffix(".json")
     if payload.get("manifest_digest") != digest or name != digest:
         raise SupervisorBlocked("manifest digest mismatch")
-    bindings = tuple(
-        Binding(
-            fixture_conversation_id=str(item["fixture_conversation_id"]),
-            session_id=int(item["session_id"]),
-            token=str(item["token"]),
-        )
-        for item in payload.get("bindings", ())
+    bindings = _strict_bindings(payload)
+    organization_id = _positive_int(
+        payload.get("organization_id"), field="organization id"
     )
-    if (
-        len(bindings) != EXPECTED_BINDINGS
-        or len({item.session_id for item in bindings}) != EXPECTED_BINDINGS
-        or any(not item.token for item in bindings)
-    ):
-        raise SupervisorBlocked("session bindings invalid")
-    organization_id = int(manifest["organization_id"])
-    run_id = str(manifest["run_id"])
-    if not RUN_ID.fullmatch(run_id):
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
         raise SupervisorBlocked("run identity invalid")
+    session_ids = manifest.get("public_chat_session_ids")
     if (
-        int(payload.get("organization_id", -1)) != organization_id
-        or payload.get("run_id") != run_id
-        or tuple(manifest.get("public_chat_session_ids", ()))
-        != tuple(item.session_id for item in bindings)
+        not isinstance(session_ids, list)
+        or len(session_ids) != EXPECTED_BINDINGS
+        or any(type(item) is not int or item < 1 for item in session_ids)
+        or len(set(session_ids)) != EXPECTED_BINDINGS
+        or tuple(session_ids) != tuple(item.session_id for item in bindings)
     ):
         raise SupervisorBlocked("tenant/run/session drift")
-    expiry = datetime.fromisoformat(str(payload["expires_at"]).replace("Z", "+00:00"))
+    payload_expiry = payload.get("expires_at")
+    manifest_expiry_value = manifest.get("expires_at")
+    if not isinstance(payload_expiry, str) or not isinstance(
+        manifest_expiry_value, str
+    ):
+        raise SupervisorBlocked("expiry invalid")
+    expiry = datetime.fromisoformat(payload_expiry.replace("Z", "+00:00"))
     manifest_expiry = datetime.fromisoformat(
-        str(manifest["expires_at"]).replace("Z", "+00:00")
+        manifest_expiry_value.replace("Z", "+00:00")
     )
     if expiry.tzinfo is None or manifest_expiry.tzinfo is None or expiry != manifest_expiry:
         raise SupervisorBlocked("expiry drift")
@@ -251,6 +290,29 @@ SELECT COALESCE((
 ), '');
 """
         return self._psql(sql) or None
+
+    def _verify_database_binding(self, hold: Hold) -> None:
+        session_predicates = " OR ".join(
+            f"(id={binding.session_id} AND token_hash='"
+            f"{hashlib.sha256(binding.token.encode()).hexdigest()}')"
+            for binding in hold.bindings
+        )
+        expiry = hold.expires_at.isoformat()
+        sql = f"""
+SELECT
+  (SELECT count(*) FROM ai_evaluation_runs
+   WHERE organization_id={hold.organization_id}
+     AND run_id='{hold.run_id}'
+     AND status='succeeded')::text
+  || '|' ||
+  (SELECT count(*) FROM public_chat_sessions
+   WHERE organization_id={hold.organization_id}
+     AND status='ai_active'
+     AND expires_at >= '{expiry}'::timestamptz
+     AND ({session_predicates}))::text;
+"""
+        if self._psql(sql) != f"1|{EXPECTED_BINDINGS}":
+            raise SupervisorBlocked("database binding unavailable")
 
     def _verify_session(self, hold: Hold, binding: Binding) -> None:
         token_hash = hashlib.sha256(binding.token.encode()).hexdigest()
@@ -360,10 +422,12 @@ WHERE id={binding.session_id}
                     events.append(self._invalidate(path, "source_drift"))
                 elif datetime.now(UTC) >= hold.expires_at:
                     events.append(self._invalidate(path, "expired"))
-                elif self._latest_decision(hold) == "rejected":
-                    events.append(self._invalidate(path, "rejected"))
                 else:
-                    events.append({"digest": hold.digest, "status": "active"})
+                    self._verify_database_binding(hold)
+                    if self._latest_decision(hold) == "rejected":
+                        events.append(self._invalidate(path, "rejected"))
+                    else:
+                        events.append({"digest": hold.digest, "status": "active"})
             except Exception:  # noqa: BLE001 - one invalid hold cannot stop polling
                 events.append({"digest": path.name, "status": "invalid_hold"})
         return events

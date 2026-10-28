@@ -50,8 +50,6 @@ def _write_hold(directory: Path, *, reviewed_commit: str) -> tuple[Path, str]:
     directory.mkdir(mode=0o700)
     expiry = datetime.now(UTC) + timedelta(hours=1)
     manifest = {
-        "organization_id": 1,
-        "run_id": "offline-rag-candidate",
         "reviewed_source_commit": reviewed_commit,
         "public_chat_session_ids": list(range(1, 11)),
         "expires_at": expiry.isoformat(),
@@ -166,6 +164,89 @@ def test_source_mismatch_invalidates_before_cleanup(tmp_path: Path, monkeypatch)
         }
     ]
     assert not hold_path.exists()
+
+
+def test_runner_schema_outer_identity_and_database_binding_are_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    supervisor = standalone.StandaloneSupervisor(config)
+    hold_path, digest = _write_hold(
+        Path(config["hold_directory"]), reviewed_commit=config["reviewed_source_commit"]
+    )
+    statements: list[str] = []
+    calls = iter(("1|10", ""))
+
+    def psql(sql: str) -> str:
+        statements.append(sql)
+        return next(calls)
+
+    monkeypatch.setattr(supervisor, "_psql", psql)
+    assert supervisor.reconcile_once() == [{"digest": digest, "status": "active"}]
+    assert "status='succeeded'" in statements[0]
+    assert hold_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("organization_id", "1"),
+        ("organization_id", True),
+        ("organization_id", 0),
+        ("run_id", "offline_rag_candidate"),
+        ("run_id", "x" * 65),
+    ],
+)
+def test_outer_identity_is_strictly_typed_and_formatted(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    path, _digest = _write_hold(tmp_path / "holds", reviewed_commit="a" * 40)
+    payload = json.loads(path.read_text())
+    payload[field] = value
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+    with pytest.raises(standalone.SupervisorBlocked):
+        standalone._parse_hold(path)
+
+
+def test_binding_tampering_and_database_mismatch_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    supervisor = standalone.StandaloneSupervisor(config)
+    path, _digest = _write_hold(
+        Path(config["hold_directory"]), reviewed_commit=config["reviewed_source_commit"]
+    )
+    payload = json.loads(path.read_text())
+    payload["bindings"][0]["session_id"] = "1"
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+    assert supervisor.reconcile_once()[0]["status"] == "invalid_hold"
+    assert path.exists()
+
+    payload["bindings"][0]["session_id"] = 1
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+    monkeypatch.setattr(supervisor, "_psql", lambda _sql: "1|9")
+    assert supervisor.reconcile_once()[0]["status"] == "invalid_hold"
+    assert path.exists()
+
+
+def test_database_outage_leaves_active_hold_for_safe_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    supervisor = standalone.StandaloneSupervisor(config)
+    path, _digest = _write_hold(
+        Path(config["hold_directory"]), reviewed_commit=config["reviewed_source_commit"]
+    )
+
+    def unavailable(_sql):
+        raise standalone.SupervisorBlocked("local database unavailable")
+
+    monkeypatch.setattr(supervisor, "_psql", unavailable)
+    assert supervisor.reconcile_once()[0]["status"] == "invalid_hold"
+    assert path.exists()
 
 
 def test_packager_emits_private_documents_independent_runtime(

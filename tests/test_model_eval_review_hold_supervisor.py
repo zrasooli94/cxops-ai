@@ -6,19 +6,23 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from app.services import model_eval_review_hold_supervisor as supervisor_module
 from app.services.model_eval_review_hold_lease import acquire_review_hold_lease
-from app.services.model_eval_review_hold_supervisor import ReviewHoldSupervisor
+from app.services.model_eval_review_hold_supervisor import (
+    ReviewHoldSupervisor,
+    UnsafeReviewHold,
+    _parse_hold,
+)
 
 
 def _write_hold(directory: Path, *, expired: bool = False, claimed: bool = False) -> tuple[Path, str]:
     expiry = datetime.now(UTC) + (-timedelta(minutes=1) if expired else timedelta(hours=1))
     manifest = {
-        "organization_id": 1,
-        "run_id": "offline-rag-candidate",
-        "reviewed_source_commit": "reviewed-commit",
+        "reviewed_source_commit": "a" * 40,
         "public_chat_session_ids": list(range(11, 21)),
         "expires_at": expiry.isoformat(),
     }
@@ -50,7 +54,7 @@ def _write_hold(directory: Path, *, expired: bool = False, claimed: bool = False
 
 def _supervisor(directory: Path) -> ReviewHoldSupervisor:
     return ReviewHoldSupervisor(
-        directory, current_source_commit=lambda: "reviewed-commit"
+        directory, current_source_commit=lambda: "a" * 40
     )
 
 
@@ -149,16 +153,22 @@ async def test_rejection_and_source_drift_fail_closed(
     async def rejected(_hold):
         return "rejected"
 
+    async def valid_database_binding(_hold):
+        return None
+
     async def close(_hold):
         return ()
 
     monkeypatch.setattr(supervisor, "_latest_decision", rejected)
+    monkeypatch.setattr(
+        supervisor, "_verify_database_binding", valid_database_binding
+    )
     monkeypatch.setattr(supervisor, "_close_exact_sessions", close)
     events = await supervisor.reconcile_once()
     assert events[0].status == "rejected_cleanup_complete"
 
     _write_hold(tmp_path)
-    drifted = ReviewHoldSupervisor(tmp_path, current_source_commit=lambda: "changed")
+    drifted = ReviewHoldSupervisor(tmp_path, current_source_commit=lambda: "b" * 40)
     monkeypatch.setattr(drifted, "_close_exact_sessions", close)
     events = await drifted.reconcile_once()
     assert events[0].status == "source_drift_cleanup_complete"
@@ -206,6 +216,116 @@ async def test_session_binding_drift_is_rejected_without_cleanup(
     path.write_text(json.dumps(payload))
     path.chmod(0o600)
     events = await _supervisor(tmp_path).reconcile_once()
+    assert events[0].status == "invalid_hold"
+    assert path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("organization_id", "1"),
+        ("organization_id", True),
+        ("organization_id", 0),
+        ("run_id", "offline_rag_candidate"),
+        ("run_id", "x" * 65),
+    ],
+)
+def test_outer_identity_is_strictly_typed_and_formatted(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    tmp_path.chmod(0o700)
+    path, _digest = _write_hold(tmp_path)
+    payload = json.loads(path.read_text())
+    payload[field] = value
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+    with pytest.raises(UnsafeReviewHold):
+        _parse_hold(path)
+
+
+def test_binding_types_and_manifest_session_order_fail_closed(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    path, _digest = _write_hold(tmp_path)
+    payload = json.loads(path.read_text())
+    payload["bindings"][0]["session_id"] = "11"
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+    with pytest.raises(UnsafeReviewHold):
+        _parse_hold(path)
+
+    payload["bindings"][0]["session_id"] = 11
+    payload["manifest"]["public_chat_session_ids"][0] = 20
+    path.write_text(json.dumps(payload))
+    path.chmod(0o600)
+    with pytest.raises(UnsafeReviewHold):
+        _parse_hold(path)
+
+
+@pytest.mark.asyncio
+async def test_database_binding_requires_succeeded_run_and_exact_live_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path.chmod(0o700)
+    path, _digest = _write_hold(tmp_path)
+    hold = _parse_hold(path)
+    sessions = [
+        SimpleNamespace(
+            id=binding.session_id,
+            token_hash=hashlib.sha256(binding.token.encode()).hexdigest(),
+            status="ai_active",
+            expires_at=hold.expires_at + timedelta(minutes=5),
+        )
+        for binding in hold.bindings
+    ]
+
+    class ScalarResult:
+        def all(self):
+            return sessions
+
+    run = SimpleNamespace(status="succeeded")
+
+    class DB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def scalar(self, _statement):
+            return run
+
+        async def scalars(self, _statement):
+            return ScalarResult()
+
+    monkeypatch.setattr(supervisor_module, "AsyncSessionLocal", DB)
+    supervisor = _supervisor(tmp_path)
+    await supervisor._verify_database_binding(hold)
+
+    sessions[0].token_hash = "0" * 64
+    with pytest.raises(UnsafeReviewHold, match="database binding"):
+        await supervisor._verify_database_binding(hold)
+
+    sessions[0].token_hash = hashlib.sha256(
+        hold.bindings[0].token.encode()
+    ).hexdigest()
+    run.status = "failed"
+    with pytest.raises(UnsafeReviewHold, match="evaluation run binding"):
+        await supervisor._verify_database_binding(hold)
+
+
+@pytest.mark.asyncio
+async def test_database_outage_fails_closed_without_consuming_active_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path.chmod(0o700)
+    path, _digest = _write_hold(tmp_path)
+    supervisor = _supervisor(tmp_path)
+
+    async def unavailable(_hold):
+        raise OSError("synthetic database outage")
+
+    monkeypatch.setattr(supervisor, "_verify_database_binding", unavailable)
+    events = await supervisor.reconcile_once()
     assert events[0].status == "invalid_hold"
     assert path.exists()
 
