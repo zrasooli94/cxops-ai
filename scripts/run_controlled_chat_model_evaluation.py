@@ -104,6 +104,8 @@ SOURCE_BOUND_PATHS = (
     "app/services/public_chat_model_eval.py",
     "app/services/public_chat_service.py",
     "scripts/monitor_model_eval_review_holds.py",
+    "scripts/package_review_hold_supervisor.py",
+    "scripts/standalone_review_hold_supervisor.py",
 )
 
 

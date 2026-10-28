@@ -33,7 +33,13 @@ is capability, tenant, and session bound and idempotent.
 The supported user LaunchAgent label is
 `com.cxops.model-eval-review-supervisor`, installed at
 `~/Library/LaunchAgents/com.cxops.model-eval-review-supervisor.plist`. It runs
-only the monitor and must keep both provider flags false. Its stdout contains
+the integrity-bound stdlib-only runtime packaged under
+`~/Library/Application Support/CXOps/ReviewSupervisor/`; it never imports or
+executes code from the `Documents` checkout. The package records the reviewed
+Git commit, runtime-source SHA-256, and exact `psql` executable identity. It
+uses the fixed loopback close endpoint for the existing canonical session-close
+lifecycle and a fixed local `psql` process only for tenant/session/release-state
+verification. It must keep both provider flags false. Its stdout contains
 only manifest digest, lifecycle status, and cleanup-failure count; it never
 logs capability tokens. The source tree does not install or enable it
 automatically.
@@ -43,6 +49,14 @@ on the owner's Mac. Offline tests simulate restart, abrupt loss, concurrent
 monitors, expiry, rejection, source drift, and delayed cleanup. An inert
 installed monitor with no active hold verifies launchd independence and restart
 behavior only; it is not evidence that a future hold or provider run existed.
+
+The current hold directory remains `/tmp/cxops-model-eval-review-holds`.
+LaunchAgent restart can recover while those files remain, but `/tmp` retention
+across reboot, OS cleanup, or prolonged logout is not guaranteed. A future
+owner-approved migration should use an owner-only state directory beneath the
+same Application Support runtime, with an atomic one-time handoff that keeps
+old manifests invalid and never copies an active capability behind a claimant.
+No hold-state migration is performed by the packager.
 
 ## Frozen offline plan identity
 
