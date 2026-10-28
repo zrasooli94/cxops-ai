@@ -16,7 +16,7 @@ from app.services.model_eval_review_hold_lease import acquire_review_hold_lease
 from app.services.model_eval_review_hold_supervisor import ReviewHoldSupervisor
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_HOLD_DIRECTORY = Path("/tmp/cxops-model-eval-review-holds")
+DEFAULT_HOLD_DIRECTORY = Path.home() / "Library/Application Support/CXOps/ReviewHolds"
 SOURCE_BOUND_PATHS = (
     "scripts/run_controlled_chat_model_evaluation.py",
     "scripts/monitor_model_eval_review_holds.py",
@@ -71,6 +71,11 @@ def _require_provider_disabled() -> None:
 
 async def _run(arguments: argparse.Namespace) -> int:
     _require_provider_disabled()
+    if (
+        arguments.hold_directory != DEFAULT_HOLD_DIRECTORY
+        or arguments.hold_directory.resolve(strict=False) != DEFAULT_HOLD_DIRECTORY
+    ):
+        raise RuntimeError("review-hold directory must use the fixed persistent path")
     try:
         arguments.hold_directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     except FileExistsError:

@@ -26,6 +26,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 PACKAGE_VERSION = "cxops-review-supervisor-v1"
+PERSISTENT_HOLD_DIRECTORY = Path.home() / "Library/Application Support/CXOps/ReviewHolds"
 UTC = timezone.utc
 HOLD_VERSION = 1
 EXPECTED_BINDINGS = 10
@@ -384,6 +385,12 @@ def _load_config(path: Path) -> dict[str, Any]:
         raise SupervisorBlocked("standalone supervisor is development-only")
     if config.get("provider_enabled") is not False:
         raise SupervisorBlocked("provider must remain disabled")
+    hold_directory = Path(str(config.get("hold_directory", "")))
+    if (
+        hold_directory != PERSISTENT_HOLD_DIRECTORY
+        or hold_directory.resolve(strict=False) != PERSISTENT_HOLD_DIRECTORY
+    ):
+        raise SupervisorBlocked("hold directory must use the fixed persistent path")
     if config.get("db_host") != "127.0.0.1":
         raise SupervisorBlocked("database host must be literal loopback")
     close_url = urlsplit(str(config.get("backend_close_url", "")))

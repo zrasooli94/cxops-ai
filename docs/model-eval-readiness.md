@@ -50,13 +50,20 @@ monitors, expiry, rejection, source drift, and delayed cleanup. An inert
 installed monitor with no active hold verifies launchd independence and restart
 behavior only; it is not evidence that a future hold or provider run existed.
 
-The current hold directory remains `/tmp/cxops-model-eval-review-holds`.
-LaunchAgent restart can recover while those files remain, but `/tmp` retention
-across reboot, OS cleanup, or prolonged logout is not guaranteed. A future
-owner-approved migration should use an owner-only state directory beneath the
-same Application Support runtime, with an atomic one-time handoff that keeps
-old manifests invalid and never copies an active capability behind a claimant.
-No hold-state migration is performed by the packager.
+The reviewed runner and standalone supervisor use the same fixed persistent
+directory at `~/Library/Application Support/CXOps/ReviewHolds/`. The directory
+is owner-only mode 0700 and hold, claim, cleanup, acknowledgement, and lease
+files remain mode 0600. Both entry points reject a substituted, symlinked, or
+different path. Packaging updates only the sibling `ReviewSupervisor/`
+directory and never removes or overwrites recovery state. No old `/tmp` hold is
+migrated or revived.
+
+Persistence does not make an expired hold valid: expiry, rejection, source
+drift, and tenant/session drift remain fail-closed immediately. Physical
+session cleanup may be delayed until the user logs in, launchd starts the
+monitor, and the loopback database/backend become available. Real reboot,
+logout, sleep, and database-outage transitions have not been exercised on the
+owner's Mac; the tests simulate those recovery boundaries.
 
 ## Frozen offline plan identity
 
@@ -580,7 +587,7 @@ For an owner-reviewable manifest whose exact synthetic sessions must survive
 until a separately authorized invocation, add `--prepare-review-hold`. The
 process keeps both provider flags false, writes the otherwise unrecoverable
 one-time session capabilities to an owner-only mode-0600 file under
-`/tmp/cxops-model-eval-review-holds`, prints only its non-secret path and the
+`~/Library/Application Support/CXOps/ReviewHolds/`, prints only its non-secret path and the
 canonical manifest digest, and waits. It never checks approval, constructs a
 provider client, prompts for a key, or transitions automatically. The holder
 closes all sessions and removes the file on rejection, expiry, Ctrl-C, or

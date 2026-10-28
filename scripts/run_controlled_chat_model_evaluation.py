@@ -79,7 +79,7 @@ class RunnerBlocked(RuntimeError):
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EVALUATION_SPEC_PATH = REPOSITORY_ROOT / "scripts/plan_chat_model_evaluation.py"
 RUNNER_SOURCE_PATH = Path(__file__).resolve()
-REVIEW_HOLD_DIRECTORY = Path("/tmp/cxops-model-eval-review-holds")
+REVIEW_HOLD_DIRECTORY = Path.home() / "Library/Application Support/CXOps/ReviewHolds"
 REVIEW_HOLD_VERSION = 1
 SOURCE_BOUND_PATHS = (
     "alembic/versions/1q1a0001_add_eval_live_authorizations.py",
@@ -257,6 +257,11 @@ def _review_hold_path(manifest_digest: str) -> Path:
 
 
 def _open_review_hold_directory(*, create: bool) -> int:
+    if (
+        not REVIEW_HOLD_DIRECTORY.is_absolute()
+        or REVIEW_HOLD_DIRECTORY.resolve(strict=False) != REVIEW_HOLD_DIRECTORY
+    ):
+        raise RunnerBlocked("review hold directory is unavailable or unsafe: path substituted")
     if create:
         try:
             os.mkdir(REVIEW_HOLD_DIRECTORY, 0o700)

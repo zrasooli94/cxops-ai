@@ -25,6 +25,7 @@ BOUND_PATHS = (
 )
 LABEL = "com.cxops.model-eval-review-supervisor"
 GIT = Path("/usr/bin/git")
+PERSISTENT_HOLD_DIRECTORY = Path.home() / "Library/Application Support/CXOps/ReviewHolds"
 
 
 def _verified_git() -> str:
@@ -60,7 +61,7 @@ def _reviewed_commit() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--destination", type=Path, required=True)
-    parser.add_argument("--hold-directory", type=Path, default=Path("/tmp/cxops-model-eval-review-holds"))
+    parser.add_argument("--hold-directory", type=Path, default=PERSISTENT_HOLD_DIRECTORY)
     parser.add_argument("--db-host", default="127.0.0.1")
     parser.add_argument("--db-port", type=int, default=55440)
     parser.add_argument("--db-name", default="cxops_owner_review_disposable_test")
@@ -68,6 +69,11 @@ def main() -> int:
     parser.add_argument("--backend-close-url", default="http://127.0.0.1:8000/public/chat/sessions/close")
     parser.add_argument("--psql", type=Path, default=Path("/opt/homebrew/bin/psql"))
     args = parser.parse_args()
+    if (
+        args.hold_directory != PERSISTENT_HOLD_DIRECTORY
+        or args.hold_directory.resolve(strict=False) != PERSISTENT_HOLD_DIRECTORY
+    ):
+        raise SystemExit("hold directory must use the fixed persistent path")
     if args.db_host != "127.0.0.1":
         raise SystemExit("database host must be literal loopback 127.0.0.1")
     destination = args.destination.resolve()

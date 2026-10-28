@@ -81,7 +81,10 @@ def _write_hold(directory: Path, *, reviewed_commit: str) -> tuple[Path, str]:
     return path, digest
 
 
-def test_config_integrity_version_and_loopback_are_fail_closed(tmp_path: Path) -> None:
+def test_config_integrity_version_and_loopback_are_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(standalone, "PERSISTENT_HOLD_DIRECTORY", tmp_path / "holds")
     config = _config(tmp_path)
     path = _write_config(tmp_path, config)
     assert standalone._load_config(path)["provider_enabled"] is False
@@ -188,6 +191,7 @@ def test_packager_emits_private_documents_independent_runtime(
     )
     assert config["reviewed_source_commit"] == "c" * 40
     assert config["provider_enabled"] is False
+    assert config["hold_directory"] == str(packager.PERSISTENT_HOLD_DIRECTORY)
     assert plist["ProgramArguments"][0] == "/usr/bin/python3"
     rendered = json.dumps({"config": config, "plist": plist})
     assert "Documents/Codex" not in rendered
@@ -218,6 +222,29 @@ def test_packager_rejects_non_loopback_database_before_writes(
     with pytest.raises(SystemExit, match="literal loopback"):
         packager.main()
     assert not destination.exists()
+
+
+def test_packaging_update_preserves_persistent_recovery_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application_support = tmp_path / "Application Support/CXOps"
+    destination = application_support / "ReviewSupervisor"
+    holds = application_support / "ReviewHolds"
+    holds.mkdir(parents=True, mode=0o700)
+    recovery = holds / "synthetic-recovery.json"
+    recovery.write_bytes(b"synthetic-recovery-capability")
+    recovery.chmod(0o600)
+    before = hashlib.sha256(recovery.read_bytes()).hexdigest()
+    monkeypatch.setattr(packager, "PERSISTENT_HOLD_DIRECTORY", holds)
+    monkeypatch.setattr(packager, "_reviewed_commit", lambda: "c" * 40)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["package", "--destination", str(destination), "--hold-directory", str(holds)],
+    )
+    assert packager.main() == 0
+    assert hashlib.sha256(recovery.read_bytes()).hexdigest() == before
+    assert stat_mode(recovery) == 0o600
 
 
 def test_reviewed_commit_requires_exact_hash_and_pinned_git(
